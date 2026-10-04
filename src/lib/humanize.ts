@@ -92,6 +92,28 @@ const ONLINE_CONFLICT_RE =
   /(牵(住|着)?你|拉住你|抱(住|紧|着)?你|搂(住|着|你)|亲你|亲了|靠(在|着|向|近)你|靠过来|摸(你|你的)|揉(你|你的)|碰(你|你的)|贴(着|在|向)你|贴过来|捏(你|你的)|拽(你|你的)|拉(你|你的)|钻(进|到)你怀里|埋进你|窝进你怀里|枕在你|你(的)?(手背|手心|肩膀|肩|脸|头|发|腰|脖子|胳膊|手腕|衣角|袖子|腿|脚|耳朵|耳))/;
 /** 线下不该出现的"隔着屏幕"动作 */
 const OFFLINE_CONFLICT_RE = /(盯着(对话框|聊天框|屏幕|手机屏幕)|点开对话框|打字|发消息|回消息|撤回|表情包|视频通话|语音条)/;
+/**
+ * 动作里已经"睡过去"了：这种动作之后她不能再说话。
+ * （模型经常会写"彻底陷入梦乡"，人味层以前还会在没台词时补一句兜底台词 → 睡着后开口，很出戏）
+ */
+const ACTION_SLEPT_RE = /(陷入梦乡|沉入梦乡|进入梦乡|沉沉睡去|睡着了|睡熟了|睡了过去|渐渐睡去|安心睡去|彻底睡|昏昏睡去|沉入睡眠|睡得(很|好)?沉)/;
+
+/** 如果她在动作里已经睡过去了：把该动作之后的台词删掉（睡着的人不会说话） */
+function trimTalkAfterSleepOnset(text: string): { text: string; note?: string } {
+  const re = /[（(]([^）)]{1,160})[）)]/g;
+  let lastOnsetEnd = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (ACTION_SLEPT_RE.test(String(m[1] || ''))) lastOnsetEnd = m.index + m[0].length;
+  }
+  if (lastOnsetEnd < 0) return { text };
+  const tail = text.slice(lastOnsetEnd);
+  if (tail.replace(/\s/g, '').length < 2) return { text };
+  return {
+    text: text.slice(0, lastOnsetEnd).trim(),
+    note: `已经睡过去了，删掉后面的台词：${truncate(tail.trim(), 24)}`,
+  };
+}
 
 /** 剔除与情景不符 / 纯机械 / 刚用过的动作；宁缺毋滥——缺了后面会用动作库按心情补 */
 function filterActions(
@@ -319,6 +341,11 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
     .replace(/([）)])\s+(?=[\u4e00-\u9fa5“”。，！？…])/g, '$1')
     .replace(/(?<=[\u4e00-\u9fa5，。！？…])\s+(?=[（(])/g, '');
 
+  // 连贯性：动作里她已经睡过去了 → 该动作后面的台词一律删掉
+  const slept = trimTalkAfterSleepOnset(text);
+  if (slept.note) notes.push(slept.note);
+  text = slept.text;
+
   const stickerPresent = hasSticker(text);
 
   // 长度整形：只在**完整句末**截断，绝不切一半（切一半会留半句废话）；上限放得很宽，正常回复不会被切
@@ -351,9 +378,14 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
     // 只剩动作时：动作太短/疑似占位（如"（无）"）就不保留，直接换成兜底台词
     const actionOnly = text.trim().replace(/[（(]([^）)]*)[）)]/g, '$1').replace(/\s/g, '');
     if (text.trim() && actionOnly.length >= 2) {
-      // 她只写了动作没说话：保留动作，补一句台词，而不是把动作整个丢掉
-      text = `${text.trim()}\n${fb}`;
-      notes.push('补兜底台词（保留动作）');
+      if (ACTION_SLEPT_RE.test(text)) {
+        // 动作里她已经睡过去了：不能再补台词（睡着的人不会说话）
+        notes.push('动作里已睡过去，不补台词');
+      } else {
+        // 她只写了动作没说话：保留动作，补一句台词，而不是把动作整个丢掉
+        text = `${text.trim()}\n${fb}`;
+        notes.push('补兜底台词（保留动作）');
+      }
     } else {
       text = fb;
       notes.push('使用兜底台词');

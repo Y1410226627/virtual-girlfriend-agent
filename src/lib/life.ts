@@ -310,6 +310,13 @@ export function advanceLife(): { steps: number; changes: string[] } {
       energy = clamp(energy + 5, 0, 100);
       dbRun('UPDATE agent_health SET last_meal_at = ? WHERE user_id = ?', d.toISOString(), DEFAULT_USER_ID);
     }
+    // 可控事件进行中：按事件类型追加真实影响（睡觉大幅回精力、吃饭回饥饿、洗澡放松、忙起来消耗…）
+    const eventEffect = eventStep && activeEvent ? EVENT_DRIFT[activeEvent.event_type] || EVENT_DRIFT.other : null;
+    if (eventEffect) {
+      energy = clamp(energy + (eventEffect.energy || 0), 0, 100);
+      hunger = clamp(hunger + (eventEffect.hunger || 0), 0, 100);
+      sleepQ = clamp(sleepQ + (eventEffect.sleepQ || 0), 0, 100);
+    }
     // 生病：随时间恢复
     let illness = health.illness;
     let severity = health.illness_severity;
@@ -354,6 +361,11 @@ export function advanceLife(): { steps: number; changes: string[] } {
     if (block.activityType === 'sleep' || block.activityType === 'rest') me = clamp(me + 6, 0, 100);
     else if (block.activityType === 'out' || block.activityType === 'leisure') me = clamp(me + 2, 0, 100);
     else me = clamp(me - (att === 'avoidant' ? 2.6 : 2), 0, 100);
+    // 事件的心理影响（叠加在上面）
+    if (eventEffect) {
+      if (eventEffect.me) me = clamp(me + eventEffect.me, 0, 100);
+      if (eventEffect.stress) stress = clamp(stress + eventEffect.stress, 0, 100);
+    }
     // 孤独 / 想念：越久没聊越高；独立性强上升慢
     const lonelyRate = (indep >= 60 ? 0.25 : 0.5) * (att === 'anxious' ? 1.5 : att === 'avoidant' ? 0.6 : 1);
     if (hoursSinceChat > 6) {
@@ -488,6 +500,22 @@ const POST_EVENT_ACTIVITY: Record<string, string> = {
   chore: '刚干完活，歇一会儿',
   leisure: '刚结束，还沉浸在里面的感觉',
   other: '刚忙完，正在歇口气',
+};
+
+/**
+ * 可控事件进行中的"额外影响"：每 0.5 小时一步，叠加在作息漂移之上。
+ * 睡一觉要能明显回精力，吃一顿要明显回饥饿，洗澡要放松，忙起来要消耗——让事件真的改变她的状态。
+ */
+const EVENT_DRIFT: Record<string, { energy?: number; hunger?: number; sleepQ?: number; me?: number; stress?: number }> = {
+  sleep: { energy: 12, hunger: -1, sleepQ: 3, me: 8, stress: -2 },
+  meal: { energy: 3, me: 3 },
+  shower: { energy: 3, sleepQ: 2, me: 2, stress: -2 },
+  focus: { energy: -1, me: -5, stress: 1.5 },
+  out: { energy: -1, hunger: -2, me: -1.5, stress: 0.5 },
+  chore: { energy: -1.5, hunger: -1, me: -2, stress: 0.5 },
+  commute: { energy: -1, me: -1 },
+  leisure: { energy: 1.5, sleepQ: 0.5, me: 2, stress: -1.5 },
+  other: { energy: -0.5, me: -1 },
 };
 
 function isoAfter(from: Date, minutes: number): string {
@@ -856,6 +884,7 @@ export function lifePromptBlock(): string {
     evtLines.push(`- 你现在正在「${evt.activity}」当中（${startHm} 开始${end ? `，预计 ${end} 结束` : ''}）。这件事还没有结束。`);
     evtLines.push(`- 这期间他来找你说话时：以你正在做的事情为底色回应——睡觉就迷迷糊糊、句子很短、像随时又要睡过去；洗澡/吃饭就"抽空瞄一眼手机"，别聊太久；上课/忙就压低声音、说晚点找他。`);
     evtLines.push(`- 不要自己宣布这件事结束了（"睡醒了""洗完澡了""吃完了"），除非他已经让你停下、或者时间明显已经过去很久。`);
+    evtLines.push(`- 如果这条回复的动作里你已经睡着了（"陷入梦乡""沉沉睡去"），那就到此为止，后面不能再有台词。`);
     evtLines.push(`- 不需要反复强调你在做这件事，一两句带过就好，保持自然。`);
   }
 
