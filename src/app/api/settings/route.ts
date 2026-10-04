@@ -1,6 +1,8 @@
 // 设置：模型档案（随时切换 + 自动备用链）/ 主动频率 / 场景 / 隐私
 import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpCounter, DEFAULT_USER_ID } from '@/lib/db';
-import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState } from '@/lib/relationship';
+import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState, logRelationship } from '@/lib/relationship';
+import { clamp } from '@/lib/utils';
+import { STAGES } from '@/lib/stages';
 import { embeddingMode, lastUsedTarget, testTarget } from '@/lib/llm';
 import {
   listProfiles,
@@ -13,8 +15,9 @@ import {
   seedProfilesIfEmpty,
   healthSnapshot,
 } from '@/lib/profiles';
-import { getPersonalityRows } from '@/lib/personality';
-import { getAttachmentState } from '@/lib/attachment';
+import { getPersonalityRows, manualAdjust } from '@/lib/personality';
+import { getAttachmentState, setAttachmentAxes } from '@/lib/attachment';
+import { getIntimacy } from '@/lib/intimacy';
 import { backfillEmbeddings } from '@/lib/memory';
 
 export const runtime = 'nodejs';
@@ -34,6 +37,7 @@ const EDITABLE = new Set([
   'context_size',
   'memory_top_k',
   'scene_mode',
+  'custom_mode',
   'life_enabled',
   'cycle_enabled',
   'life_share_chance',
@@ -178,6 +182,65 @@ export async function POST(req: Request) {
       if (n < 50) break;
     }
     return Response.json({ ok: true, count: total, limit });
+  }
+
+  if (action === 'custom_values') {
+    // 自定义模式：数值直控（全部钳制到合法范围；不改动任何开关与配置）
+    const v = (body.values && typeof body.values === 'object' ? body.values : {}) as Record<string, any>;
+    const numOr = (x: any, d: number) => {
+      const n = Number(x);
+      return isFinite(n) ? n : d;
+    };
+    const rel = getRelationshipState();
+    if (v.intimacy !== undefined) rel.intimacy = clamp(numOr(v.intimacy, Number(rel.intimacy)), 0, 100);
+    if (v.trust !== undefined) rel.trust = clamp(numOr(v.trust, Number(rel.trust)), 0, 100);
+    if (v.emotional_balance !== undefined) rel.emotional_balance = clamp(numOr(v.emotional_balance, Number(rel.emotional_balance)), -100, 100);
+    if (v.unresolved_tension !== undefined) rel.unresolved_tension = clamp(numOr(v.unresolved_tension, Number(rel.unresolved_tension)), 0, 100);
+    if (v.repair_credit !== undefined) rel.repair_credit = clamp(numOr(v.repair_credit, Number(rel.repair_credit)), 0, 100);
+    if (v.mood !== undefined && String(v.mood).trim()) rel.mood = String(v.mood).trim().slice(0, 12);
+    if (v.stage !== undefined) {
+      const st = clamp(Math.round(numOr(v.stage, Number(rel.stage))), 0, STAGES.length - 1);
+      if (st !== Number(rel.stage)) {
+        rel.stage = st;
+        rel.stage_entered_at = new Date().toISOString();
+        rel.stage_cap_since = null;
+        rel.pending_stage_confirm = 0;
+        rel.pending_relationship_talk = 0;
+      }
+    }
+    saveRelationshipState(rel);
+
+    const pv = (v.personality && typeof v.personality === 'object' ? v.personality : {}) as Record<string, any>;
+    for (const dim of ['warmth', 'playfulness', 'romance', 'directness', 'independence', 'emotional_intensity']) {
+      if (pv[dim] !== undefined) manualAdjust(dim, numOr(pv[dim], 50), '自定义模式：数值直控');
+    }
+
+    if (v.anxiety !== undefined || v.avoidance !== undefined) {
+      const cur = getAttachmentState();
+      setAttachmentAxes(
+        numOr(v.anxiety, Number(cur.anxiety)),
+        numOr(v.avoidance, Number(cur.avoidance)),
+        '自定义模式：数值直控',
+        '用户在设置页手动设定'
+      );
+    }
+
+    if (v.libido !== undefined || v.intimacy_need !== undefined || v.sexual_satisfaction !== undefined || v.sexual_stress !== undefined) {
+      const s = getIntimacy();
+      const set01 = (x: any, d: number) => clamp(numOr(x, d), 0, 100);
+      dbRun(
+        'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_satisfaction = ?, sexual_stress = ?, updated_at = ? WHERE user_id = ?',
+        set01(v.libido, Number(s.libido)),
+        set01(v.intimacy_need, Number(s.intimacy_need)),
+        set01(v.sexual_satisfaction, Number(s.sexual_satisfaction)),
+        set01(v.sexual_stress, Number(s.sexual_stress)),
+        new Date().toISOString(),
+        DEFAULT_USER_ID
+      );
+    }
+
+    logRelationship('milestone', '自定义模式：数值已按设定更新', null, null, '用户在设置页直控');
+    return Response.json({ ok: true });
   }
 
   if (action === 'reset') {

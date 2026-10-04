@@ -1,5 +1,5 @@
 // 后台抽取流水线：每轮对话后调用 LLM 抽取记忆 / 关系变化 / 情感银行 / 冲突 / 性格信号 / 依恋信号
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, setCounter, boolSetting, numSetting, getSetting } from './db';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, setCounter, boolSetting, numSetting, getSetting, customModeOn } from './db';
 import { clamp, nowIso, localDateStr, round1, truncate } from './utils';
 import { chat, chatJson } from './llm';
 import { buildAnalysisMessages, buildAttachmentAnalysisMessages, buildDailySummaryMessages } from './prompts';
@@ -186,6 +186,8 @@ export async function analyzeTurn(params: {
 
   try {
     const turn = getCounter('turn_count');
+    // 自定义模式：数值直控——只保留记忆/场景/生活叙事，冻结一切自动数值改写
+    const custom = customModeOn();
     // 记录"本轮开始前"的状态：删除这条消息时可以精确撤销本轮影响
     const before = snapshotForUndo();
     const relLogFrom = maxId('relationship_logs');
@@ -216,24 +218,26 @@ export async function analyzeTurn(params: {
       if (id) outcome.applied.memories++;
     }
 
-    // 2) 关系数值
+    // 2) 关系数值（自定义模式跳过：数值由用户直控）
     const rel = getRelationshipState();
     const tensionBefore = rel.unresolved_tension;
-    applyRelationshipDelta(result.relationship_delta, `第 ${turn} 轮分析：${result.reasoning}`);
-    if (params.assistantMessageId) {
-      dbRun('UPDATE messages SET emotion = ? WHERE id = ?', result.relationship_delta.mood, params.assistantMessageId);
-    }
-    // 张力回落到安全区 → 清掉"想谈一谈"的标记
-    if (getRelationshipState().unresolved_tension < 20) {
-      const s2 = getRelationshipState();
-      if (s2.pending_relationship_talk) {
-        s2.pending_relationship_talk = 0;
-        saveRelationshipState(s2);
+    if (!custom) {
+      applyRelationshipDelta(result.relationship_delta, `第 ${turn} 轮分析：${result.reasoning}`);
+      if (params.assistantMessageId) {
+        dbRun('UPDATE messages SET emotion = ? WHERE id = ?', result.relationship_delta.mood, params.assistantMessageId);
+      }
+      // 张力回落到安全区 → 清掉"想谈一谈"的标记
+      if (getRelationshipState().unresolved_tension < 20) {
+        const s2 = getRelationshipState();
+        if (s2.pending_relationship_talk) {
+          s2.pending_relationship_talk = 0;
+          saveRelationshipState(s2);
+        }
       }
     }
 
-    // 3) 情感银行显式记账（分析模型给出的余额变化之外的补充记录）
-    if (Math.abs(result.relationship_delta.emotional_balance_delta) >= 1) {
+    // 3) 情感银行显式记账（自定义模式跳过）
+    if (!custom && Math.abs(result.relationship_delta.emotional_balance_delta) >= 1) {
       addBankEntry(
         result.relationship_delta.emotional_balance_delta,
         result.relationship_delta.emotional_balance_delta > 0 ? '正向互动' : '负向互动',
@@ -242,55 +246,61 @@ export async function analyzeTurn(params: {
       );
     }
 
-    // 4) 冲突与修复
+    // 4) 冲突与修复（自定义模式跳过：会改张力的机制全部冻结）
     const after = getRelationshipState();
-    if (result.conflict_detected && result.conflict_type !== 'none') {
+    if (!custom && result.conflict_detected && result.conflict_type !== 'none') {
       registerConflict(result.conflict_type, result.reasoning || '本轮出现分歧');
       outcome.applied.conflict = true;
-    } else if (result.repair_attempt && (tensionBefore > 5 || after.unresolved_tension > 5)) {
+    } else if (!custom && result.repair_attempt && (tensionBefore > 5 || after.unresolved_tension > 5)) {
       registerRepair(result.repair_quality || 'sweet', result.reasoning || '双方主动修复');
       outcome.applied.repaired = true;
     }
 
-    // 5) 性格信号（只累积，不改性格）
+    // 5) 性格信号（只累积，不改性格；自定义模式不累积）
     // 用户明确的直接反馈（"我喜欢你这样""别这样""你好烦"）→ 权重 3（一次抵三次）。
     // 这里用规则做一次兜底判定，不依赖分析模型是否记得标记。
-    const directFeedback = STRONG_FEEDBACK_RE.test(params.userMessage || '');
-    const signals = directFeedback
-      ? result.personality_signals.map((s) => ({ ...s, is_direct_feedback: true }))
-      : result.personality_signals;
-    if (directFeedback && signals.length) {
-      logRelationship('milestone', '收到明确反馈，本轮性格信号按 3 倍权重累积', null, null, params.userMessage.slice(0, 60));
-    }
-    outcome.applied.personalitySignals = addSignals(signals, params.assistantMessageId ?? null);
-
-    // 6) 依恋信号（单轮只记录明显信号）
-    const strongAnxiety = Math.abs(result.attachment_signals.anxiety_delta) >= 1;
-    const strongAvoidance = Math.abs(result.attachment_signals.avoidance_delta) >= 1;
-    if (strongAnxiety || strongAvoidance) {
-      addAttachmentSignals({
-        anxiety_delta: result.attachment_signals.anxiety_delta,
-        avoidance_delta: result.attachment_signals.avoidance_delta,
-        reasoning: result.attachment_signals.reasoning,
-        user_attachment_cues: result.attachment_signals.user_attachment_cues,
-      }, params.assistantMessageId ?? null);
+    if (!custom) {
+      const directFeedback = STRONG_FEEDBACK_RE.test(params.userMessage || '');
+      const signals = directFeedback
+        ? result.personality_signals.map((s) => ({ ...s, is_direct_feedback: true }))
+        : result.personality_signals;
+      if (directFeedback && signals.length) {
+        logRelationship('milestone', '收到明确反馈，本轮性格信号按 3 倍权重累积', null, null, params.userMessage.slice(0, 60));
+      }
+      outcome.applied.personalitySignals = addSignals(signals, params.assistantMessageId ?? null);
     }
 
-    // 7) 关系确认 → 阶段跃迁 / 或者检查是否到达跃迁条件
-    if (result.relationship_confirmation) {
-      const before = getRelationshipState().stage;
-      checkStageTransition(true, `第 ${turn} 轮发生了关系确认`);
-      outcome.applied.stageChanged = getRelationshipState().stage !== before;
-    } else {
-      checkStageTransition(false, `第 ${turn} 轮`);
+    // 6) 依恋信号（单轮只记录明显信号；自定义模式不记录）
+    if (!custom) {
+      const strongAnxiety = Math.abs(result.attachment_signals.anxiety_delta) >= 1;
+      const strongAvoidance = Math.abs(result.attachment_signals.avoidance_delta) >= 1;
+      if (strongAnxiety || strongAvoidance) {
+        addAttachmentSignals({
+          anxiety_delta: result.attachment_signals.anxiety_delta,
+          avoidance_delta: result.attachment_signals.avoidance_delta,
+          reasoning: result.attachment_signals.reasoning,
+          user_attachment_cues: result.attachment_signals.user_attachment_cues,
+        }, params.assistantMessageId ?? null);
+      }
     }
 
-    // 8) 关系对话标记
-    const cur = getRelationshipState();
-    if (result.next_relationship_talk && cur.unresolved_tension > 20) {
-      cur.pending_relationship_talk = 1;
-      saveRelationshipState(cur);
-      logRelationship('milestone', '她决定找一个时机谈一谈悬而未决的事', null, null, result.reasoning);
+    // 7) 关系确认 → 阶段跃迁 / 或者检查是否到达跃迁条件（自定义模式跳过）
+    if (!custom) {
+      if (result.relationship_confirmation) {
+        const before2 = getRelationshipState().stage;
+        checkStageTransition(true, `第 ${turn} 轮发生了关系确认`);
+        outcome.applied.stageChanged = getRelationshipState().stage !== before2;
+      } else {
+        checkStageTransition(false, `第 ${turn} 轮`);
+      }
+
+      // 关系对话标记
+      const cur = getRelationshipState();
+      if (result.next_relationship_talk && cur.unresolved_tension > 20) {
+        cur.pending_relationship_talk = 1;
+        saveRelationshipState(cur);
+        logRelationship('milestone', '她决定找一个时机谈一谈悬而未决的事', null, null, result.reasoning);
+      }
     }
 
     // 8) 场景校正（带上下文判断；但如果这一轮已经不是最新一轮，就别覆盖更新的场景）
@@ -345,55 +355,59 @@ export async function analyzeTurn(params: {
         outcome.applied.life = true;
       }
       applyInteractionEffects({ caredForHer: false });
-      // 亲密系统
-      const idelta = rawAny.intimacy_delta || {};
-      if (typeof idelta === 'object' && Object.keys(idelta).length) applyIntimacyDelta(idelta);
-      if (rawAny.aftercare_needed) {
-        const quality = ['good', 'neutral', 'ignored'].includes(rawAny.aftercare_quality)
-          ? rawAny.aftercare_quality
-          : 'neutral';
-        const aft = startAftercare(quality);
-        if (aft) {
-          outcome.applied.aftercare = true;
-          logRelationship('milestone', `进入事后状态：${aft.state}`, null, aft.state, '亲密系统');
+      // 亲密系统（自定义模式跳过：数值由用户直控）
+      if (!custom) {
+        const idelta = rawAny.intimacy_delta || {};
+        if (typeof idelta === 'object' && Object.keys(idelta).length) applyIntimacyDelta(idelta);
+        if (rawAny.aftercare_needed) {
+          const quality = ['good', 'neutral', 'ignored'].includes(rawAny.aftercare_quality)
+            ? rawAny.aftercare_quality
+            : 'neutral';
+          const aft = startAftercare(quality);
+          if (aft) {
+            outcome.applied.aftercare = true;
+            logRelationship('milestone', `进入事后状态：${aft.state}`, null, aft.state, '亲密系统');
+          }
         }
       }
     } catch (e) {
       console.warn('[life/intimacy] apply failed:', (e as any)?.message || e);
     }
 
-    // 9) 三层机制：确认层 + 固化层（这是唯一真正修改性格的地方）
-    runConfirmLayer(params.assistantMessageId ?? null);
+    // 9) 三层机制：确认层 + 固化层（这是唯一真正修改性格的地方；自定义模式跳过）
+    if (!custom) runConfirmLayer(params.assistantMessageId ?? null);
     saveWeeklySnapshot();
 
-    // 10) 每 10 轮：依恋分析
-    const lastAttachmentTurn = getCounter('last_attachment_analysis_turn');
-    if (shouldRunAttachmentAnalysis(turn, lastAttachmentTurn)) {
-      setCounter('last_attachment_analysis_turn', turn);
-      try {
-        const attRaw = await chatJson(buildAttachmentAnalysisMessages(transcript(20), turn), {
-          maxTokens: 900,
-          temperature: 0.2,
-          thinking: boolSetting('analysis_thinking', true),
-        });
-        if (attRaw) {
-          const sig: AttachmentSignal = {
-            anxiety_delta: clamp(num(attRaw.suggested_anxiety_delta), -2, 2),
-            avoidance_delta: clamp(num(attRaw.suggested_avoidance_delta), -2, 2),
-            reasoning: String(attRaw.reasoning || '').slice(0, 500),
-            user_attachment_cues: Array.isArray(attRaw.user_attachment_cues)
-              ? attRaw.user_attachment_cues.slice(0, 6).map(String)
-              : [],
-          };
-          addAttachmentSignals(sig, params.assistantMessageId ?? null);
-          runAttachmentLayer(); // 累积 3 次同向才真正调整
-          outcome.applied.attachmentAnalyzed = true;
+    // 10) 每 10 轮：依恋分析（自定义模式跳过）
+    if (!custom) {
+      const lastAttachmentTurn = getCounter('last_attachment_analysis_turn');
+      if (shouldRunAttachmentAnalysis(turn, lastAttachmentTurn)) {
+        setCounter('last_attachment_analysis_turn', turn);
+        try {
+          const attRaw = await chatJson(buildAttachmentAnalysisMessages(transcript(20), turn), {
+            maxTokens: 900,
+            temperature: 0.2,
+            thinking: boolSetting('analysis_thinking', true),
+          });
+          if (attRaw) {
+            const sig: AttachmentSignal = {
+              anxiety_delta: clamp(num(attRaw.suggested_anxiety_delta), -2, 2),
+              avoidance_delta: clamp(num(attRaw.suggested_avoidance_delta), -2, 2),
+              reasoning: String(attRaw.reasoning || '').slice(0, 500),
+              user_attachment_cues: Array.isArray(attRaw.user_attachment_cues)
+                ? attRaw.user_attachment_cues.slice(0, 6).map(String)
+                : [],
+            };
+            addAttachmentSignals(sig, params.assistantMessageId ?? null);
+            runAttachmentLayer(); // 累积 3 次同向才真正调整
+            outcome.applied.attachmentAnalyzed = true;
+          }
+        } catch {
+          // 依恋分析失败不影响主流程
         }
-      } catch {
-        // 依恋分析失败不影响主流程
+      } else {
+        runAttachmentLayer();
       }
-    } else {
-      runAttachmentLayer();
     }
 
     // 11) 偶尔做一次遗忘清理

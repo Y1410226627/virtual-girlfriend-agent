@@ -1,5 +1,5 @@
 // 关系状态引擎：亲密度 / 信任 / 阶段跃迁 / 回退 / 关系日志
-import { dbGet, dbRun, numSetting, DEFAULT_USER_ID, getSetting, setSetting } from './db';
+import { dbGet, dbRun, numSetting, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
 import { clamp, nowIso, daysSince, round1, localDateStr } from './utils';
 import { STAGES, stageOf } from './stages';
 import type { RelationshipState, RelationshipDelta } from './types';
@@ -67,6 +67,8 @@ export function logRelationship(
 
 /** 应用一轮分析得到的关系增量 */
 export function applyRelationshipDelta(d: Partial<RelationshipDelta>, reason: string): RelationshipState {
+  // 自定义模式：数值不自动变，完全由用户直控
+  if (customModeOn()) return getRelationshipState();
   const s = getRelationshipState();
   const stage = stageOf(s.stage);
 
@@ -132,6 +134,8 @@ export function applyRelationshipDelta(d: Partial<RelationshipDelta>, reason: st
  * - 降阶：亲密度跌破下一阶段下限（下降超过 10）且未修复
  */
 export function checkStageTransition(relationshipConfirmation = false, reason = ''): RelationshipState {
+  // 自定义模式：阶段由用户直控，不做自动跃迁/回退
+  if (customModeOn()) return getRelationshipState();
   const s = getRelationshipState();
   const stage = stageOf(s.stage);
   const now = nowIso();

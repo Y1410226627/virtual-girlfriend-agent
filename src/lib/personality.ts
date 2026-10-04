@@ -1,6 +1,6 @@
 // 动态性格系统：累积层 → 确认层 → 固化层 三层机制
 // 关键原则：绝不在每轮对话里直接改性格。
-import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, getCounter, setCounter, bumpCounter, numSetting, tx } from './db';
+import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, getCounter, setCounter, bumpCounter, numSetting, tx, customModeOn } from './db';
 import { clamp, nowIso, round1, localDateStr } from './utils';
 import { stageOf } from './stages';
 import { getRelationshipState } from './relationship';
@@ -138,6 +138,8 @@ export function signalProgress(): SignalProgress[] {
  * 必须：情境多样 + 方向一致 + 强度足够。
  */
 export function runConfirmLayer(messageId?: number | null): void {
+  // 自定义模式：性格由用户直控，不做自动微调
+  if (customModeOn()) return;
   const th = confirmThresholds();
   if (th.openness <= 0) return;
 

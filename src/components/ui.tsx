@@ -173,23 +173,16 @@ export function RichText({
   let key = 0;
 
   const pushText = (segment: string) => {
-    // 动作可能被写成：（全角）(半角)【方头括号】[半角方括号]；也可能句尾括号没闭合
+    // 动作可能被写成：（全角）(半角)【方头括号】[方括号]、全/半角混搭、以及句尾未闭合——都认
     const re =
-      /（([^）]{1,80})）|\(([^)]{1,60})\)|【([^】]{1,80})】|\[([^\]\n]{1,60})\]|（([^）]{1,80})$|\(([^)\n]{1,60})$/g;
+      /（([^)）\n]{1,120})\)|\(([^)）\n]{1,120})）|（([^）]{1,120})）|\(([^)]{1,120})\)|【([^】]{1,120})】|\[([^\]\n]{1,120})\]|（([^）]{1,120})$|\(([^)\n]{1,120})$/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(segment)) !== null) {
       if (m.index > last) nodes.push(<span key={key++}>{segment.slice(last, m.index)}</span>);
-      const inner = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6] ?? '';
-      const openRaw = m[0][0];
-      const open = openRaw === '（' ? '（' : openRaw === '【' ? '【' : openRaw === '[' ? '[' : '(';
-      const unclosed = m[5] !== undefined || m[6] !== undefined;
-      const closer = unclosed ? '' : open === '（' ? '）' : open === '【' ? '】' : open === '[' ? ']' : ')';
       nodes.push(
         <span key={key++} className={actionCls}>
-          {open}
-          {inner}
-          {closer}
+          {m[0]}
         </span>
       );
       last = m.index + m[0].length;

@@ -111,6 +111,8 @@ export interface PickActionOptions {
   avoidTag?: ActionTag;
   /** 只挑"轻"的动作（眼神/语气/手上小动作）——代码兜底补动作时用，语义风险最小 */
   subtleOnly?: boolean;
+  /** 允许带 mood 标签的动作参与（情境命中权重 1.8，未命中重罚 0.2）——兜底补动作时开启，挑得更贴语境 */
+  moodAware?: boolean;
   /** 当前场景：线下时避开屏幕/对话框类动作，线上时避开身体接触类动作 */
   scene?: 'online' | 'offline';
   /** 语境基调：难过/安慰/冲突等严肃语境（heavy）时避开俏皮类动作，免得和情景打架 */
@@ -126,7 +128,9 @@ export function pickAction(opts: PickActionOptions): { text: string; tag: Action
     if (a.maxStage !== undefined && stage > a.maxStage) return false;
     if (used.some((u) => similarity(u, a.text))) return false;
     if (opts.avoidTag && a.tag === opts.avoidTag) return false;
-    if (opts.subtleOnly && (!SUBTLE.includes(a.tag) || (a.mood && a.mood.length))) return false;
+    if (opts.subtleOnly && !SUBTLE.includes(a.tag)) return false;
+    // 兜底补动作：默认不带情绪标签；moodAware 时放行（命中情境加权、未命中重罚）
+    if (opts.subtleOnly && !opts.moodAware && a.mood && a.mood.length) return false;
     // 场景过滤：线下别挑"拿手机/盯屏幕/点对话框"的线上动作
     if (opts.scene === 'offline' && /(对话框|屏幕|打字|发消息|回消息)/.test(a.text)) return false;
     // 线上别挑身体接触动作（"凑近屏幕看"这种隔着屏幕的除外）

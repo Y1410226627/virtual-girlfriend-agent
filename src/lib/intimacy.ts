@@ -1,6 +1,6 @@
 // 亲密系统：性是亲密关系的一个维度，从属于关系、强调情感连接
 // 内容分级 0/1/2（暧昧→亲密氛围、具体行为）；可以生成露骨色情描写
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting } from './db';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
 import { clamp, nowIso, round1, hoursSince } from './utils';
 import { getRelationshipState, logRelationship, saveRelationshipState } from './relationship';
 import { attachmentStyle } from './attachment';
@@ -121,6 +121,8 @@ export function listAftercare(limit = 20) {
 /* 状态推进（每小时）                                                   */
 /* ------------------------------------------------------------------ */
 export function advanceIntimacy(): void {
+  // 自定义模式：性欲/需求/压力由用户直控，不做时间漂移
+  if (customModeOn()) return;
   const s = getIntimacy();
   const lastAt = new Date(s.updated_at).getTime();
   const hours = (Date.now() - lastAt) / 3600000;
@@ -158,6 +160,8 @@ export function advanceIntimacy(): void {
 
 /** 分析模型给出的亲密增量 */
 export function applyIntimacyDelta(d: Record<string, number>): void {
+  // 自定义模式：亲密数值由用户直控
+  if (customModeOn()) return;
   const s = getIntimacy();
   const delta = (key: string) => clamp(Number(d[key]) || 0, -5, 5);
   dbRun(

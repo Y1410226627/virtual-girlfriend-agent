@@ -70,12 +70,15 @@ function looksLikeJson(line: string): boolean {
 function normalizeParens(text: string): string {
   const hasCn = (s: string) => /[\u4e00-\u9fa5]/.test(s);
   return text
-    .replace(/【([^】\n]{1,80})】/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
-    .replace(/\[([^\]\n]{1,80})\]/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
-    .replace(/\*([^*\n]{1,80})\*/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
-    .replace(/\(([^)\n]{1,80})\)/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
-    .replace(/（([^）\n]{1,80})$/gm, '（$1）') // 句尾没闭合的补上
-    .replace(/\(([^)\n]{1,80})$/gm, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m)); // 半角同款
+    .replace(/【([^】\n]{1,120})】/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
+    .replace(/\[([^\]\n]{1,120})\]/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
+    .replace(/\*([^*\n]{1,120})\*/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
+    // 混合括号：全角开+半角闭 / 半角开+全角闭（先处理，避免跨对误吞）
+    .replace(/（([^)）\n]{1,120})\)/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
+    .replace(/\(([^)）\n]{1,120})）/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
+    .replace(/\(([^)\n]{1,120})\)/g, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m))
+    .replace(/（([^）\n]{1,120})$/gm, '（$1）') // 句尾没闭合的补上
+    .replace(/\(([^)\n]{1,120})$/gm, (m, inner: string) => (hasCn(inner) ? `（${inner}）` : m)); // 半角同款
 }
 
 /** 和情绪无关的机械操作（写了只会让人出戏）；语序两种都拦：调低亮度 / 亮度调低 */
@@ -84,34 +87,44 @@ const MECHANICAL_ACTION_RE =
 /** 情绪线索：出现这些词说明动作是有情绪写的，不算机械动作 */
 const ACTION_EMOTION_RE =
   /(笑|哭|泪|脸红|耳|烫|热|颤|抖|紧|攥|握|咬|皱|愣|怔|心|慌|软|酸|疼|闷|叹|哼|嘟|撒|羞|气|委屈|想|喜欢|怕|不知所措|低头|别开|移开|埋|缩|躲)/;
-/** 线上（隔着屏幕）不该出现的身体接触动作 */
+/** 线上（隔着屏幕）不该出现的身体接触动作（要求"你"等作宾语才判；抱抱枕、拉被子这类自我安抚不算） */
 const ONLINE_CONFLICT_RE =
-  /(牵|拉住|抱(住|你|紧)|搂|亲(你|了)|靠(在|着)你|摸(你|你的)|揉(你|你的)|碰(你|你的)|贴(着|在)你|捏(你|你的)|拽(你|你的)|钻(进|到)你怀里|埋进你)/;
+  /(牵(住|着)?你|拉住你|抱(住|紧|着)?你|搂(住|着|你)|亲你|亲了|靠(在|着|向|近)你|靠过来|摸(你|你的)|揉(你|你的)|碰(你|你的)|贴(着|在|向)你|贴过来|捏(你|你的)|拽(你|你的)|拉(你|你的)|钻(进|到)你怀里|埋进你|窝进你怀里|枕在你|你(的)?(手背|手心|肩膀|肩|脸|头|发|腰|脖子|胳膊|手腕|衣角|袖子|腿|脚|耳朵|耳))/;
 /** 线下不该出现的"隔着屏幕"动作 */
 const OFFLINE_CONFLICT_RE = /(盯着(对话框|聊天框|屏幕|手机屏幕)|点开对话框|打字|发消息|回消息|撤回|表情包|视频通话|语音条)/;
 
 /** 剔除与情景不符 / 纯机械 / 刚用过的动作；宁缺毋滥——缺了后面会用动作库按心情补 */
-function filterActions(text: string, ctx: HumanizeContext): { text: string; notes: string[] } {
+function filterActions(
+  text: string,
+  ctx: HumanizeContext,
+  replace: (inner: string) => string | null
+): { text: string; notes: string[] } {
   const notes: string[] = [];
   const recent = (ctx.recentActions || []).map((a) => String(a).replace(/\s/g, ''));
-  let out = text.replace(/（([^）)]{1,80})）/g, (full, inner: string) => {
+  let out = text.replace(/（([^）)]{1,120})）/g, (full, inner: string) => {
     const s = String(inner).trim();
-    if (ctx.scene === 'online' && ONLINE_CONFLICT_RE.test(s) && !/(想|希望|要你|要是|如果)/.test(s)) {
-      notes.push(`去掉线上不该有的接触动作：${s}`);
+    // 原地换一个贴合语境的动作（而不是删掉后在结尾另补，避免"结尾突然多一句"的观感）
+    const swap = (kind: string) => {
+      const rep = replace(s);
+      if (rep) {
+        notes.push(`${kind}：${s} → ${rep}`);
+        return `（${rep}）`;
+      }
+      notes.push(`${kind}：${s}`);
       return '';
+    };
+    if (ctx.scene === 'online' && ONLINE_CONFLICT_RE.test(s) && !/(想|希望|要你|要是|如果)/.test(s)) {
+      return swap('去掉线上不该有的接触动作');
     }
     if (ctx.scene === 'offline' && OFFLINE_CONFLICT_RE.test(s)) {
-      notes.push(`去掉线下不该有的屏幕动作：${s}`);
-      return '';
+      return swap('去掉线下不该有的屏幕动作');
     }
     if (MECHANICAL_ACTION_RE.test(s) && !ACTION_EMOTION_RE.test(s)) {
-      notes.push(`去掉机械动作：${s}`);
-      return '';
+      return swap('去掉机械动作');
     }
     const flat = s.replace(/\s/g, '');
     if (flat.length >= 4 && recent.some((r) => r.slice(0, 6) === flat.slice(0, 6))) {
-      notes.push(`去掉刚用过的动作：${s}`);
-      return '';
+      return swap('复读动作');
     }
     return full;
   });
@@ -270,7 +283,35 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
 
   // 统一动作写法（各种括号 → 全角括号），再剔除机械动作 / 与场景打架的动作 / 刚用过的动作
   text = normalizeParens(text);
-  const act = filterActions(text, ctx);
+  // 语境基调：难过/安慰/冲突等严肃语境 → 补/换动作时避开俏皮类，免得"挑眉"出现在陪哭的句子里
+  const heavyTone = /(难过|伤心|委屈|哭|眼泪|累|烦|糟|压力|焦虑|不安|低落|崩溃|生气|吵架|冷战|病|疼|痛|失败|不顺|疲惫|心累|丧)/.test(
+    `${ctx.userMessage || ''} ${ctx.mood || ''}`
+  );
+  // 本段已有的动作（含将被剔除的）：补/换动作时不与它们重复
+  const usedLocal: string[] = [
+    ...(ctx.recentActions || []),
+    ...[...text.matchAll(/（([^）)]{1,120})）/g)].map((m) => String(m[1]).trim()),
+  ];
+  const pickFitting = (avoidTag?: ActionTag): string | null => {
+    const picked = pickAction({
+      stage: ctx.stage,
+      personality: ctx.personality || {},
+      attachmentStyle: ctx.attachmentStyle || 'secure',
+      used: usedLocal,
+      // 心情 + 他的话 + 她的话一起作为语境：带情绪标签的动作只有情境命中才容易被选中
+      mood: `${ctx.mood || ''} ${ctx.userMessage || ''} ${text}`,
+      avoidTag,
+      // 兜底补动作时只挑"轻"的动作：不会和台词语义打架
+      subtleOnly: true,
+      moodAware: true,
+      // 线下时避开"屏幕/对话框"类动作，免得情景打架
+      scene: ctx.scene,
+      tone: heavyTone ? 'heavy' : undefined,
+    });
+    if (picked) usedLocal.push(picked.text);
+    return picked ? picked.text : null;
+  };
+  const act = filterActions(text, ctx, () => pickFitting());
   text = act.text;
   notes.push(...act.notes);
   // 括号转换后可能留下多余空格，清一遍
@@ -280,8 +321,8 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
 
   const stickerPresent = hasSticker(text);
 
-  // 长度整形：只在**完整句末**截断，绝不切一半（切一半会留半句废话）；宁可略长
-  const CAP = 480;
+  // 长度整形：只在**完整句末**截断，绝不切一半（切一半会留半句废话）；上限放得很宽，正常回复不会被切
+  const CAP = 1000;
   if (!stickerPresent && text.length > CAP) {
     const cut = text.slice(0, CAP);
     const hard = Math.max(
@@ -307,7 +348,9 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
   let fallback = false;
   if (text.replace(/[（(][^）)]*[）)]/g, '').trim().length < 2) {
     const fb = fallbackReply(ctx);
-    if (text.trim()) {
+    // 只剩动作时：动作太短/疑似占位（如"（无）"）就不保留，直接换成兜底台词
+    const actionOnly = text.trim().replace(/[（(]([^）)]*)[）)]/g, '$1').replace(/\s/g, '');
+    if (text.trim() && actionOnly.length >= 2) {
       // 她只写了动作没说话：保留动作，补一句台词，而不是把动作整个丢掉
       text = `${text.trim()}\n${fb}`;
       notes.push('补兜底台词（保留动作）');
@@ -320,32 +363,15 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
 
   // 神态/动作兜底：保证"看得见她"（发了表情包就不再硬塞动作）
   let addedAction = false;
-  const hasAction = /[（(][^）)]{2,80}[）)]/.test(text) || stickerPresent;
+  const hasAction = /[（(][^）)]{1,120}[）)]/.test(text) || stickerPresent;
   if (!hasAction && !stickerPresent) {
     const lastAction = (ctx.recentActions || [])[0];
     const avoidTag: ActionTag | undefined = lastAction ? tagOfAction(lastAction) || undefined : undefined;
-    // 难过/安慰/冲突等严肃语境：兜底动作避开俏皮类，免得"挑眉"出现在陪哭的句子里
-    const heavyTone = /(难过|伤心|委屈|哭|眼泪|累|烦|糟|压力|焦虑|不安|低落|崩溃|生气|吵架|冷战|病|疼|痛|失败|不顺|疲惫|心累|丧)/.test(
-      `${ctx.userMessage || ''} ${ctx.mood || ''}`
-    );
-    const picked = pickAction({
-      stage: ctx.stage,
-      personality: ctx.personality || {},
-      attachmentStyle: ctx.attachmentStyle || 'secure',
-      used: ctx.recentActions || [],
-      // 把当前心情 + 台词本身一起传进去：带情绪标签的动作只有情境命中才会被选中
-      mood: `${ctx.mood || ''} ${text}`,
-      avoidTag,
-      // 兜底补动作时只挑"轻"的动作：不会和台词语义打架
-      subtleOnly: true,
-      // 线下时避开"屏幕/对话框"类动作，免得情景打架
-      scene: ctx.scene,
-      tone: heavyTone ? 'heavy' : undefined,
-    });
+    const picked = pickFitting(avoidTag);
     if (picked) {
-      text = `${text}\n（${picked.text}）`;
+      text = `${text}\n（${picked}）`;
       addedAction = true;
-      notes.push(`补动作: ${picked.text}`);
+      notes.push(`补动作: ${picked}`);
     }
   }
 

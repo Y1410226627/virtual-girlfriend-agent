@@ -101,6 +101,7 @@ export async function GET() {
         return {
           libido: round1(s.libido),
           need: round1(s.intimacy_need),
+          satisfaction: round1(s.sexual_satisfaction),
           stress: round1(s.sexual_stress),
           level: lv.effective,
           levelSet: lv.level,

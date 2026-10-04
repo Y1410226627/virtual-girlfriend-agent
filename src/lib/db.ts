@@ -756,6 +756,15 @@ export function getSetting(key: string): string | null {
   return key in DEFAULT_SETTINGS ? DEFAULT_SETTINGS[key] : null;
 }
 
+/** 自定义模式：数值直控（关闭一切自动改写关系/性格/依恋/亲密数值的机制） */
+export function customModeOn(): boolean {
+  try {
+    return getSetting('custom_mode') === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function setSetting(key: string, value: string): void {
   dbRun(
     `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)

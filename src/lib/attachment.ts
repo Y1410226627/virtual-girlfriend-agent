@@ -1,6 +1,6 @@
 // 依恋风格系统（成人依恋理论）：焦虑轴 + 回避轴，双轴正交
 // 演化规则：每 10 轮由 LLM 分析 → 输出偏移信号（≤±2）→ 累积 3 次同向才实际调整
-import { dbAll, dbRun, dbGet, DEFAULT_USER_ID } from './db';
+import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, customModeOn } from './db';
 import { clamp, nowIso, round1 } from './utils';
 import { attachmentStyleOf, ATTACHMENT_STYLES, type AttachmentState, type AttachmentSignal } from './types';
 import { getRelationshipState, logRelationship } from './relationship';
@@ -70,6 +70,8 @@ export function addAttachmentSignals(sig: AttachmentSignal, messageId?: number |
 
 /** 累积 3 次同方向信号后，真正调整依恋轴 */
 export function runAttachmentLayer(): void {
+  // 自定义模式：依恋由用户直控，不做自动偏移
+  if (customModeOn()) return;
   const cur = getAttachmentState();
   let anxiety = Number(cur.anxiety);
   let avoidance = Number(cur.avoidance);

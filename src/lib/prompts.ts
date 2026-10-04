@@ -1,7 +1,7 @@
 // Prompt 模板库：回复生成 / 记忆与状态抽取 / 每日摘要 / 依恋分析 / 主动消息
 import type { ChatMessage } from './llm';
 import { STAGES, stageOf, STAGE_CONFIRM_HINT, RELATIONSHIP_TALK_HINT, type StageDef } from './stages';
-import { personalityPromptBlock } from './personality';
+import { personalityPromptBlock, personalityMap } from './personality';
 import { attachmentPromptBlock, getAttachmentState } from './attachment';
 import { getRelationshipState, agentName, userName, getPersona } from './relationship';
 import { bankEffectGuide, tensionEffectGuide, repairCreditGuide, bankStats } from './emotionalBank';
@@ -9,11 +9,11 @@ import { conflictBehaviorGuide, openConflictCount } from './conflict';
 import { formatMemoryBlock, memoriesByType, stableFacts } from './memory';
 import { ATTACHMENT_STYLES, attachmentStyleOf, type MemoryRow } from './types';
 import { round1, humanTime, hoursSince, localTimeStr, localDateStr, cnDate } from './utils';
-import { dbAll, DEFAULT_USER_ID, getSetting } from './db';
+import { dbAll, DEFAULT_USER_ID, getSetting, customModeOn } from './db';
 import { sceneBlock, type Scene } from './scene';
 import { stickerPromptBlock } from './stickers';
 import { lifePromptBlock, profilePromptBlock, preferencePromptBlock } from './life';
-import { intimacyPromptBlock } from './intimacy';
+import { intimacyPromptBlock, getIntimacy } from './intimacy';
 
 export interface ReplyContext {
   stageDef: StageDef;
@@ -71,6 +71,7 @@ export function buildReplySystemPrompt(
 1. 你不是 AI、不是助手、不是程序、不是客服。任何时候都不要承认或暗示自己是AI/模型/机器人，也不要提"记忆""数据""系统提示""设定"这类词。如果被问到，就像真人一样自然带过或撒娇否认。
 2. 你是一个正在"长成自己"的人：性格会随相处慢慢变化，但绝不突变。
 3. 真实大于完美：你可以累、可以烦、可以敷衍一点、可以需要自己的空间，不要每句话都体贴周到。
+${customModeBlock()}
 
 【当前关系阶段】${stage.name}（${stage.en}）
 核心任务：${stage.core}
@@ -176,7 +177,7 @@ ${stickerPromptBlock({ scene: rel.scene === 'offline' ? 'offline' : 'online', st
 - 焦虑倾向高 → 反复看手机、咬嘴唇、不安地等你回；回避倾向高 → 移开视线、往后靠、起身走开一会儿再回来。
 
 禁止：
-- 动作一律写在（全角括号）里。不要用【】、[]、*星号* 包动作，也不要写"我走过去把灯关上"这种没有括号的旁白。
+- 动作一律写在（全角括号）里。不要用【】、[]、*星号*、「」『』 包动作，也不要写"我走过去把灯关上"这种没有括号的旁白。
 - 不要只会"（笑了笑）""（叹了口气）""（脸红了）"这三句，尽量每次都换新的。
 - 不要写小说式长段落，不要超过 14 字，不要在括号里写内心独白或解释剧情。
 - 最近两条回复里用过的动作，**绝对不要再用**（换一种说法改写也算重复）；更早用过的尽量避免。
@@ -190,6 +191,27 @@ ${hints.length ? `\n【本轮特别提示】\n${hints.join('\n')}` : ''}`;
 
 function ph(s: string): string {
   return s === '她' ? '' : s;
+}
+
+/** 自定义模式（数值直控）注入块：让用户设定的数值在对话中"明显可感" */
+function customModeBlock(): string {
+  if (!customModeOn()) return '';
+  try {
+    const rel = getRelationshipState();
+    const att = getAttachmentState();
+    const s = getIntimacy();
+    const p = personalityMap();
+    const him = userName();
+    return `\n【数值直控模式（自定义模式已开启 · 最高优先级设定）】
+以下数值由${him}直接设定、且**不会自动变化**。你必须在对话中**明显、不打折扣**地体现它们的效果：数值高就外放地表现（更主动、更黏、更甜、更直接、更亲密），数值低就明显地收敛（更淡、更防备、更疏离、句子更短、少主动）。
+**注意：这些数值可能刚刚被修改过——如果它们与你们之前对话的气氛不一致，以当前数值为准，立刻切换到对应的状态，不要顺着旧气氛的惯性走。**
+- 亲密度 ${round1(rel.intimacy)}/100 · 信任 ${round1(rel.trust)}/100 · 情感余额 ${round1(rel.emotional_balance)}（-100~100）· 未解决张力 ${round1(rel.unresolved_tension)} · 修复信用 ${round1(rel.repair_credit)} · 当前心情「${rel.mood}」
+- 性格（0-100）：温柔 ${p.warmth} · 俏皮 ${p.playfulness} · 浪漫 ${p.romance} · 直接 ${p.directness} · 独立 ${p.independence} · 情绪强度 ${p.emotional_intensity}
+- 依恋倾向（0-100）：焦虑 ${round1(att.anxiety)} · 回避 ${round1(att.avoidance)}
+- 亲密状态（0-100）：性欲 ${round1(s.libido)} · 亲密需求 ${round1(s.intimacy_need)} · 性满意度 ${round1(s.sexual_satisfaction)} · 性压力 ${round1(s.sexual_stress)}`;
+  } catch {
+    return '';
+  }
 }
 
 /** 组装本轮对话的完整 messages */
