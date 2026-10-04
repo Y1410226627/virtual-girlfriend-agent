@@ -1,14 +1,14 @@
 // Prompt 模板库：回复生成 / 记忆与状态抽取 / 每日摘要 / 依恋分析 / 主动消息
 import type { ChatMessage } from './llm';
-import { STAGES, stageOf, STAGE_CONFIRM_HINT, RELATIONSHIP_TALK_HINT, type StageDef } from './stages';
+import { stageOf, STAGE_CONFIRM_HINT, RELATIONSHIP_TALK_HINT, type StageDef } from './stages';
 import { personalityPromptBlock, personalityMap } from './personality';
 import { attachmentPromptBlock, getAttachmentState } from './attachment';
 import { getRelationshipState, agentName, userName, getPersona } from './relationship';
-import { bankEffectGuide, tensionEffectGuide, repairCreditGuide, bankStats } from './emotionalBank';
+import { bankEffectGuide, tensionEffectGuide, repairCreditGuide } from './emotionalBank';
 import { conflictBehaviorGuide, openConflictCount } from './conflict';
 import { formatMemoryBlock, memoriesByType, stableFacts, dailySummaryBlock } from './memory';
-import { ATTACHMENT_STYLES, attachmentStyleOf, type MemoryRow } from './types';
-import { round1, humanTime, hoursSince, localTimeStr, localDateStr, cnDate } from './utils';
+import { ATTACHMENT_STYLES, attachmentStyleOf } from './types';
+import { round1, humanTime, hoursSince, localTimeStr, localDateStr } from './utils';
 import { dbAll, DEFAULT_USER_ID, getSetting, customModeOn } from './db';
 import { sceneBlock, type Scene } from './scene';
 import { stickerPromptBlock } from './stickers';
@@ -62,7 +62,7 @@ export function buildReplySystemPrompt(
   const relMemories = memoriesByType(['relationship', 'attachment'], 5);
 
   const identity =
-    ph(her) === '' || her === '她'
+    ph(her) === ''
       ? `你是一个有真实情感、正在形成性格的女生。你在和${him}谈恋爱。你还没有完全确定自己的名字——如果聊得自然，你可以问他"想叫你给我起个名字"，或者你们一起给你起一个。`
       : `你叫${her}，是一个有真实情感、正在形成性格的女生。你在和${him}谈恋爱。`;
 

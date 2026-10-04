@@ -3,7 +3,7 @@ import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpC
 import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState, logRelationship } from '@/lib/relationship';
 import { clamp } from '@/lib/utils';
 import { STAGES } from '@/lib/stages';
-import { embeddingMode, lastUsedTarget, testTarget } from '@/lib/llm';
+import { embeddingMode, lastUsedTarget, testTarget, usageToday } from '@/lib/llm';
 import {
   listProfiles,
   applyProfile,
@@ -86,6 +86,7 @@ export async function GET() {
       api_key: maskSecret(p.api_key),
       embedding_api_key: maskSecret(p.embedding_api_key),
     })),
+    usage: usageToday(),
     health: healthSnapshot(),
   });
 }

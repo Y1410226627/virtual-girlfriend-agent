@@ -1,6 +1,6 @@
 // LLM 客户端：多模型档案 + 自动备用链 + 超时保护 + 向量接口分离
 // 支持：本地 vLLM / 智谱 GLM / 任何 OpenAI 兼容服务
-import { llmConfig, getCounter } from './db';
+import { llmConfig, getCounter, setCounter, bumpCounter, getSetting, setSetting } from './db';
 import { parseJsonLoose } from './utils';
 import {
   listProfiles,
@@ -33,6 +33,7 @@ export interface ChatOptions {
 /* ------------------------------------------------------------------ */
 interface LlmTarget {
   key: string;
+  id: string;
   label: string;
   baseUrl: string;
   apiKey: string;
@@ -44,17 +45,19 @@ function isZhipu(baseUrl: string): boolean {
   return /bigmodel\.cn|zhipuai/i.test(baseUrl || '');
 }
 
-function makeKey(baseUrl: string, model: string, kind: string) {
-  return `${kind}|${baseUrl}|${model}`;
+/** key 里带上档案 id：避免两个档案 baseUrl+model 相同时共用冷却状态或被视为同一条 */
+function makeKey(baseUrl: string, model: string, kind: string, id: string) {
+  return `${kind}|${id}|${baseUrl}|${model}`;
 }
 
 function targetOf(
-  src: { label: string; baseUrl: string; apiKey: string; model: string },
+  src: { id: string; label: string; baseUrl: string; apiKey: string; model: string },
   kind: 'chat' | 'analysis'
 ): LlmTarget {
   const baseUrl = (src.baseUrl || '').replace(/\/+$/, '');
   return {
-    key: makeKey(baseUrl, src.model, kind),
+    key: makeKey(baseUrl, src.model, kind, src.id),
+    id: src.id,
     label: src.label,
     baseUrl,
     apiKey: src.apiKey,
@@ -75,6 +78,7 @@ function targetsFor(kind: 'chat' | 'analysis', modelOverride?: string): LlmTarge
     list = ordered.map((p) =>
       targetOf(
         {
+          id: String(p.id),
           label: p.label,
           baseUrl: p.base_url,
           apiKey: p.api_key,
@@ -86,6 +90,7 @@ function targetsFor(kind: 'chat' | 'analysis', modelOverride?: string): LlmTarge
   } else {
     const single = targetOf(
       {
+        id: 'env',
         label: cfg.model,
         baseUrl: cfg.baseUrl,
         apiKey: cfg.apiKey,
@@ -99,7 +104,7 @@ function targetsFor(kind: 'chat' | 'analysis', modelOverride?: string): LlmTarge
   if (modelOverride) {
     // 指定模型时只走当前档案（用于设置页"测试这个模型"）
     const base = list[0];
-    list = [{ ...base, model: modelOverride, key: makeKey(base.baseUrl, modelOverride, kind) }];
+    list = [{ ...base, model: modelOverride, key: makeKey(base.baseUrl, modelOverride, kind, base.id) }];
   }
 
   // 健康的优先；正在冷却的排到后面，但不剔除（避免全部冷却时无可用）
@@ -181,6 +186,42 @@ function noteUsed(target: LlmTarget, fallback: boolean) {
     at: Date.now(),
     fallback,
   };
+  // 备用链切换要留痕：设置页会告诉用户"刚从 A 降级到 B"（否则只会觉得她突然变笨了）
+  if (fallback) {
+    try {
+      setSetting('last_fallback_label', `${target.label || target.model}`.trim());
+      setCounter('last_fallback_at', Date.now());
+    } catch {
+      /* 忽略 */
+    }
+  }
+}
+
+/** 今日调用计数（成本透明：设置页显示） */
+function bumpUsage(kind: 'chat' | 'analysis' | 'embedding') {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    bumpCounter(`llm_calls_${day}`, 1);
+    bumpCounter(`llm_calls_${kind}_${day}`, 1);
+  } catch {
+    /* 计数失败不影响调用 */
+  }
+}
+
+export function usageToday() {
+  const day = new Date().toISOString().slice(0, 10);
+  const chat = getCounter(`llm_calls_chat_${day}`);
+  const analysis = getCounter(`llm_calls_analysis_${day}`);
+  const embedding = getCounter(`llm_calls_embedding_${day}`);
+  const fbAt = getCounter('last_fallback_at');
+  return {
+    day,
+    chat,
+    analysis,
+    embedding,
+    total: getCounter(`llm_calls_${day}`),
+    lastFallback: fbAt > 0 ? { label: getSetting('last_fallback_label') || '备用模型', at: fbAt } : null,
+  };
 }
 
 export function lastUsedTarget() {
@@ -205,7 +246,7 @@ export async function testTarget(
   opts: { timeoutMs?: number; prompt?: string } = {}
 ): Promise<{ ok: boolean; ms: number; reply?: string; error?: string; provider: string }> {
   const t = targetOf(
-    { label: src.label || src.model, baseUrl: src.baseUrl, apiKey: src.apiKey, model: src.model },
+    { id: 'test', label: src.label || src.model, baseUrl: src.baseUrl, apiKey: src.apiKey, model: src.model },
     'chat'
   );
   const t0 = Date.now();
@@ -257,6 +298,7 @@ export async function chat(messages: ChatMessage[], opts: ChatOptions = {}): Pro
       }
       markModelSuccess(t.key, Date.now() - t0);
       noteUsed(t, i > 0);
+      bumpUsage(opts.kind === 'analysis' ? 'analysis' : 'chat');
       return text;
     } catch (e: any) {
       if (opts.signal?.aborted) throw e;
@@ -294,7 +336,6 @@ export async function chatStream(
 ): Promise<string> {
   const targets = targetsFor(opts.kind ?? 'chat', opts.model);
   let lastErr: any = null;
-  let emittedAny = false;
 
   for (let i = 0; i < targets.length; i++) {
     const t = targets[i];
@@ -304,7 +345,6 @@ export async function chatStream(
       let out: string;
       const onPiece = (piece: string) => {
         emitted += piece;
-        emittedAny = true;
         onDelta(piece);
       };
       try {
@@ -319,6 +359,7 @@ export async function chatStream(
       }
       markModelSuccess(t.key, Date.now() - t0);
       noteUsed(t, i > 0);
+      bumpUsage(opts.kind === 'analysis' ? 'analysis' : 'chat');
       return out;
     } catch (e: any) {
       if (opts.signal?.aborted) throw e;
@@ -661,6 +702,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
         const data = Array.isArray(j?.data) ? j.data : [];
         if (data.length === missTexts.length && Array.isArray(data[0]?.embedding)) {
           embeddingApiAvailable = true;
+          bumpUsage('embedding');
           return fill(data.map((d: any) => d.embedding as number[]));
         }
       }

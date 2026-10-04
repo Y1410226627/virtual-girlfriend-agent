@@ -1,7 +1,6 @@
 // 环境自检接口：模型连通性 / 数据库 / 向量模式
 import { dbGet, dbRun, llmConfig, getSetting, DEFAULT_USER_ID } from '@/lib/db';
 import { chat, embeddingMode, embed, lastUsedTarget, routePreview } from '@/lib/llm';
-import { ensureScheduler } from '@/lib/scheduler';
 import { messageCount } from '@/lib/engine';
 import { getRelationshipState } from '@/lib/relationship';
 import { listProfiles, activeProfile, isCooling } from '@/lib/profiles';
@@ -10,7 +9,6 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  ensureScheduler();
   const checks: Record<string, any> = {};
   const cfg = llmConfig();
 
@@ -38,6 +36,7 @@ export async function GET() {
       maxTokens: 60,
       temperature: 0.3,
       thinking: false,
+      timeoutMs: 15000,
     });
     checks.llm = { ok: true, ms: Date.now() - t0, reply: reply.slice(0, 60), used: lastUsedTarget() };
   } catch (e: any) {
@@ -98,7 +97,7 @@ export async function GET() {
         model: p.chat_model,
         analysisModel: p.analysis_model,
         isDefault: p.is_default === 1,
-        cooling: isCooling(`chat|${(p.base_url || '').replace(/\/+$/, '')}|${p.chat_model}`),
+        cooling: isCooling(`chat|${p.id}|${(p.base_url || '').replace(/\/+$/, '')}|${p.chat_model}`),
       })),
       lastUsed: lastUsedTarget(),
     };

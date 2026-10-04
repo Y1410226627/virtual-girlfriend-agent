@@ -452,7 +452,7 @@ export default function WorldPage() {
                 {data.shared.plans.map((pl: any, i: number) => (
                   <div key={i} className="flex items-center justify-between gap-2 rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
                     <div className="min-w-0">
-                      <div className={`text-xs ${pl.status === 'done' ? 'text-ink-300 line-through' : 'text-ink-900'}`}>{pl.content}</div>
+                      <div className={`text-xs ${pl.status === 'done' ? 'text-ink-300 line-through' : 'text-ink-900'}`}>{pl.content || pl.title}</div>
                       <div className="dim mt-0.5">{pl.status === 'done' ? '已完成' : '计划中'} · {fmtTime(pl.created_at)}</div>
                     </div>
                     <button className="btn-ghost shrink-0 !py-1 text-xs" disabled={busy} onClick={() => post({ action: 'toggle_plan', index: i }, '已更新')}>
@@ -477,7 +477,7 @@ export default function WorldPage() {
               <div className="space-y-2">
                 {data.shared.rituals.map((r: any, i: number) => (
                   <div key={i} className="rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
-                    <div className="text-xs text-ink-900">{r.content}</div>
+                    <div className="text-xs text-ink-900">{r.content || r.title}</div>
                     <div className="dim mt-0.5">{fmtTime(r.created_at)}</div>
                   </div>
                 ))}
@@ -497,7 +497,7 @@ export default function WorldPage() {
             {data.shared.places?.length ? (
               <div className="flex flex-wrap gap-2">
                 {data.shared.places.map((pl: any, i: number) => (
-                  <Chip key={i} tone="plain">📍 {pl.content}</Chip>
+                  <Chip key={i} tone="plain">📍 {pl.content || pl.title}</Chip>
                 ))}
               </div>
             ) : (
@@ -510,7 +510,7 @@ export default function WorldPage() {
               <div className="space-y-2">
                 {data.shared.items.map((item: any, i: number) => (
                   <div key={i} className="flex items-center justify-between gap-3 border-b border-rose-100/70 py-2 last:border-0">
-                    <span className="text-xs text-ink-800">{item.content}</span>
+                    <span className="text-xs text-ink-800">{item.content || item.title}</span>
                     <span className="shrink-0 text-[11px] text-ink-300">{fmtTime(item.created_at)}</span>
                   </div>
                 ))}

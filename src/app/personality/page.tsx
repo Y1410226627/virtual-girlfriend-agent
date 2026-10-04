@@ -149,7 +149,14 @@ export default function PersonalityPage() {
                   </div>
                   <div className="mt-1 text-[11px] text-ink-300">
                     平均强度 {s.avgStrength}
-                    {s.ready ? ' · 已满足条件，下一轮会尝试调整' : ''}
+                    {s.ready
+                      ? ' · 已达阈值，下一轮会调整'
+                      : s.weightedCount >= s.thresholdCount &&
+                          s.contexts >= s.thresholdContexts &&
+                          s.avgStrength >= 0.5 &&
+                          s.cooldownTurns > 0
+                        ? ` · 已达阈值，冷却中（剩 ${s.cooldownTurns} 轮）`
+                        : ''}
                   </div>
                 </div>
               ))}

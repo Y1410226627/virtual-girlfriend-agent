@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, Chip } from '@/components/ui';
+import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, Chip, fmtTime } from '@/components/ui';
 
 export default function SettingsPage() {
   const { data, loading, error, reload } = useApi<any>('/api/settings');
@@ -139,6 +139,14 @@ export default function SettingsPage() {
       ? '确定清空所有聊天记录、记忆、性格、依恋与关系数据吗？（设置会保留）'
       : '确定恢复到出厂状态吗？设置也会被清空。';
     if (!confirm(tip)) return;
+    // 恢复出厂（连设置一起清）不可逆：二次确认，必须输入 RESET 才继续
+    if (!keepSettings) {
+      const typed = prompt('此操作不可逆。请输入 RESET 以确认恢复出厂状态（直接取消或输入其他内容将中止）：');
+      if (typed === null || typed.trim() !== 'RESET') {
+        setToast('已取消恢复出厂状态');
+        return;
+      }
+    }
     const r = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -170,6 +178,15 @@ export default function SettingsPage() {
           }
         >
           <div className="space-y-2">
+            {/* 成本透明：今天的调用次数 + 备用链降级提示 */}
+            {data?.usage ? (
+              <p className="dim">
+                今日调用：聊天 {data.usage.chat || 0} · 分析 {data.usage.analysis || 0} · 向量 {data.usage.embedding || 0}
+                {data.usage.lastFallback?.label
+                  ? ` ｜ 最近降级到「${data.usage.lastFallback.label}」（${fmtTime(new Date(data.usage.lastFallback.at).toISOString()).slice(-5)}）——说明首选模型当时不可用，检查一下网络或额度`
+                  : ''}
+              </p>
+            ) : null}
             {(data?.profiles || []).map((p: any) => {
               const h = data?.health?.[`chat|${(p.base_url || '').replace(/\/+$/, '')}|${p.chat_model}`];
               const tr = testResults[p.id];
@@ -250,12 +267,12 @@ export default function SettingsPage() {
           <div className="mt-4 rounded-2xl border border-rose-100 bg-white/70 p-3.5">
             <div className="mb-2 text-xs font-medium text-ink-700">{editingId ? '编辑档案' : '新增档案'}</div>
             <div className="grid gap-2.5 md:grid-cols-2">
-              <input className="input" placeholder="档案名称（如 智谱 GLM-4.7-Flash）" value={pf.label || ''} onChange={(e) => setPf({ ...pf, label: e.target.value })} />
-              <input className="input" placeholder="接口地址 Base URL" value={pf.base_url || ''} onChange={(e) => setPf({ ...pf, base_url: e.target.value })} />
-              <input className="input" placeholder="API Key" value={pf.api_key || ''} onChange={(e) => setPf({ ...pf, api_key: e.target.value })} />
-              <input className="input" placeholder="聊天模型名" value={pf.chat_model || ''} onChange={(e) => setPf({ ...pf, chat_model: e.target.value })} />
-              <input className="input" placeholder="分析模型名（留空同聊天模型）" value={pf.analysis_model || ''} onChange={(e) => setPf({ ...pf, analysis_model: e.target.value })} />
-              <input className="input" placeholder="备注（可选）" value={pf.note || ''} onChange={(e) => setPf({ ...pf, note: e.target.value })} />
+              <input id="pf_label" aria-label="档案名称" className="input" placeholder="档案名称（如 智谱 GLM-4.7-Flash）" value={pf.label || ''} onChange={(e) => setPf({ ...pf, label: e.target.value })} />
+              <input id="pf_base_url" aria-label="接口地址 Base URL" className="input" placeholder="接口地址 Base URL" value={pf.base_url || ''} onChange={(e) => setPf({ ...pf, base_url: e.target.value })} />
+              <input id="pf_api_key" aria-label="API Key" className="input" placeholder="API Key" value={pf.api_key || ''} onChange={(e) => setPf({ ...pf, api_key: e.target.value })} />
+              <input id="pf_chat_model" aria-label="聊天模型名" className="input" placeholder="聊天模型名" value={pf.chat_model || ''} onChange={(e) => setPf({ ...pf, chat_model: e.target.value })} />
+              <input id="pf_analysis_model" aria-label="分析模型名" className="input" placeholder="分析模型名（留空同聊天模型）" value={pf.analysis_model || ''} onChange={(e) => setPf({ ...pf, analysis_model: e.target.value })} />
+              <input id="pf_note" aria-label="备注" className="input" placeholder="备注（可选）" value={pf.note || ''} onChange={(e) => setPf({ ...pf, note: e.target.value })} />
             </div>
             <div className="mt-2.5 flex flex-wrap gap-2">
               <button
@@ -383,6 +400,7 @@ export default function SettingsPage() {
             ).map(([k, label]) => (
               <button
                 key={k}
+                aria-pressed={(form.scene_mode || 'auto') === k}
                 className={(form.scene_mode || 'auto') === k ? 'btn' : 'btn-ghost'}
                 onClick={async () => {
                   // 直接提交目标值：save() 里读的是 setState 之前的旧 form，先 set 再 save 会把旧值存回去
@@ -601,26 +619,26 @@ export default function SettingsPage() {
         <Card title="你们的身份">
           <div className="grid gap-3 md:grid-cols-3">
             <div>
-              <label className="label">她叫什么（留空则让她问你）</label>
-              <input className="input" value={form.agent_name ?? ''} onChange={(e) => set('agent_name', e.target.value)} />
+              <label className="label" htmlFor="agent_name">她叫什么（留空则让她问你）</label>
+              <input id="agent_name" className="input" value={form.agent_name ?? ''} onChange={(e) => set('agent_name', e.target.value)} />
             </div>
             <div>
-              <label className="label">你怎么称呼</label>
-              <input className="input" value={form.user_name ?? ''} onChange={(e) => set('user_name', e.target.value)} />
+              <label className="label" htmlFor="user_name">你怎么称呼</label>
+              <input id="user_name" className="input" value={form.user_name ?? ''} onChange={(e) => set('user_name', e.target.value)} />
             </div>
             <div>
-              <label className="label">性格开放度（1 = 正常，0 = 性格锁死）</label>
-              <input className="input" type="number" step="0.1" min={0} max={2} value={form.personality_openness ?? '1'} onChange={(e) => set('personality_openness', e.target.value)} />
+              <label className="label" htmlFor="personality_openness">性格开放度（1 = 正常，0 = 性格锁死）</label>
+              <input id="personality_openness" className="input" type="number" step="0.1" min={0} max={2} value={form.personality_openness ?? '1'} onChange={(e) => set('personality_openness', e.target.value)} />
             </div>
           </div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div>
-              <label className="label">关于你（她的用户画像）</label>
-              <textarea className="textarea" rows={3} value={form.user_profile ?? ''} onChange={(e) => set('user_profile', e.target.value)} placeholder="专业、工作、性格、喜好、最近在忙什么…" />
+              <label className="label" htmlFor="user_profile">关于你（她的用户画像）</label>
+              <textarea id="user_profile" className="textarea" rows={3} value={form.user_profile ?? ''} onChange={(e) => set('user_profile', e.target.value)} placeholder="专业、工作、性格、喜好、最近在忙什么…" />
             </div>
             <div>
-              <label className="label">你们的共同故事（她的自我认知）</label>
-              <textarea className="textarea" rows={3} value={form.agent_story ?? ''} onChange={(e) => set('agent_story', e.target.value)} placeholder="她是谁、在哪、做什么、喜欢什么…" />
+              <label className="label" htmlFor="agent_story">你们的共同故事（她的自我认知）</label>
+              <textarea id="agent_story" className="textarea" rows={3} value={form.agent_story ?? ''} onChange={(e) => set('agent_story', e.target.value)} placeholder="她是谁、在哪、做什么、喜欢什么…" />
             </div>
           </div>
           <button className="btn mt-3" onClick={() => save(['agent_name', 'user_name', 'personality_openness', 'user_profile', 'agent_story'], '已保存身份信息')} disabled={saving}>

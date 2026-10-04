@@ -1,5 +1,14 @@
 // 聊天接口（流式 SSE）
-import { prepareTurn, saveAssistantMessage, deleteMessageById, chatStream } from '@/lib/engine';
+import {
+  prepareTurn,
+  saveAssistantMessage,
+  deleteMessageById,
+  chatStream,
+  getLastMessage,
+  getLastUserMessageBefore,
+  deleteProactiveMessagesByMessageId,
+  type PreparedTurn,
+} from '@/lib/engine';
 import { chat } from '@/lib/llm';
 import { humanizeReply } from '@/lib/humanize';
 import { detectEventFromConversation } from '@/lib/life';
@@ -14,17 +23,53 @@ export async function POST(req: Request) {
   } catch {
     return Response.json({ error: '无效请求' }, { status: 400 });
   }
+
+  // 重新生成：删掉她最后一条回复，用前面的用户消息重跑一遍生成（不重复保存用户消息）
+  if (body?.regenerate === true) {
+    const last = getLastMessage();
+    if (!last || last.role !== 'assistant') {
+      return Response.json({ error: '最后一条不是她的消息，无法重新生成' }, { status: 400 });
+    }
+    const userMsg = getLastUserMessageBefore(last.id);
+    if (!userMsg) {
+      return Response.json({ error: '没有可用的用户消息，无法重新生成' }, { status: 400 });
+    }
+    // 只删她这一条（不走级联撤销），以及引用它的主动消息记录
+    deleteMessageById(last.id);
+    deleteProactiveMessagesByMessageId(last.id);
+
+    const content = String(userMsg.content || '');
+    let prepared: PreparedTurn;
+    try {
+      prepared = await prepareTurn(content, { insertUserMessage: false, userMessageId: userMsg.id });
+    } catch (e: any) {
+      return Response.json({ error: `准备上下文失败：${e?.message || e}` }, { status: 500 });
+    }
+    // 重新生成失败时不能把他那条用户消息删掉
+    return buildChatStream(req, prepared, content, { cleanupUserOnError: false });
+  }
+
   const content = String(body?.content || '').trim();
   if (!content) return Response.json({ error: '消息不能为空' }, { status: 400 });
   if (content.length > 4000) return Response.json({ error: '消息太长了（最多 4000 字）' }, { status: 400 });
 
-  let prepared;
+  let prepared: PreparedTurn;
   try {
     prepared = await prepareTurn(content);
   } catch (e: any) {
     return Response.json({ error: `准备上下文失败：${e?.message || e}` }, { status: 500 });
   }
 
+  return buildChatStream(req, prepared, content, { cleanupUserOnError: true });
+}
+
+/** 生成 + 流式返回（正常回复与重新生成共用同一套协议：delta/final/done/error） */
+function buildChatStream(
+  req: Request,
+  prepared: PreparedTurn,
+  content: string,
+  opts: { cleanupUserOnError: boolean }
+): Response {
   const encoder = new TextEncoder();
   let full = '';
   let assistantSaved = false;
@@ -75,7 +120,6 @@ export async function POST(req: Request) {
         assistantMessageId = saveAssistantMessage(h.text);
         assistantSaved = true;
         // 规则兜底：她话里明确说了"我睡了/我去洗澡/我去吃饭…" → 立刻登记可控事件
-        // （不再只等后台分析模型汇报"活动变化"，那种方式会漏）
         try {
           detectEventFromConversation(content, h.text);
         } catch {
@@ -90,7 +134,8 @@ export async function POST(req: Request) {
         send({ type: 'done', assistantMessageId, userMessageId: prepared.userMessageId, fullText: h.text });
       } catch (e: any) {
         // 整轮失败：把刚落库的用户消息撤掉，避免刷新后"复活"一条没人回应的消息
-        if (!assistantSaved && prepared.userMessageId) {
+        // （重新生成时不能删，那是他之前发的那条）
+        if (!assistantSaved && opts.cleanupUserOnError && prepared.userMessageId) {
           try {
             deleteMessageById(Number(prepared.userMessageId));
           } catch {

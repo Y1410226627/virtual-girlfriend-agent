@@ -1,5 +1,5 @@
 // 冲突-修复机制：真实恋爱必然有冲突，不能只甜不吵
-import { dbAll, dbRun, dbGet, DEFAULT_USER_ID } from './db';
+import { dbAll, dbRun, dbGet, tx, DEFAULT_USER_ID } from './db';
 import { clamp, nowIso, round1 } from './utils';
 import { getRelationshipState, saveRelationshipState, logRelationship } from './relationship';
 import { addBankEntry, tensionEffectGuide } from './emotionalBank';
@@ -54,17 +54,19 @@ export function registerConflict(type: ConflictType, description: string): void 
   s.last_conflict_at = nowIso();
   if (s.unresolved_tension > 50) s.mood = '生气';
   else s.mood = '委屈';
-  saveRelationshipState(s);
-
-  dbRun(
-    `INSERT INTO conflict_logs (user_id, type, status, description, tension_at_start, started_at)
-     VALUES (?, ?, 'open', ?, ?, ?)`,
-    DEFAULT_USER_ID,
-    type,
-    description,
-    round1(tensionBefore),
-    nowIso()
-  );
+  // 关系状态与冲突记录必须一起成功：用一个事务包住（addBankEntry 内部有自己的事务，放外层之外）
+  tx(() => {
+    saveRelationshipState(s);
+    dbRun(
+      `INSERT INTO conflict_logs (user_id, type, status, description, tension_at_start, started_at)
+       VALUES (?, ?, 'open', ?, ?, ?)`,
+      DEFAULT_USER_ID,
+      type,
+      description,
+      round1(tensionBefore),
+      nowIso()
+    );
+  });
 
   // 冲突本身也是一次取款（问题的产生往往来自双方的忽视或越界）
   addBankEntry(-(type === 'boundary' ? 5 : type === 'major' ? 4 : 2), '冲突', description);
@@ -84,7 +86,13 @@ export function registerRepair(quality: RepairQuality, description: string): voi
   s.repair_credit = clamp(s.repair_credit + creditGain, 0, 100);
   s.conflict_state = recomputeConflictState(s.unresolved_tension);
   s.mood = '和好';
-  saveRelationshipState(s);
+  // 关系状态与冲突结清用同一个事务（bank/log 放外层之外，避免嵌套 BEGIN）
+  let closed = 0;
+  tx(() => {
+    saveRelationshipState(s);
+    // 一次修复结清全部未解决的冲突（原来只关最近一条，旧的会一直挂着）
+    closed = closeOpenConflicts('repaired', s.unresolved_tension, quality);
+  });
 
   addBankEntry(5, '修复关系', description);
   logRelationship(
@@ -95,8 +103,6 @@ export function registerRepair(quality: RepairQuality, description: string): voi
     description
   );
 
-  // 一次修复结清全部未解决的冲突（原来只关最近一条，旧的会一直挂着）
-  const closed = closeOpenConflicts('repaired', s.unresolved_tension, quality);
   if (closed > 1) {
     logRelationship('repair', `一并结清 ${closed} 条未解决冲突`, null, closed, description);
   }

@@ -108,9 +108,11 @@ export function signalProgress(): SignalProgress[] {
   const turn = getCounter('turn_count');
   const stage = stageOf(getRelationshipState().stage);
   const rows0 = getPersonalityRows();
+  // 循环外读一次建 Map，避免每个维度都全表扫一遍
+  const rowMap = new Map(rows0.map((r) => [r.dimension, r]));
   const out: SignalProgress[] = [];
   for (const dim of DIMENSION_KEYS) {
-    const row = rows0.find((r) => r.dimension === dim);
+    const row = rowMap.get(dim);
     const rateTurns = row?.solidified ? 30 : stage.changeRateTurns;
     const cooldownTurns = row ? Math.max(0, rateTurns - (turn - Number(row.last_adjusted_turn || 0))) : 0;
     for (const direction of ['+', '-'] as const) {
@@ -156,9 +158,11 @@ export function runConfirmLayer(messageId?: number | null): void {
 
   const stage = stageOf(getRelationshipState().stage);
   const turn = getCounter('turn_count');
+  // 循环外读一次建 Map，避免每个维度都全表扫一遍
+  const rowMap = new Map(getPersonalityRows().map((r) => [r.dimension, r]));
 
   for (const dim of DIMENSION_KEYS) {
-    const row = getPersonalityRows().find((r) => r.dimension === dim);
+    const row = rowMap.get(dim);
     if (!row) continue;
 
     const rateTurns = row.solidified ? 30 : stage.changeRateTurns;
@@ -418,8 +422,10 @@ function weekKey(d = new Date()): string {
 
 export function saveWeeklySnapshot(): void {
   const week = weekKey();
+  // 同一周存在则更新（UPSERT），保证周内多次调整后快照反映最新状态
   dbRun(
-    `INSERT OR IGNORE INTO personality_snapshots (user_id, week, values_json, created_at) VALUES (?, ?, ?, ?)`,
+    `INSERT INTO personality_snapshots (user_id, week, values_json, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, week) DO UPDATE SET values_json = excluded.values_json`,
     DEFAULT_USER_ID,
     week,
     JSON.stringify(personalityMap()),
@@ -441,6 +447,14 @@ export function rollbackToSnapshot(snapshotId: number): boolean {
   const values = JSON.parse(snap.values_json) as Record<string, number>;
   for (const [dim, v] of Object.entries(values)) {
     manualAdjust(dim, Number(v), `回滚到 ${snap.week} 的性格快照`);
+    // 回滚同时重置固化状态与变化速率计时，否则旧值上仍挂着"半固化"
+    dbRun(
+      'UPDATE personality_state SET solidified = 0, last_adjusted_turn = 0, updated_at = ? WHERE user_id = ? AND dimension = ?',
+      nowIso(),
+      DEFAULT_USER_ID,
+      dim
+    );
+    setCounter(`solidify_streak_${dim}`, 0);
   }
   return true;
 }

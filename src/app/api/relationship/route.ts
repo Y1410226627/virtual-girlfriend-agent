@@ -1,5 +1,5 @@
 // 关系页：状态 / 阶段 / 昵称 / 纪念日 / 事件 / 关系日志 / 冲突
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
+import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
 import { detectScene } from '@/lib/scene';
 import { getRelationshipState, saveRelationshipState, logRelationship, getPersona, setPersonaField, setUserName, checkStageTransition } from '@/lib/relationship';
 import { listConflicts } from '@/lib/conflict';
@@ -109,13 +109,11 @@ export async function POST(req: Request) {
     // 手动指定场景（auto=恢复智能识别）
     const mode = String(body.mode || 'auto');
     if (!['auto', 'online', 'offline'].includes(mode)) return Response.json({ error: '参数错误' }, { status: 400 });
-    setSetting('scene_mode', mode);
     const s = getRelationshipState();
     if (mode !== 'auto') {
       s.scene = mode;
       s.scene_reason = '你手动指定了' + (mode === 'offline' ? '线下' : '线上');
       s.scene_updated_at = nowIso();
-      saveRelationshipState(s);
     } else {
       // 切回自动：立刻用最后一条消息重新判断一次，避免标签停留在旧的手动值
       const last = dbGet<any>(
@@ -126,8 +124,12 @@ export async function POST(req: Request) {
       s.scene = d.confidence > 0 ? d.scene : 'online';
       s.scene_reason = d.reason || '已恢复智能识别（下一条消息会重新判断）';
       s.scene_updated_at = nowIso();
-      saveRelationshipState(s);
     }
+    // 场景模式设置与关系状态必须一起成功：用一个事务包住
+    tx(() => {
+      setSetting('scene_mode', mode);
+      saveRelationshipState(s);
+    });
     logRelationship('milestone', `场景设为${mode === 'auto' ? '智能识别' : mode === 'offline' ? '线下相处' : '线上聊天'}`, null, mode, '用户手动设置');
     return Response.json({ ok: true, scene: s.scene, mode });
   }

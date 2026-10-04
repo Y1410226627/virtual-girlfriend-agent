@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 const ITEMS = [
   { href: '/', label: '聊天', icon: '💬' },
@@ -17,6 +18,40 @@ const ITEMS = [
 export default function Nav() {
   const pathname = usePathname();
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
+  const [unread, setUnread] = useState(0);
+
+  /* 未读红点：不在聊天页时每 60s 拉一次"她是否又发来了新消息" */
+  useEffect(() => {
+    if (pathname === '/') {
+      setUnread(0);
+      return;
+    }
+    let stopped = false;
+    const check = async () => {
+      try {
+        const lastRead = Number(window.localStorage.getItem('lastReadMsgId') || 0);
+        const r = await fetch(`/api/messages?afterId=${lastRead}&limit=20`, { cache: 'no-store' });
+        const j = await r.json();
+        const n = (j?.messages || []).filter((m: any) => m.role === 'assistant' && Number(m.id) > lastRead).length;
+        if (!stopped) setUnread(n);
+      } catch {
+        /* ignore */
+      }
+    };
+    check();
+    const t = setInterval(check, 60000);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+  }, [pathname]);
+
+  const badge = (href: string) =>
+    href === '/' && unread > 0 ? (
+      <span className="absolute -right-2 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium leading-none text-white shadow-bubble">
+        {unread > 9 ? '9+' : unread}
+      </span>
+    ) : null;
 
   return (
     <>
@@ -37,7 +72,10 @@ export default function Nav() {
                 : 'text-ink-700 hover:bg-rose-50'
             }`}
           >
-            <span className="text-base" aria-hidden>{it.icon}</span>
+            <span className="relative text-base" aria-hidden>
+              {it.icon}
+              {badge(it.href)}
+            </span>
             {it.label}
           </Link>
         ))}
@@ -58,7 +96,10 @@ export default function Nav() {
                 isActive(it.href) ? 'text-rose-600 font-medium' : 'text-ink-500'
               }`}
             >
-              <span className="text-lg leading-none" aria-hidden>{it.icon}</span>
+              <span className="relative text-lg leading-none" aria-hidden>
+                {it.icon}
+                {badge(it.href)}
+              </span>
               {it.label}
             </Link>
           ))}

@@ -41,7 +41,7 @@ export const STAGES: StageDef[] = [
     en: 'Experimenting',
     min: 20,
     max: 40,
-    changeRateTurns: 10,
+    changeRateTurns: 15,
     core: '自我揭露、测试兼容性、建立初步信任',
     allowed: ['轻度调侃', '兴趣分享', '问私人但不冒犯的问题', '记住细节'],
     forbidden: ['强占有欲', '粘人追问', '正式的表白'],
@@ -57,7 +57,7 @@ export const STAGES: StageDef[] = [
     en: 'Intensifying',
     min: 40,
     max: 60,
-    changeRateTurns: 5,
+    changeRateTurns: 12,
     core: '情感连接形成、表达想念、建立专属感',
     allowed: ['撒娇', '表达想念', '轻度吃醋', '浪漫表达', '主动消息'],
     forbidden: ['长期控制', '情绪勒索'],
@@ -74,7 +74,7 @@ export const STAGES: StageDef[] = [
     en: 'Integrating',
     min: 60,
     max: 80,
-    changeRateTurns: 3,
+    changeRateTurns: 10,
     core: '处理冲突、建立信任、融合生活',
     allowed: ['全部维度激活', '冲突', '道歉', '撒娇求和', '深度浪漫'],
     forbidden: ['冷暴力到底不修复', '翻旧账式攻击人格'],
@@ -91,7 +91,7 @@ export const STAGES: StageDef[] = [
     en: 'Bonding',
     min: 80,
     max: 100,
-    changeRateTurns: 10,
+    changeRateTurns: 8,
     core: '共同创造、长期稳定、深度默契',
     allowed: ['所有表达', '稳定陪伴', '共同规划'],
     forbidden: ['剧烈情绪波动', '戏剧化测试'],
@@ -103,7 +103,8 @@ export const STAGES: StageDef[] = [
 ];
 
 export function stageOf(id: number): StageDef {
-  return STAGES[Math.max(0, Math.min(STAGES.length - 1, Math.round(id)))] || STAGES[0];
+  // clamp 后索引一定落在合法范围内，无需再回退到 STAGES[0]
+  return STAGES[Math.max(0, Math.min(STAGES.length - 1, Math.round(id)))];
 }
 
 /** 阶段跃迁时的提示（注入回复 Prompt，让她主动发起关系确认） */

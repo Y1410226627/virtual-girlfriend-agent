@@ -24,6 +24,16 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 非按钮元素（链接等）的轻量点击反馈，补足 tap-highlight 被全局关闭后的缺失感 */
+a:active,
+[role='button']:active {
+  opacity: 0.85;
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(246, 92, 138, 0.22) transparent;
+}
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -38,7 +48,7 @@ body {
 
 @layer components {
   .card {
-    @apply rounded-3xl bg-white/85 backdrop-blur shadow-soft border border-rose-100/70 p-5;
+    @apply rounded-3xl bg-white/85 shadow-soft border border-rose-100/70 p-5;
   }
   .card-tight {
     @apply rounded-2xl bg-white/85 backdrop-blur border border-rose-100/70 p-4;
@@ -226,26 +236,27 @@ body {
   border-radius: 50%;
   filter: blur(50px);
   opacity: 0.55;
+  will-change: transform;
 }
 .splash-glow-a {
-  width: 46vw;
-  height: 46vw;
+  width: 42vw;
+  height: 42vw;
   left: -8vw;
   top: -12vh;
   background: radial-gradient(closest-side, rgba(255, 170, 205, 0.85), rgba(255, 170, 205, 0));
   animation: splash-drift-a 11s ease-in-out infinite;
 }
 .splash-glow-b {
-  width: 40vw;
-  height: 40vw;
+  width: 36vw;
+  height: 36vw;
   right: -6vw;
   bottom: -14vh;
   background: radial-gradient(closest-side, rgba(255, 196, 160, 0.8), rgba(255, 196, 160, 0));
   animation: splash-drift-b 13s ease-in-out infinite;
 }
 .splash-glow-c {
-  width: 28vw;
-  height: 28vw;
+  width: 24vw;
+  height: 24vw;
   left: 56%;
   top: 6vh;
   background: radial-gradient(closest-side, rgba(255, 150, 190, 0.6), rgba(255, 150, 190, 0));

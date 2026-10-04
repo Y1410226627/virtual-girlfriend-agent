@@ -1,5 +1,5 @@
 // 亲密系统：性是亲密关系的一个维度，从属于关系、强调情感连接
-// 内容分级 0/1/2（暧昧→亲密氛围、具体行为）；可以生成露骨色情描写
+// 内容分级 0/1/2/3（暧昧→亲密氛围、具体行为）；可以生成露骨色情描写
 import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
 import { clamp, nowIso, round1, hoursSince } from './utils';
 import { getRelationshipState, logRelationship, saveRelationshipState } from './relationship';

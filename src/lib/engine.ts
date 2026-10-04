@@ -76,6 +76,30 @@ export function messageCount(): number {
   return Number(r?.c || 0);
 }
 
+/** 最后一条消息（重新生成时用来校验角色） */
+export function getLastMessage(): MessageRow | null {
+  return (
+    dbGet<MessageRow>('SELECT * FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1', DEFAULT_USER_ID) || null
+  );
+}
+
+/** 指定消息之前最近的一条用户消息（重新生成时作为内容，不重复保存） */
+export function getLastUserMessageBefore(id: number): MessageRow | null {
+  return (
+    dbGet<MessageRow>(
+      "SELECT * FROM messages WHERE user_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1",
+      DEFAULT_USER_ID,
+      id
+    ) || null
+  );
+}
+
+/** 删除引用了某条消息的主动消息记录（重新生成时清理它这条回复） */
+export function deleteProactiveMessagesByMessageId(id: number): void {
+  if (!Number.isFinite(id) || id <= 0) return;
+  dbRun('DELETE FROM proactive_messages WHERE user_id = ? AND message_id = ?', DEFAULT_USER_ID, id);
+}
+
 export function markAssistantMessagesRead(): void {
   dbRun(
     "UPDATE messages SET read_at = ? WHERE user_id = ? AND role = 'assistant' AND read_at IS NULL",
@@ -122,9 +146,13 @@ export function recentActionPhrases(limit = 10): string[] {
 
 /* ---------------------- 每轮准备 ---------------------- */
 /** 保存用户消息 → 检索记忆 → 组装 Prompt */
-export async function prepareTurn(userText: string): Promise<PreparedTurn> {
+export async function prepareTurn(
+  userText: string,
+  opts: { insertUserMessage?: boolean; userMessageId?: number } = {}
+): Promise<PreparedTurn> {
   const text = String(userText || '').trim();
-  const userMessageId = insertMessage('user', text);
+  // 重新生成时不再重复保存用户消息，直接复用他已存在的那一条
+  const userMessageId = opts.insertUserMessage === false ? opts.userMessageId ?? null : insertMessage('user', text);
   const turnCount = bumpCounter('turn_count');
   const gapHours = hoursSince(getRelationshipState().last_interaction_at);
   // 她的生活先推进到此刻（按流逝时间推导，幂等；不足 15 分钟会直接返回）

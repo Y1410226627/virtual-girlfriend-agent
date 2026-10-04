@@ -56,7 +56,8 @@ export function humanTime(iso: string | null | undefined): string {
   const sameDay = d.toDateString() === now.toDateString();
   const hm = localTimeStr(d);
   if (sameDay) return `今天 ${hm}`;
-  const y = new Date(now.getTime() - 86400000);
+  const y = new Date();
+  y.setDate(y.getDate() - 1); // 日历日回退（不能用固定 86400000ms，夏令时/跨月会错）
   if (d.toDateString() === y.toDateString()) return `昨天 ${hm}`;
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
@@ -104,7 +105,6 @@ export function parseJsonLoose(text: string): any | null {
       trimmed
         .replace(/[“”]/g, '"')
         .replace(/,\s*([}\]])/g, '$1')
-        .replace(/'/g, '"')
     );
   }
 

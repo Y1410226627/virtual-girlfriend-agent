@@ -205,12 +205,15 @@ export async function tickProactive(force = false): Promise<TickResult> {
   }
 
   // 频率控制
+  // 早安/晚安仪式不受 perDay 与 minGap 限制（否则晚间仪式常被白天消息吞掉），但仍受上面的免打扰/夜间时段约束
+  const ritualSlot = ritualSlotNow();
+  const willBeRitual = !force && !!ritualSlot && !rel.pending_stage_confirm && !event;
   const dayKey = `proactive_count_${localDateStr()}`;
   const todayCount = getCounter(dayKey);
-  if (!force && todayCount >= limits.perDay) return skip(`今天她已经主动 ${todayCount} 次了，不再打扰`);
+  if (!force && !willBeRitual && todayCount >= limits.perDay) return skip(`今天她已经主动 ${todayCount} 次了，不再打扰`);
 
   const lastProactiveAt = getCounter('last_proactive_ms');
-  if (!force && lastProactiveAt > 0 && (Date.now() - lastProactiveAt) / 3600000 < limits.minGapHours) {
+  if (!force && !willBeRitual && lastProactiveAt > 0 && (Date.now() - lastProactiveAt) / 3600000 < limits.minGapHours) {
     return skip('距上次主动消息间隔太短');
   }
 
@@ -219,7 +222,6 @@ export async function tickProactive(force = false): Promise<TickResult> {
 
   // 决定消息类型（特殊日子优先于早安/晚安：仪式不该把当天的事件挤掉）
   let kind: ProactiveKind = 'greeting';
-  const ritualSlot = ritualSlotNow();
   if (rel.pending_stage_confirm) kind = 'stage_confirm';
   else if (event) kind = 'event';
   else if (!force && ritualSlot) kind = 'ritual';

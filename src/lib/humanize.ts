@@ -32,8 +32,6 @@ export interface HumanizeResult {
   addedAction: boolean;
   /** 是否是兜底台词（模型没产出可用内容） */
   fallback: boolean;
-  /** 与最近说过的话高度重复 */
-  repetitive: boolean;
   notes: string[];
 }
 
@@ -203,16 +201,6 @@ function cleanSentences(text: string, userName: string): { text: string; notes: 
   return { text: kept.join(''), notes };
 }
 
-/** 与她最近说过的话是否高度重复 */
-export function isRepetitive(text: string, recentReplies: string[] = []): boolean {
-  const head = text.replace(/\s+/g, '').slice(0, 14);
-  if (head.length < 6) return false;
-  return recentReplies.some((r) => {
-    const rh = String(r || '').replace(/\s+/g, '').slice(0, 14);
-    return rh.length >= 6 && (rh === head || rh.startsWith(head.slice(0, 10)) || head.startsWith(rh.slice(0, 10)));
-  });
-}
-
 /** 模型没产出可用内容时的兜底台词（符合阶段与心情，不是套话模板感很强的句子） */
 export function fallbackReply(ctx: HumanizeContext): string {
   const { stage, mood = '', userMessage = '' } = ctx;
@@ -359,19 +347,18 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
 
   const stickerPresent = hasSticker(text);
 
-  // 长度整形：只在**完整句末**截断，绝不切一半（切一半会留半句废话）；上限放得很宽，正常回复不会被切
+  // 长度整形：优先在完整句末（。！？…）截断，绝不在句末可达时从逗号处切半句；整段找不到句末才退到逗号位。上限放得很宽，正常回复不会被切
   const CAP = 1000;
   if (!stickerPresent && text.length > CAP) {
     const cut = text.slice(0, CAP);
-    const hard = Math.max(
+    const sentEnd = Math.max(
       cut.lastIndexOf('。'),
       cut.lastIndexOf('！'),
       cut.lastIndexOf('？'),
-      cut.lastIndexOf('…'),
-      cut.lastIndexOf('\n')
+      cut.lastIndexOf('…')
     );
-    const soft = Math.max(cut.lastIndexOf('，'), cut.lastIndexOf('；'));
-    const idx = hard > 80 ? hard : soft;
+    const comma = Math.max(cut.lastIndexOf('，'), cut.lastIndexOf('；'));
+    const idx = sentEnd > 80 ? sentEnd : comma;
     if (idx > 80) {
       text = cut.slice(0, idx + 1);
       notes.push(`长度整形 ${raw.length}→${text.length}`);
@@ -418,14 +405,11 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
     }
   }
 
-  const repetitive = isRepetitive(text, ctx.recentReplies || []);
-
   return {
     text: text.trim(),
     changed: notes.length > 0,
     addedAction,
     fallback,
-    repetitive,
     notes,
   };
 }

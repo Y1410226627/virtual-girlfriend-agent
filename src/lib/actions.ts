@@ -8,8 +8,6 @@ export interface ActionDef {
   tag: ActionTag;
   /** 最低关系阶段（0 初识 / 1 试探 / 2 加深 / 3 融合 / 4 承诺） */
   minStage: number;
-  /** 仅在不超过该阶段出现（可选） */
-  maxStage?: number;
   /** 这些性格维度越高越容易出现 */
   boost?: Partial<
     Record<'warmth' | 'playfulness' | 'romance' | 'directness' | 'independence' | 'emotional_intensity', number>
@@ -125,7 +123,6 @@ export function pickAction(opts: PickActionOptions): { text: string; tag: Action
   const SUBTLE: ActionTag[] = ['eye', 'voice', 'hand'];
   const candidates = ACTIONS.filter((a) => {
     if (a.minStage > stage) return false;
-    if (a.maxStage !== undefined && stage > a.maxStage) return false;
     if (used.some((u) => similarity(u, a.text))) return false;
     if (opts.avoidTag && a.tag === opts.avoidTag) return false;
     if (opts.subtleOnly && !SUBTLE.includes(a.tag)) return false;
