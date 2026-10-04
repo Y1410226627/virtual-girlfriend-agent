@@ -35,6 +35,9 @@ export default function ChatPage() {
   const [evBusy, setEvBusy] = useState(false);
   const [evCustomOpen, setEvCustomOpen] = useState(false);
   const [evMin, setEvMin] = useState('20');
+  // 立即结束 + "等效时长"（写 8 小时 = 按睡了 8 小时结算影响，马上结束）
+  const [evImmediateOpen, setEvImmediateOpen] = useState(false);
+  const [evHours, setEvHours] = useState('8');
   const [, setEvTick] = useState(0);
 
   const listRef = useRef<HTMLDivElement>(null);
@@ -117,6 +120,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (!state?.life?.ongoingEvent) {
       setEvCustomOpen(false);
+      setEvImmediateOpen(false);
       return;
     }
     const t = setInterval(() => setEvTick((x) => x + 1), 30000);
@@ -178,7 +182,14 @@ export default function ChatPage() {
         return;
       }
       if (j.ended) {
-        setToast(j.message ? '这件事结束了，看看她说了什么～' : '已结束（她这次没说出话，你发一句试试）');
+        const assum = Number(j.assumedMinutes || 0);
+        setToast(
+          assum > 0
+            ? `已按 ${Math.round((assum / 60) * 10) / 10} 小时结算，她醒了`
+            : j.message
+              ? '这件事结束了，看看她说了什么～'
+              : '已结束（她这次没说出话，你发一句试试）'
+        );
         await loadMessages();
       } else {
         setToast('结束时间已更新，到点她会来告诉你');
@@ -471,10 +482,13 @@ export default function ChatPage() {
             </span>
             <span className="flex-1" />
             <button
-              className="btn-ghost !px-2 !py-1 text-[11px]"
+              className={`btn-ghost !px-2 !py-1 text-[11px] ${evImmediateOpen ? '!bg-rose-100 !text-rose-700' : ''}`}
               disabled={evBusy}
-              onClick={() => eventAction({ action: 'end_event', mode: 'immediate' })}
-              title="她现在就结束这件事，并马上回你一条消息"
+              onClick={() => {
+                setEvImmediateOpen((v) => !v);
+                setEvCustomOpen(false);
+              }}
+              title="现在就结束这件事；也可以填一个等效时长，按那个时长结算她恢复/消耗了多少"
             >
               立即结束
             </button>
@@ -489,12 +503,59 @@ export default function ChatPage() {
             <button
               className={`btn-ghost !px-2 !py-1 text-[11px] ${evCustomOpen ? '!bg-rose-100 !text-rose-700' : ''}`}
               disabled={evBusy}
-              onClick={() => setEvCustomOpen((v) => !v)}
+              onClick={() => {
+                setEvCustomOpen((v) => !v);
+                setEvImmediateOpen(false);
+              }}
               title="自己设定还有多少分钟后结束"
             >
               自定义时长
             </button>
             {evBusy ? <span className="animate-pulse-soft text-rose-500">处理中…</span> : null}
+          </div>
+        ) : null}
+        {state?.life?.ongoingEvent && evImmediateOpen ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
+            <span>按等效时长结束：假定「{state.life.ongoingEvent.activity}」持续了</span>
+            <input
+              className="input !w-20 !px-2 !py-1 text-xs"
+              type="number"
+              min={0.5}
+              max={24}
+              step={0.5}
+              value={evHours}
+              onChange={(e) => setEvHours(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  eventAction({ action: 'end_event', mode: 'immediate', hours: Number(evHours) });
+                  setEvImmediateOpen(false);
+                }
+              }}
+            />
+            <span>小时（她恢复/消耗多少按这个算，然后立即结束）</span>
+            <button
+              className="btn !px-2.5 !py-1 text-[11px]"
+              disabled={evBusy}
+              onClick={() => {
+                eventAction({ action: 'end_event', mode: 'immediate', hours: Number(evHours) });
+                setEvImmediateOpen(false);
+              }}
+            >
+              确定结束
+            </button>
+            <button
+              className="btn-ghost !px-2 !py-1 text-[11px]"
+              disabled={evBusy}
+              onClick={() => {
+                eventAction({ action: 'end_event', mode: 'immediate' });
+                setEvImmediateOpen(false);
+              }}
+            >
+              按实际时长
+            </button>
+            <button className="btn-ghost !px-2 !py-1 text-[11px]" onClick={() => setEvImmediateOpen(false)}>
+              取消
+            </button>
           </div>
         ) : null}
         {state?.life?.ongoingEvent && evCustomOpen ? (

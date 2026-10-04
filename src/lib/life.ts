@@ -365,6 +365,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
     if (eventEffect) {
       if (eventEffect.me) me = clamp(me + eventEffect.me, 0, 100);
       if (eventEffect.stress) stress = clamp(stress + eventEffect.stress, 0, 100);
+      if (eventEffect.loneliness) lon = clamp(lon + eventEffect.loneliness, 0, 100);
     }
     // 孤独 / 想念：越久没聊越高；独立性强上升慢
     const lonelyRate = (indep >= 60 ? 0.25 : 0.5) * (att === 'anxious' ? 1.5 : att === 'avoidant' ? 0.6 : 1);
@@ -463,14 +464,18 @@ export interface OngoingEventRow {
 /** 活动名 → 事件类型 */
 export function eventTypeOf(activity: string): string {
   const a = String(activity || '');
-  if (/睡|午休|小憩|打盹|眯一会/.test(a)) return 'sleep';
-  if (/吃|饭|餐|外卖/.test(a)) return 'meal';
-  if (/洗澡|洗漱|冲澡|洗头/.test(a)) return 'shower';
-  if (/上课|考试|开会|自习|写作业|写论文|工作|加班|学习|复习/.test(a)) return 'focus';
-  if (/出门|逛街|超市|商场|买东西|散步|朋友|聚会|聚餐|电影院|约会|运动|跑步/.test(a)) return 'out';
-  if (/收拾|打扫|洗衣服|做饭|家务|整理|晾/.test(a)) return 'chore';
-  if (/回家|路上|地铁|公交|打车|通勤|去学校|出发/.test(a)) return 'commute';
-  if (/看剧|看电|看书|游戏|刷|听歌|躺|休息|发呆|放空/.test(a)) return 'leisure';
+  if (/睡|午休|小憩|打盹|眯一会|躺下休息/.test(a)) return 'sleep';
+  if (/吃|饭|餐|外卖|夜宵/.test(a)) return 'meal';
+  if (/洗澡|洗漱|冲澡|洗头|泡澡/.test(a)) return 'shower';
+  if (/运动|跑步|健身|瑜伽|游泳|打球|跳绳|锻炼|拉伸|练/.test(a)) return 'sport';
+  if (/游戏|开黑|排位|下棋|打牌/.test(a)) return 'game';
+  if (/聊天|视频|通话|打电话|聚会|串门|下午茶|约会/.test(a)) return 'social';
+  if (/化妆|护肤|面膜|泡脚|敷|美甲|梳洗|洗脸|吹头发/.test(a)) return 'care';
+  if (/上课|考试|开会|自习|写作业|写论文|工作|加班|学习|复习|背单词|网课|看文献/.test(a)) return 'focus';
+  if (/出门|逛街|超市|商场|买东西|散步|遛|朋友|电影院|取快递|拿快递|逛逛/.test(a)) return 'out';
+  if (/收拾|打扫|洗衣服|做饭|家务|整理|晾|洗碗|买菜|清理/.test(a)) return 'chore';
+  if (/回家|路上|地铁|公交|打车|通勤|去学校|出发|赶车/.test(a)) return 'commute';
+  if (/看剧|看电|看书|刷|听歌|躺|休息|发呆|放空|追剧/.test(a)) return 'leisure';
   return 'other';
 }
 
@@ -482,9 +487,13 @@ function activityTypeOfEvent(eventType: string): string {
     case 'shower': return 'shower';
     case 'focus': return 'class';
     case 'out': return 'out';
+    case 'sport': return 'out';
     case 'chore': return 'chores';
     case 'commute': return 'commute';
     case 'leisure': return 'leisure';
+    case 'game': return 'leisure';
+    case 'social': return 'leisure';
+    case 'care': return 'leisure';
     default: return 'idle';
   }
 }
@@ -499,6 +508,10 @@ const POST_EVENT_ACTIVITY: Record<string, string> = {
   commute: '刚到，缓一口气',
   chore: '刚干完活，歇一会儿',
   leisure: '刚结束，还沉浸在里面的感觉',
+  sport: '刚运动完，出了一身汗',
+  game: '刚打完一局，手还有点酸',
+  social: '刚聊完天，心情不错',
+  care: '刚收拾好自己，清清爽爽的',
   other: '刚忙完，正在歇口气',
 };
 
@@ -506,17 +519,64 @@ const POST_EVENT_ACTIVITY: Record<string, string> = {
  * 可控事件进行中的"额外影响"：每 0.5 小时一步，叠加在作息漂移之上。
  * 睡一觉要能明显回精力，吃一顿要明显回饥饿，洗澡要放松，忙起来要消耗——让事件真的改变她的状态。
  */
-const EVENT_DRIFT: Record<string, { energy?: number; hunger?: number; sleepQ?: number; me?: number; stress?: number }> = {
-  sleep: { energy: 12, hunger: -1, sleepQ: 3, me: 8, stress: -2 },
-  meal: { energy: 3, me: 3 },
+const EVENT_DRIFT: Record<
+  string,
+  { energy?: number; hunger?: number; sleepQ?: number; me?: number; stress?: number; loneliness?: number }
+> = {
+  sleep: { energy: 12, hunger: -1, sleepQ: 3, me: 8, stress: -2, loneliness: -1 },
+  meal: { energy: 3, me: 3, loneliness: -2 },
   shower: { energy: 3, sleepQ: 2, me: 2, stress: -2 },
-  focus: { energy: -1, me: -5, stress: 1.5 },
-  out: { energy: -1, hunger: -2, me: -1.5, stress: 0.5 },
+  focus: { energy: -1, me: -5, stress: 1.5, loneliness: 1 },
+  out: { energy: -1, hunger: -2, me: -1.5, stress: 0.5, loneliness: -2 },
+  sport: { energy: -4, hunger: -4, sleepQ: 1, me: 2, stress: -4, loneliness: -1 },
+  game: { energy: -2, me: -2, stress: -1.5, loneliness: -1 },
+  social: { energy: -1, me: 3, stress: -2, loneliness: -3 },
+  care: { energy: -1, sleepQ: 0.5, me: 2, stress: -1.5 },
   chore: { energy: -1.5, hunger: -1, me: -2, stress: 0.5 },
   commute: { energy: -1, me: -1 },
-  leisure: { energy: 1.5, sleepQ: 0.5, me: 2, stress: -1.5 },
+  leisure: { energy: 1.5, sleepQ: 0.5, me: 2, stress: -1.5, loneliness: -1 },
   other: { energy: -0.5, me: -1 },
 };
+
+/** 按"等效步数"（每步 0.5 小时）直接结算某个事件的影响（立即结束时用） */
+export function applyEventEffects(eventType: string, steps: number): void {
+  const eff = EVENT_DRIFT[eventType] || EVENT_DRIFT.other;
+  const n = Math.max(0, Math.floor(steps));
+  if (n <= 0) return;
+  const h = getHealth();
+  const p = getPsychology();
+  dbRun(
+    'UPDATE agent_health SET energy = ?, hunger = ?, sleep_quality = ?, updated_at = ? WHERE user_id = ?',
+    round1(clamp(h.energy + (eff.energy || 0) * n, 0, 100)),
+    round1(clamp(h.hunger + (eff.hunger || 0) * n, 0, 100)),
+    round1(clamp(h.sleep_quality + (eff.sleepQ || 0) * n, 0, 100)),
+    nowIso(),
+    DEFAULT_USER_ID
+  );
+  dbRun(
+    'UPDATE agent_psychology SET mental_energy = ?, stress = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
+    round1(clamp(p.mental_energy + (eff.me || 0) * n, 0, 100)),
+    round1(clamp(p.stress + (eff.stress || 0) * n, 0, 100)),
+    round1(clamp(p.loneliness + (eff.loneliness || 0) * n, 0, 100)),
+    nowIso(),
+    DEFAULT_USER_ID
+  );
+}
+
+/**
+ * 立即结束时的"等效时长"结算：按用户指定的总时长回填影响，
+ * 减去事件真实已经流逝的那部分（那部分已由作息推进结算过），避免重复计算。
+ */
+export function applyEventEffectsAsIf(evt: OngoingEventRow, assumeMinutes: number): number {
+  const started = new Date(evt.started_at).getTime();
+  const actualMin = isFinite(started) ? Math.max(0, (Date.now() - started) / 60000) : 0;
+  const extraMin = Math.max(0, assumeMinutes - actualMin);
+  const steps = Math.floor(extraMin / 30);
+  if (steps <= 0) return 0;
+  applyEventEffects(evt.event_type, steps);
+  logLife('event', evt.activity, `按 ${Math.round(assumeMinutes / 60 * 10) / 10} 小时结算`, '立即结束：按指定等效时长结算影响');
+  return steps;
+}
 
 function isoAfter(from: Date, minutes: number): string {
   return new Date(from.getTime() + minutes * 60000).toISOString();
@@ -683,14 +743,21 @@ export function settleExpiredEvent(evt: OngoingEventRow, notified: boolean): voi
 /* 从对话里识别"她开始做某件事"（规则兜底，不依赖后台分析模型）           */
 /* ------------------------------------------------------------------ */
 const EVENT_INTENT_RULES: Array<{ activity: string; re: RegExp }> = [
-  { activity: '睡觉', re: /(我去睡|我先睡|那我睡|我睡了|我睡啦|我睡喽|我要睡|我准备睡|我准备睡了|我也睡|我这就睡|我躺下睡|我上床睡|我睡着|睡着了|沉沉睡去|安心入睡|渐渐入睡|进入梦乡|睡过去了|我去躺了|我先躺了|我躺下了|我上床了|我去床上|我回床上|我钻被窝)/ },
-  { activity: '眯一会儿', re: /(我去午休|我去眯|我眯一会|我小睡|我躺一会|我去躺一会|我休息一下|我歇一会)/ },
-  { activity: '洗澡', re: /(我去洗澡|我去洗个澡|我先洗|我去冲个澡|我去洗洗|我去洗漱|我要去洗澡)/ },
-  { activity: '吃饭', re: /(我去吃饭|我先去吃饭|我去吃个饭|我去吃点东西|我去吃午饭|我去吃晚饭|我去吃早饭|我吃饭去了|我去食堂吃|我去弄点吃的)/ },
-  { activity: '出门', re: /(我出门|我出门了|我先出门|我出去了|我去超市|我去买东西|我去逛街|我出发了|我下楼|我去拿个快递|我去取快递)/ },
-  { activity: '上课', re: /(我去上课|我先去上课|我去教室|我得去上课|我要去上课|我上课去)/ },
-  { activity: '自习', re: /(我去自习|我去图书馆|我去写作业|我去复习|我要去自习)/ },
-  { activity: '工作', re: /(我去上班|我先去上班|我去开会|我去加班)/ },
+  { activity: '睡觉', re: /(我去睡|我先睡|那我睡|我睡了|我睡啦|我睡喽|我要睡|我准备睡|我准备睡了|我也睡|我这就睡|我该睡了|我得睡了|我躺下睡|我上床睡|我睡着|睡着了|沉沉睡去|安心入睡|渐渐入睡|进入梦乡|睡过去了|我去躺了|我先躺了|我躺下了|我上床了|我去床上|我回床上|我钻被窝)/ },
+  { activity: '眯一会儿', re: /(我去午休|我去眯|我眯一会|我小睡|我躺一会|我去躺一会|我休息一下|我歇一会|我打个盹)/ },
+  { activity: '洗澡', re: /(我去洗澡|我去洗个澡|我先洗|我去冲个澡|我去洗洗|我去洗漱|我要去洗澡|我去冲一下)/ },
+  { activity: '吃饭', re: /(我去吃饭|我先去吃饭|我去吃个饭|我去吃点东西|我去吃午饭|我去吃晚饭|我去吃早饭|我吃饭去了|我去食堂吃|我去弄点吃的|我去干饭|我先吃口饭)/ },
+  { activity: '出门', re: /(我出门|我出门了|我先出门|我出去了|我去超市|我去买东西|我去逛街|我出发了|我下楼|我去拿个快递|我去取快递|我去买东西|我出去一趟)/ },
+  { activity: '上课', re: /(我去上课|我先去上课|我去教室|我得去上课|我要去上课|我上课去|我该去上课了)/ },
+  { activity: '自习', re: /(我去自习|我去图书馆|我去写作业|我去复习|我要去自习|我去背单词|我背会单词|我去写论文|我去赶作业)/ },
+  { activity: '工作', re: /(我去上班|我先去上班|我去开会|我去加班|我要去开会|我得去开会)/ },
+  { activity: '运动', re: /(我去运动|我去跑步|我去健身|我去打球|我去游泳|我去锻炼|我去练|我去跑两圈|我下楼跑|我去做运动|我活动活动)/ },
+  { activity: '打游戏', re: /(我去打游戏|我去玩会|我开黑|我去开黑|我打一局|我去排位|我去下棋|我打会游戏|我玩两把)/ },
+  { activity: '和朋友聊天', re: /(我去找朋友|我和朋友聊|我去串门|我去聚会|我去和朋友|我跟朋友|我找室友|我去聊天)/ },
+  { activity: '遛个弯', re: /(我去遛狗|我去遛弯|我去散步|我下楼走走|我去转转|我去走一走|我出去透透气)/ },
+  { activity: '做家务', re: /(我去收拾|我去打扫|我去洗衣服|我去做饭|我收拾一下|我去洗碗|我去买菜|我去晾衣服|我收拾收拾|我去整理)/ },
+  { activity: '护肤', re: /(我(先)?去(敷|护肤|泡脚|洗脸|化个妆|吹头发)|我敷个面膜|我先敷|我去收拾一下自己|我洗把脸)/ },
+  { activity: '看剧', re: /(我去看剧|我去看电影|我去追剧|我看会剧|我去看个电影|我刷会剧|我去看会书)/ },
 ];
 
 /**
@@ -718,6 +785,7 @@ export function detectEventFromConversation(userText: string, assistantText: str
       { ask: /(去睡|快睡|睡觉吧|睡吧|早点睡|该睡了|晚安)/, act: '睡觉', echo: /(睡|晚安|困|躺|床|被窝)/, notAbout: /你[^。！？]{0,4}(睡|晚安|躺|床)/ },
       { ask: /(去洗澡|洗个澡|冲个澡|去洗洗)/, act: '洗澡', echo: /洗/, notAbout: /你[^。！？]{0,4}洗/ },
       { ask: /(去吃饭|吃饭去|去吃点东西|去吃点)/, act: '吃饭', echo: /吃/, notAbout: /你[^。！？]{0,4}吃/ },
+      { ask: /(去运动|去跑步|运动一下|出去走走|去散步|去遛)/, act: '运动', echo: /(跑|走|运动|遛|动起来)/, notAbout: /你[^。！？]{0,4}(跑|走|运动)/ },
     ];
     for (const a of askedList) {
       if (!a.ask.test(him) || !a.echo.test(her) || a.notAbout.test(her)) continue;

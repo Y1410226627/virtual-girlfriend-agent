@@ -26,6 +26,7 @@ import {
   getActiveEvent,
   endOngoingEvent,
   setEventExpectedEnd,
+  applyEventEffectsAsIf,
 } from '@/lib/life';
 import { notifyEventEnd } from '@/lib/proactive';
 import { ensureScheduler } from '@/lib/scheduler';
@@ -197,9 +198,21 @@ export async function POST(req: Request) {
       e ? { id: e.id, activity: e.activity, eventType: e.event_type, startedAt: e.started_at, expectedEnd: e.expected_end_at, mode: e.duration_mode } : null;
 
     if (mode === 'immediate') {
+      // hours：可选"等效时长"——比如写 8 表示"按她睡了 8 小时结算影响"，然后立即结束
+      const hours = Number(body.hours) || 0;
+      const assumeMinutes = hours > 0 ? Math.min(1440, Math.max(30, Math.round(hours * 60))) : 0;
+      let appliedSteps = 0;
+      if (assumeMinutes > 0) {
+        try {
+          appliedSteps = applyEventEffectsAsIf(evt, assumeMinutes);
+        } catch {
+          /* 结算失败不影响结束 */
+        }
+      }
       endOngoingEvent('immediate');
-      const message = await notifyEventEnd(evt, true);
-      return Response.json({ ok: true, ended: true, message, event: null });
+      // 指定了等效时长 → 当成自然睡醒/自然结束；没指定 → 当成被打断
+      const message = await notifyEventEnd(evt, assumeMinutes <= 0);
+      return Response.json({ ok: true, ended: true, message, assumedMinutes: assumeMinutes || null, appliedSteps, event: null });
     }
     if (mode === 'smart' || mode === 'manual') {
       const updated = setEventExpectedEnd(mode, Number(body.minutes) || 0);
