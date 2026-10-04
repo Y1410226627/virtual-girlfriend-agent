@@ -135,6 +135,8 @@ export default function SettingsPage() {
   if (error) return <ErrorBox message={error} onRetry={reload} />;
 
   const eff = data?.effective || {};
+  // 自定义模式开关：'1' 和 'true' 都算开启（历史数据可能存成 true）
+  const customOn = form.custom_mode === '1' || form.custom_mode === 'true';
 
   return (
     <div className="pb-10">
@@ -421,16 +423,28 @@ export default function SettingsPage() {
         <Card title="自定义模式（数值直控）">
           <div className="flex flex-wrap items-center gap-2">
             <button
-              className={form.custom_mode === '1' ? 'btn' : 'btn-ghost'}
+              className={customOn ? 'btn' : 'btn-ghost'}
               onClick={async () => {
-                const on = form.custom_mode !== '1';
-                set('custom_mode', on ? '1' : '0');
-                await save(['custom_mode'], on ? '自定义模式已开启：数值不再自动变化' : '自定义模式已关闭：数值恢复自动演化');
+                // 注意：必须用"目标值"直接提交，不能走 save(['custom_mode'])——
+                // 那会读到 setState 之前的旧值，导致"关不掉"
+                const on = !customOn;
+                const next = on ? '1' : '0';
+                setForm((s) => ({ ...s, custom_mode: next }));
+                setSaving(true);
+                const r = await fetch('/api/settings', {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ settings: { custom_mode: next } }),
+                });
+                const j = await r.json();
+                setSaving(false);
+                setToast(j?.error ? j.error : on ? '自定义模式已开启：数值不再自动变化' : '自定义模式已关闭：数值恢复自动演化');
+                reload();
               }}
             >
-              {form.custom_mode === '1' ? '已开启（点击关闭）' : '开启自定义模式'}
+              {customOn ? '已开启（点击关闭）' : '开启自定义模式'}
             </button>
-            {form.custom_mode === '1' ? (
+            {customOn ? (
               <Chip tone="plain">数值已冻结，完全由你设定</Chip>
             ) : (
               <Chip tone="plain">默认：数值随对话与时间自然演化</Chip>
@@ -440,7 +454,7 @@ export default function SettingsPage() {
             开启后：亲密度、信任、情感银行、张力、修复信用、关系阶段、6 项性格、依恋两轴、性欲相关数值都<strong>不再自动变化</strong>，
             完全由你在下面直接设定；设定的效果会在之后的对话里明显体现（语气、主动性、黏人程度、占有欲、亲密程度等）。
           </p>
-          {form.custom_mode === '1' && cv ? (
+          {customOn && cv ? (
             <div className="mt-3 space-y-3">
               <div className="grid gap-3 md:grid-cols-3">
                 <div>

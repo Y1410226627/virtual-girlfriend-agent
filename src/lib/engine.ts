@@ -10,7 +10,7 @@ import { attachmentStyle } from './attachment';
 import { humanizeReply, type HumanizeContext } from './humanize';
 import { detectScene, type Scene } from './scene';
 import { renderContentForModel } from './stickers';
-import { ensureLife, advanceLife, whatHappenedSince } from './life';
+import { ensureLife, advanceLife, whatHappenedSince, settleExpiredEvents } from './life';
 import type { MessageRow } from './types';
 
 export interface PreparedTurn {
@@ -125,6 +125,8 @@ export async function prepareTurn(userText: string): Promise<PreparedTurn> {
   try {
     ensureLife();
     advanceLife();
+    // 事件已到期而用户先来消息：静默结束（她用"刚结束"的状态回复，这里就不再补一条提醒）
+    settleExpiredEvents();
   } catch (e: any) {
     console.warn('[life] advance failed:', e?.message || e);
   }

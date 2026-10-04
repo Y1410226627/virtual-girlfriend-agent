@@ -23,7 +23,11 @@ import {
   isFieldRevealed,
   whatHappenedSince,
   labelOf,
+  getActiveEvent,
+  endOngoingEvent,
+  setEventExpectedEnd,
 } from '@/lib/life';
+import { notifyEventEnd } from '@/lib/proactive';
 import { ensureScheduler } from '@/lib/scheduler';
 
 export const runtime = 'nodejs';
@@ -85,6 +89,12 @@ export async function GET() {
     },
     location: { name: loc.current_location, type: loc.location_type, arrivedAt: loc.arrived_at },
     activity: { name: act.current_activity, type: act.activity_type, expectedEnd: act.expected_end_at },
+    ongoingEvent: (() => {
+      const e = getActiveEvent();
+      return e
+        ? { id: e.id, activity: e.activity, eventType: e.event_type, startedAt: e.started_at, expectedEnd: e.expected_end_at, mode: e.duration_mode }
+        : null;
+    })(),
     recently: whatHappenedSince(12),
     timeline,
     events: listDailyEvents(30),
@@ -176,6 +186,27 @@ export async function POST(req: Request) {
     dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE user_id = ?', body.enabled ? 1 : 0, Number(body.day) || 1, DEFAULT_USER_ID);
     setSetting('cycle_enabled', body.enabled ? 'true' : 'false');
     return Response.json({ ok: true });
+  }
+
+  if (action === 'end_event') {
+    // 控制当前事件什么时候结束：immediate=立即结束（她马上回一条） / smart=按最自然的时长 / manual=手动分钟数
+    const mode = String(body.mode || 'immediate');
+    const evt = getActiveEvent();
+    if (!evt) return Response.json({ ok: false, error: '现在没有进行中的事件' });
+    const shape = (e: any) =>
+      e ? { id: e.id, activity: e.activity, eventType: e.event_type, startedAt: e.started_at, expectedEnd: e.expected_end_at, mode: e.duration_mode } : null;
+
+    if (mode === 'immediate') {
+      endOngoingEvent('immediate');
+      const message = await notifyEventEnd(evt, true);
+      return Response.json({ ok: true, ended: true, message, event: null });
+    }
+    if (mode === 'smart' || mode === 'manual') {
+      const updated = setEventExpectedEnd(mode, Number(body.minutes) || 0);
+      if (!updated) return Response.json({ ok: false, error: '事件已经结束了' });
+      return Response.json({ ok: true, ended: false, event: shape(updated) });
+    }
+    return Response.json({ error: '未知的结束方式' }, { status: 400 });
   }
 
   return Response.json({ error: '未知操作' }, { status: 400 });

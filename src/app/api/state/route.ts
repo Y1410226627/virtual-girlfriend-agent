@@ -14,7 +14,7 @@ import { ATTACHMENT_STYLES, attachmentStyleOf } from '@/lib/types';
 import { round1, daysSince, hoursSince } from '@/lib/utils';
 import { ensureScheduler } from '@/lib/scheduler';
 import { STICKERS } from '@/lib/stickers';
-import { ensureLife, getActivity, getHealth, getLocation, getPsychology } from '@/lib/life';
+import { ensureLife, getActivity, getHealth, getLocation, getPsychology, getActiveEvent } from '@/lib/life';
 import { getIntimacy, getLevel, inAftercare } from '@/lib/intimacy';
 
 export const runtime = 'nodejs';
@@ -80,6 +80,7 @@ export async function GET() {
         const p = getPsychology();
         const l = getLocation();
         const a = getActivity();
+        const evt = getActiveEvent();
         return {
           activity: a.current_activity,
           activityType: a.activity_type,
@@ -89,6 +90,9 @@ export async function GET() {
           emotion: p.base_emotion,
           illness: h.illness,
           atHome: l.location_type === 'home',
+          ongoingEvent: evt
+            ? { id: evt.id, activity: evt.activity, eventType: evt.event_type, startedAt: evt.started_at, expectedEnd: evt.expected_end_at, mode: evt.duration_mode }
+            : null,
         };
       } catch {
         return null;

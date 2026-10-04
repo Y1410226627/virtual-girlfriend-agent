@@ -1,7 +1,7 @@
 // 世界模拟与生活系统：她有自己的作息、身体、心理、位置、活动与日常事件
 // 设计要点：连续性优先（一切由"流逝了多少时间"推导，不随机跳变）、独立生活、逐步揭露、状态影响对话
 import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, boolSetting, numSetting } from './db';
-import { clamp, nowIso, localHour, localDateStr, round1, safeJson, hoursSince } from './utils';
+import { clamp, nowIso, localHour, localDateStr, localTimeStr, round1, safeJson, hoursSince } from './utils';
 import { getRelationshipState, getPersona } from './relationship';
 import { attachmentStyle, getAttachmentState } from './attachment';
 import { personalityMap } from './personality';
@@ -159,8 +159,7 @@ const EVENT_POOL: Array<{ type: string; content: string; impact: Record<string, 
   { type: 'small', content: '路过一家新开的甜品店，记下来了想带他一起去', impact: { missing_user: 6, mood: 4 } },
 ];
 
-function maybeGenerateEvent(d: Date, indep: number): void {
-  const block = blockAt(d);
+function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
   const todayCount = dbAll<any>(
     "SELECT id FROM agent_daily_events WHERE user_id = ? AND substr(created_at,1,10) = ?",
     DEFAULT_USER_ID,
@@ -250,18 +249,33 @@ export function advanceLife(): { steps: number; changes: string[] } {
   const att = attachmentStyle();
   const rel = getRelationshipState();
   let cycleDate = localDateStr(new Date(lastAt));
+  // 可控事件进行中：作息表不覆盖她正在做的事（她说了"去睡了"，就一直睡到事件结束）
+  const activeEvent = getActiveEvent();
+  const activeEventStart = activeEvent ? new Date(activeEvent.started_at).getTime() : 0;
+  const activeEventActType = activeEvent ? activityTypeOfEvent(activeEvent.event_type) : '';
 
   for (let i = steps; i >= 1; i--) {
     const d = new Date(now - i * stepH * 3600000);
     const hour = d.getHours() + d.getMinutes() / 60;
-    const block = blockAt(d);
+    let block = blockAt(d);
     const health = getHealth();
     const psy = getPsychology();
     const loc = getLocation();
     const act = getActivity();
+    const eventStep = !!(activeEvent && isFinite(activeEventStart) && d.getTime() >= activeEventStart);
+    if (eventStep) {
+      block = {
+        from: 0,
+        to: 24,
+        location: loc.current_location,
+        locationType: loc.location_type,
+        activity: activeEvent!.activity,
+        activityType: activeEventActType,
+      };
+    }
 
-    // 1) 位置 / 活动跟随作息
-    if (block.location !== loc.current_location || block.activity !== act.current_activity) {
+    // 1) 位置 / 活动跟随作息（可控事件进行中不覆盖，事件行才是这段时间的真相）
+    if (!eventStep && (block.location !== loc.current_location || block.activity !== act.current_activity)) {
       const endAt = new Date(now - (i - 1) * stepH * 3600000);
       dbRun(
         'UPDATE agent_location SET current_location = ?, location_type = ?, arrived_at = ?, expected_leave_at = ?, updated_at = ? WHERE user_id = ?',
@@ -363,7 +377,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
     );
 
     // 5) 随机日常事件
-    maybeGenerateEvent(d, indep);
+    maybeGenerateEvent(d, indep, block);
   }
 
   return { steps, changes };
@@ -401,6 +415,215 @@ export function applyLifeDeltas(input: { health?: Record<string, any>; psycholog
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* 可控事件：她开始做一件事，用户可以控制它什么时候结束、到期她会主动来说 */
+/* ------------------------------------------------------------------ */
+export interface OngoingEventRow {
+  id: number;
+  user_id: number;
+  activity: string;
+  event_type: string;
+  started_at: string;
+  expected_end_at: string | null;
+  duration_mode: string;
+  notified_at: string | null;
+  ended_at: string | null;
+  end_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 活动名 → 事件类型 */
+export function eventTypeOf(activity: string): string {
+  const a = String(activity || '');
+  if (/睡|午休|小憩|打盹|眯一会/.test(a)) return 'sleep';
+  if (/吃|饭|餐|外卖/.test(a)) return 'meal';
+  if (/洗澡|洗漱|冲澡|洗头/.test(a)) return 'shower';
+  if (/上课|考试|开会|自习|写作业|写论文|工作|加班|学习|复习/.test(a)) return 'focus';
+  if (/出门|逛街|超市|商场|买东西|散步|朋友|聚会|聚餐|电影院|约会|运动|跑步/.test(a)) return 'out';
+  if (/收拾|打扫|洗衣服|做饭|家务|整理|晾/.test(a)) return 'chore';
+  if (/回家|路上|地铁|公交|打车|通勤|去学校|出发/.test(a)) return 'commute';
+  if (/看剧|看电|看书|游戏|刷|听歌|躺|休息|发呆|放空/.test(a)) return 'leisure';
+  return 'other';
+}
+
+/** 事件类型 → 作息推进用的 activity_type（沿用原有词汇） */
+function activityTypeOfEvent(eventType: string): string {
+  switch (eventType) {
+    case 'sleep': return 'sleep';
+    case 'meal': return 'meal';
+    case 'shower': return 'shower';
+    case 'focus': return 'class';
+    case 'out': return 'out';
+    case 'chore': return 'chores';
+    case 'commute': return 'commute';
+    case 'leisure': return 'leisure';
+    default: return 'idle';
+  }
+}
+
+/** 事件结束后的自然过渡状态（等作息推进自然接上） */
+const POST_EVENT_ACTIVITY: Record<string, string> = {
+  sleep: '刚睡醒，还迷迷糊糊的',
+  meal: '刚吃完饭，很满足',
+  shower: '刚洗完澡，头发还潮着',
+  focus: '刚忙完，松了口气',
+  out: '刚回来，还在缓',
+  commute: '刚到，缓一口气',
+  chore: '刚干完活，歇一会儿',
+  leisure: '刚结束，还沉浸在里面的感觉',
+  other: '刚忙完，正在歇口气',
+};
+
+function isoAfter(from: Date, minutes: number): string {
+  return new Date(from.getTime() + minutes * 60000).toISOString();
+}
+
+function clockTarget(from: Date, hour: number, minute: number): Date {
+  const t = new Date(from);
+  t.setHours(hour, minute, 0, 0);
+  if (t.getTime() <= from.getTime() + 60000) t.setDate(t.getDate() + 1);
+  return t;
+}
+
+/** 解析"预计结束"的文字（30分钟 / 1小时 / 23:30 / 到7点 / 明早 …），识别不了返回 null */
+export function parseExpectedEnd(text: string, from: Date = new Date()): string | null {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  let m = t.match(/(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|钟头|h|hr)/i);
+  if (m) return isoAfter(from, clamp(Number(m[1]) * 60, 5, 720));
+  if (/一个?半(?:小时|钟头)/.test(t)) return isoAfter(from, 90);
+  if (/半(?:个)?(?:小时|钟头)/.test(t)) return isoAfter(from, 30);
+  m = t.match(/(\d+)\s*(?:分钟|分|min)/i);
+  if (m) return isoAfter(from, clamp(Number(m[1]), 5, 720));
+  if (/一会|马上|很快|几分钟|待会/.test(t)) return isoAfter(from, 15);
+  m = t.match(/(\d{1,2})\s*[:：]\s*(\d{2})/);
+  if (m) return clockTarget(from, Number(m[1]), Number(m[2])).toISOString();
+  m = t.match(/到\s*(\d{1,2})\s*[点時时]\s*(半|\d{1,2})?/);
+  if (m) return clockTarget(from, Number(m[1]), m[2] === '半' ? 30 : Number(m[2] || 0)).toISOString();
+  if (/明早|明天早上/.test(t)) {
+    const target = new Date(from);
+    target.setDate(target.getDate() + 1);
+    target.setHours(7, 30, 0, 0);
+    return target.toISOString();
+  }
+  return null;
+}
+
+/** 智能时长：最符合真人自然状态的时长（按事件类型 + 当前时间推导） */
+export function smartDurationMinutes(eventType: string, activity = '', from: Date = new Date()): number {
+  const hour = from.getHours() + from.getMinutes() / 60;
+  switch (eventType) {
+    case 'sleep': {
+      if (hour >= 21.5 || hour < 4) {
+        // 晚上的觉：睡到第二天早上（周末晚一点）
+        const target = new Date(from);
+        if (hour >= 21.5) target.setDate(target.getDate() + 1);
+        const wake = isWeekend(target) ? 9.5 : 7.5;
+        target.setHours(Math.floor(wake), Math.round((wake % 1) * 60), 0, 0);
+        return Math.round(clamp((target.getTime() - from.getTime()) / 60000, 180, 720));
+      }
+      if (hour >= 11.5 && hour <= 16.5) return 90; // 午睡
+      if (hour < 11.5) return 60;                  // 早上回笼觉
+      return 75;                                   // 傍晚打盹
+    }
+    case 'meal': return /早/.test(activity) ? 25 : 30;
+    case 'shower': return 35;
+    case 'focus': return /课|考试|开会/.test(activity) ? 90 : 60;
+    case 'out': return 120;
+    case 'commute': return 35;
+    case 'chore': return 40;
+    case 'leisure': return 60;
+    default: return 40;
+  }
+}
+
+export function getActiveEvent(): OngoingEventRow | null {
+  const row = dbGet<OngoingEventRow>(
+    'SELECT * FROM ongoing_events WHERE user_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1',
+    DEFAULT_USER_ID
+  );
+  return row || null;
+}
+
+/** 结束当前事件；活动切到"刚结束"的自然状态（之后作息推进会自然接上） */
+export function endOngoingEvent(reason: string, opts: { keepActivity?: boolean } = {}): OngoingEventRow | null {
+  const evt = getActiveEvent();
+  if (!evt) return null;
+  const now = nowIso();
+  dbRun('UPDATE ongoing_events SET ended_at = ?, end_reason = ?, updated_at = ? WHERE id = ?', now, reason, now, evt.id);
+  if (!opts.keepActivity) {
+    const cur = getActivity();
+    const post = POST_EVENT_ACTIVITY[evt.event_type] || POST_EVENT_ACTIVITY.other;
+    dbRun(
+      'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = NULL, updated_at = ? WHERE user_id = ?',
+      post, evt.event_type === 'sleep' ? 'morning' : 'idle', now, now, DEFAULT_USER_ID
+    );
+    logLife('activity', cur.current_activity, post, `事件结束（${reason}）：${evt.activity}`);
+  }
+  return evt;
+}
+
+/** 注册一个可控事件（先静默结束上一个未结束的事件）；返回事件行 */
+export function registerOngoingEvent(activity: string, opts: { expectedEndText?: string } = {}): OngoingEventRow | null {
+  if (!boolSetting('life_enabled', true)) return null;
+  const act = String(activity || '').trim();
+  if (!act || act.length > 24 || /^刚/.test(act)) return null; // "刚睡醒/刚下课"这类已经结束的状态不是事件
+  const now = new Date();
+  const eventType = eventTypeOf(act);
+  const active = getActiveEvent();
+  if (active) {
+    const fresh = !!active.expected_end_at && new Date(active.expected_end_at).getTime() > now.getTime() + 60000;
+    if (active.activity === act && fresh) return active; // 同一个事件正在进行，不重复注册
+    endOngoingEvent('superseded', { keepActivity: true });
+  }
+  const expected = parseExpectedEnd(opts.expectedEndText || '', now) || isoAfter(now, smartDurationMinutes(eventType, act, now));
+  const iso = now.toISOString();
+  const { lastInsertRowid } = dbRun(
+    'INSERT INTO ongoing_events (user_id, activity, event_type, started_at, expected_end_at, duration_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    DEFAULT_USER_ID, act, eventType, iso, expected, 'smart', iso, iso
+  );
+  logLife('event', '', act, `开始事件：${eventType}，预计 ${localTimeStr(new Date(expected))} 结束`);
+  return dbGet<OngoingEventRow>('SELECT * FROM ongoing_events WHERE id = ?', lastInsertRowid) || null;
+}
+
+/** 用户设定事件结束：smart=按这类事情最自然的时长重算；manual=手动分钟数 */
+export function setEventExpectedEnd(mode: 'smart' | 'manual', minutes = 0): OngoingEventRow | null {
+  const evt = getActiveEvent();
+  if (!evt) return null;
+  const now = new Date();
+  let endIso: string;
+  if (mode === 'manual') {
+    endIso = isoAfter(now, clamp(Math.round(minutes) || 30, 5, 720));
+  } else {
+    const startMs = new Date(evt.started_at).getTime();
+    let endMs = (isFinite(startMs) ? startMs : now.getTime()) + smartDurationMinutes(evt.event_type, evt.activity, new Date(isFinite(startMs) ? startMs : now.getTime())) * 60000;
+    if (endMs <= now.getTime() + 5 * 60000) {
+      endMs = now.getTime() + smartDurationMinutes(evt.event_type, evt.activity, now) * 60000;
+    }
+    endIso = new Date(endMs).toISOString();
+  }
+  dbRun(
+    'UPDATE ongoing_events SET expected_end_at = ?, duration_mode = ?, notified_at = NULL, updated_at = ? WHERE id = ?',
+    endIso, mode, nowIso(), evt.id
+  );
+  dbRun('UPDATE agent_activity SET expected_end_at = ?, updated_at = ? WHERE user_id = ?', endIso, nowIso(), DEFAULT_USER_ID);
+  return dbGet<OngoingEventRow>('SELECT * FROM ongoing_events WHERE id = ?', evt.id) || null;
+}
+
+/** 结算已到期的事件；返回"应当主动来消息"的事件（太久以前到期的直接静默结束） */
+export function settleExpiredEvents(): OngoingEventRow[] {
+  const evt = getActiveEvent();
+  if (!evt || !evt.expected_end_at || evt.notified_at) return [];
+  const endMs = new Date(evt.expected_end_at).getTime();
+  if (!isFinite(endMs) || Date.now() < endMs) return [];
+  const lateMinutes = (Date.now() - endMs) / 60000;
+  const ended = endOngoingEvent('expired');
+  if (!ended) return [];
+  const window = evt.event_type === 'sleep' ? 180 : 90;
+  return lateMinutes <= window ? [ended] : [];
+}
+
 export function applyLocationChange(newLocation: string, reason: string): void {
   const loc = String(newLocation || '').trim();
   if (!loc || loc.length > 20) return;
@@ -412,26 +635,35 @@ export function applyLocationChange(newLocation: string, reason: string): void {
     loc, type, nowIso(), nowIso(), DEFAULT_USER_ID
   );
   const act = getActivity();
+  const newAct = /家|宿舍/.test(loc) ? '刚到家，缓一缓' : `在${loc}`;
   dbRun(
     'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = NULL, updated_at = ? WHERE user_id = ?',
-    /家|宿舍/.test(loc) ? '刚到家，缓一缓' : `在${loc}`, /家|宿舍/.test(loc) ? 'home' : 'out', nowIso(), nowIso(), DEFAULT_USER_ID
+    newAct, /家|宿舍/.test(loc) ? 'home' : 'out', nowIso(), nowIso(), DEFAULT_USER_ID
   );
   logLife('location', cur.current_location, loc, reason || '对话里提到');
   if (act.current_activity) logLife('activity', act.current_activity, '跟随位置变化', reason || '');
+  // 去某处待着也算一件事，可以控制它什么时候结束
+  const evt = registerOngoingEvent(newAct, {});
+  if (evt?.expected_end_at) {
+    dbRun('UPDATE agent_activity SET expected_end_at = ?, updated_at = ? WHERE user_id = ?', evt.expected_end_at, nowIso(), DEFAULT_USER_ID);
+  }
 }
 
 export function applyActivityChange(newActivity: string, expectedEnd: string): void {
   const act = String(newActivity || '').trim();
   if (!act || act.length > 24) return;
   const cur = getActivity();
-  if (cur.current_activity === act) return;
-  const type = /睡/.test(act) ? 'sleep' : /上课|自习|写作业|开会|工作/.test(act) ? 'class' : /吃/.test(act) ? 'meal' : /洗澡/.test(act) ? 'shower' : /看剧|看电|看书|游戏|刷/.test(act) ? 'leisure' : 'idle';
-  const end = expectedEnd && expectedEnd.length <= 20 ? expectedEnd : null;
+  const same = cur.current_activity === act;
+  const evt = registerOngoingEvent(act, { expectedEndText: expectedEnd });
+  let expectedIso: string | null = null;
+  if (evt) expectedIso = evt.expected_end_at;
+  else if (!/^刚/.test(act)) expectedIso = parseExpectedEnd(expectedEnd) || isoAfter(new Date(), smartDurationMinutes(eventTypeOf(act), act));
+  if (same && cur.expected_end_at === expectedIso) return;
   dbRun(
     'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = ?, updated_at = ? WHERE user_id = ?',
-    act, type, nowIso(), end, nowIso(), DEFAULT_USER_ID
+    act, activityTypeOfEvent(eventTypeOf(act)), same ? (cur.started_at || nowIso()) : nowIso(), expectedIso, nowIso(), DEFAULT_USER_ID
   );
-  logLife('activity', cur.current_activity, act, '对话里提到');
+  if (!same) logLife('activity', cur.current_activity, act, '对话里提到');
 }
 
 export function addDailyEvent(type: string, content: string, impact: string): void {
@@ -495,7 +727,13 @@ export function lifePromptBlock(): string {
   const loc = getLocation();
   const act = getActivity();
   const w = getSharedWorld();
+  const evt = getActiveEvent();
   const stage = getRelationshipState().stage;
+  const endHm = (iso: string | null | undefined): string => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isFinite(d.getTime()) ? localTimeStr(d) : '';
+  };
 
   const illnessText =
     h.illness === 'none'
@@ -511,7 +749,7 @@ export function lifePromptBlock(): string {
   const lines = [
     `【你的当前状态（这是你真实的生活，不是设定）】`,
     `- 时间地点：${localDateStr()} ${new Date().toTimeString().slice(0, 5)}，你在「${loc.current_location}」`,
-    `- 正在做：${act.current_activity}${act.expected_end_at ? `（大约到 ${new Date(act.expected_end_at).toTimeString().slice(0, 5)} 结束）` : ''}`,
+    `- 正在做：${act.current_activity}${endHm(act.expected_end_at) ? `（预计 ${endHm(act.expected_end_at)} 左右结束）` : ''}`,
     `- 身体：精力 ${Math.round(h.energy)}/100，睡眠 ${Math.round(h.sleep_quality)}/100，饥饿 ${Math.round(h.hunger)}/100，${illnessText}${cycleText ? '，' + cycleText : ''}`,
     `- 心理：情绪「${p.base_emotion}」，压力 ${Math.round(p.stress)}/100，孤独 ${Math.round(p.loneliness)}/100，想他 ${Math.round(p.missing_user)}/100，安全感 ${Math.round(p.security)}/100，心理能量 ${Math.round(p.mental_energy)}/100`,
   ];
@@ -534,7 +772,18 @@ export function lifePromptBlock(): string {
   ];
   if (stage <= 1) rules.push(`- 你们还不算熟：少说自己的私事和身体状态，点到为止。`);
 
-  return lines.join('\n') + '\n' + rules.join('\n');
+  const evtLines: string[] = [];
+  if (evt) {
+    const startHm = endHm(evt.started_at);
+    const end = endHm(evt.expected_end_at);
+    evtLines.push(`【正在进行的事件（重要）】`);
+    evtLines.push(`- 你现在正在「${evt.activity}」当中（${startHm} 开始${end ? `，预计 ${end} 结束` : ''}）。这件事还没有结束。`);
+    evtLines.push(`- 这期间他来找你说话时：以你正在做的事情为底色回应——睡觉就迷迷糊糊、句子很短、像随时又要睡过去；洗澡/吃饭就"抽空瞄一眼手机"，别聊太久；上课/忙就压低声音、说晚点找他。`);
+    evtLines.push(`- 不要自己宣布这件事结束了（"睡醒了""洗完澡了""吃完了"），除非他已经让你停下、或者时间明显已经过去很久。`);
+    evtLines.push(`- 不需要反复强调你在做这件事，一两句带过就好，保持自然。`);
+  }
+
+  return lines.join('\n') + '\n' + rules.join('\n') + (evtLines.length ? '\n' + evtLines.join('\n') : '');
 }
 
 /** 个人信息：按关系阶段逐步揭露 */

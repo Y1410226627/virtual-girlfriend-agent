@@ -31,6 +31,11 @@ export default function ChatPage() {
   const [delCascade, setDelCascade] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
+  // 当前事件控制（她开始睡觉/吃饭/洗澡这类事情时，由你决定它什么时候结束）
+  const [evBusy, setEvBusy] = useState(false);
+  const [evCustomOpen, setEvCustomOpen] = useState(false);
+  const [evMin, setEvMin] = useState('20');
+  const [, setEvTick] = useState(0);
 
   const listRef = useRef<HTMLDivElement>(null);
   const lastIdRef = useRef(0);
@@ -88,14 +93,24 @@ export default function ChatPage() {
           });
           lastIdRef.current = j.messages[j.messages.length - 1].id;
           setTimeout(() => scrollToBottom(true), 60);
-          loadState();
         }
+        loadState();
       } catch {
         /* ignore */
       }
     }, 15000);
     return () => clearInterval(t);
   }, [loadState, scrollToBottom]);
+
+  /* 事件倒计时：每 30 秒刷新一次显示；事件结束（或换了一个）时收起自定义输入 */
+  useEffect(() => {
+    if (!state?.life?.ongoingEvent) {
+      setEvCustomOpen(false);
+      return;
+    }
+    const t = setInterval(() => setEvTick((x) => x + 1), 30000);
+    return () => clearInterval(t);
+  }, [state?.life?.ongoingEvent?.id]);
 
   const saveOnboard = async () => {
     await fetch('/api/relationship', {
@@ -125,6 +140,43 @@ export default function ChatPage() {
     if (j.ok) {
       setToast(mode === 'auto' ? '已恢复智能识别场景' : `已切换为${mode === 'offline' ? '线下相处' : '线上聊天'}`);
       loadState();
+    }
+  };
+
+  /* 当前事件：立即结束 / 智能时长 / 自定义时长 */
+  const remainText = (iso: string) => {
+    const ms = new Date(iso).getTime() - Date.now();
+    if (!isFinite(ms)) return '';
+    if (ms <= 0) return '即将结束';
+    const m = Math.max(1, Math.round(ms / 60000));
+    if (m < 60) return `还有约 ${m} 分钟`;
+    return `还有约 ${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分` : ''}`;
+  };
+
+  const eventAction = async (body: Record<string, any>) => {
+    setEvBusy(true);
+    try {
+      const r = await fetch('/api/life', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!j?.ok) {
+        setToast(j?.error || '操作失败');
+        return;
+      }
+      if (j.ended) {
+        setToast('这件事结束了，看看她说了什么～');
+        await loadMessages();
+      } else {
+        setToast('结束时间已更新，到点她会来告诉你');
+      }
+      await loadState();
+    } catch (e: any) {
+      setToast(`操作失败：${e?.message || e}`);
+    } finally {
+      setEvBusy(false);
     }
   };
 
@@ -389,6 +441,77 @@ export default function ChatPage() {
           ) : null}
           {state?.intimacy?.inAftercare ? <span className="text-rose-500">刚亲密过 · 事后</span> : null}
         </div>
+        {state?.life?.ongoingEvent ? (
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-peach-200 bg-peach-50/70 px-3 py-2 text-[11px]">
+            <span className="text-ink-900">
+              她正在「{state.life.ongoingEvent.activity}」
+              <span className="ml-2 text-ink-300">
+                {state.life.ongoingEvent.expectedEnd
+                  ? `预计 ${fmtTime(state.life.ongoingEvent.expectedEnd)} 结束 · ${remainText(state.life.ongoingEvent.expectedEnd)}`
+                  : '结束时间由你定'}
+              </span>
+            </span>
+            <span className="flex-1" />
+            <button
+              className="btn-ghost !px-2 !py-1 text-[11px]"
+              disabled={evBusy}
+              onClick={() => eventAction({ action: 'end_event', mode: 'immediate' })}
+              title="她现在就结束这件事，并马上回你一条消息"
+            >
+              立即结束
+            </button>
+            <button
+              className="btn-ghost !px-2 !py-1 text-[11px]"
+              disabled={evBusy}
+              onClick={() => eventAction({ action: 'end_event', mode: 'smart' })}
+              title="按这类事情最自然的时长重新估算结束时间"
+            >
+              智能时长
+            </button>
+            <button
+              className={`btn-ghost !px-2 !py-1 text-[11px] ${evCustomOpen ? '!bg-rose-100 !text-rose-700' : ''}`}
+              disabled={evBusy}
+              onClick={() => setEvCustomOpen((v) => !v)}
+              title="自己设定还有多少分钟后结束"
+            >
+              自定义时长
+            </button>
+            {evBusy ? <span className="animate-pulse-soft text-rose-500">处理中…</span> : null}
+          </div>
+        ) : null}
+        {state?.life?.ongoingEvent && evCustomOpen ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
+            <span>再过</span>
+            <input
+              className="input !w-20 !px-2 !py-1 text-xs"
+              type="number"
+              min={5}
+              max={720}
+              value={evMin}
+              onChange={(e) => setEvMin(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  eventAction({ action: 'end_event', mode: 'manual', minutes: Number(evMin) });
+                  setEvCustomOpen(false);
+                }
+              }}
+            />
+            <span>分钟后结束（5 - 720 分钟），到点她会主动来告诉你</span>
+            <button
+              className="btn !px-2.5 !py-1 text-[11px]"
+              disabled={evBusy}
+              onClick={() => {
+                eventAction({ action: 'end_event', mode: 'manual', minutes: Number(evMin) });
+                setEvCustomOpen(false);
+              }}
+            >
+              确定
+            </button>
+            <button className="btn-ghost !px-2 !py-1 text-[11px]" onClick={() => setEvCustomOpen(false)}>
+              取消
+            </button>
+          </div>
+        ) : null}
         {recalling ? (
           <div className="mt-2 text-[11px] text-rose-500 animate-pulse-soft">她在回味刚才的对话…（更新记忆、性格信号、关系数值）</div>
         ) : null}

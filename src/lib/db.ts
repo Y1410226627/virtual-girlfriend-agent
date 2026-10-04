@@ -573,6 +573,28 @@ ALTER TABLE intimacy_content_level DROP COLUMN age_confirmed;
 DELETE FROM settings WHERE key IN ('safe_word', 'age_confirmed');
 `,
   },
+  {
+    version: 9,
+    name: 'ongoing_events',
+    sql: `
+-- 可控事件：她开始做某件事（睡觉/吃饭/洗澡…），用户可以控制它什么时候结束；到期她会主动来消息
+CREATE TABLE IF NOT EXISTS ongoing_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  activity TEXT NOT NULL,
+  event_type TEXT NOT NULL DEFAULT 'other',
+  started_at TEXT NOT NULL,
+  expected_end_at TEXT,
+  duration_mode TEXT NOT NULL DEFAULT 'smart',
+  notified_at TEXT,
+  ended_at TEXT,
+  end_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ongoing_events_user ON ongoing_events(user_id, ended_at);
+`,
+  },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -759,7 +781,8 @@ export function getSetting(key: string): string | null {
 /** 自定义模式：数值直控（关闭一切自动改写关系/性格/依恋/亲密数值的机制） */
 export function customModeOn(): boolean {
   try {
-    return getSetting('custom_mode') === '1';
+    const v = getSetting('custom_mode');
+    return v === '1' || v === 'true';
   } catch {
     return false;
   }

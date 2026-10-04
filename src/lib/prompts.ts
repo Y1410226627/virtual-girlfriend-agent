@@ -362,6 +362,7 @@ ${payload.recentTranscript || '（无）'}
    - 她熬夜、被课业压、吵架 → stress 上升、mental_energy 下降。
    - 没有明显变化就全部填 0。
 12. location_change / activity_change：**只有对话里明确发生了才填**（她说"我出门了""我在洗澡""我去上课了"），否则留空字符串。
+    expected_end 用「23:30」或「2小时」「30分钟」这样的格式；不确定或没有明确线索就留空（系统会按这类事情最自然的时长自动处理）。
 13. daily_event：这一轮里值得记进她生活日记的一件小事（她做了什么、发生了什么），没有就留空。
 14. shared_world_update：本轮产生的约定（new_plan）、固定仪式（new_ritual）、共同物品/共同回忆（new_memory），没有就留空。
 15. profile_reveal：本轮她**自然说出了**哪些自己的私人信息，字段名从这些里选：hometown, education, job, family, hobbies, habits, catchphrases, dreams, fears, secrets。什么都没说就空数组。注意别硬揭：关系阶段不够深时她本来就不该说。
@@ -436,10 +437,14 @@ export function buildDailySummaryMessages(transcript: string, date: string): Cha
 /* 主动消息 Prompt                                                     */
 /* ================================================================== */
 export function buildProactiveMessages(payload: {
-  kind: 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss';
+  kind: 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end';
   hoursSinceLast: number;
   memoryBlock: string;
   recentActions?: string[];
+  /** kind='event_end' 时：刚结束的那件事 */
+  eventActivity?: string;
+  /** kind='event_end' 时：是否被打断/提前结束 */
+  eventInterrupted?: boolean;
 }): ChatMessage[] {
   const rel = getRelationshipState();
   const stage = stageOf(rel.stage);
@@ -456,6 +461,11 @@ export function buildProactiveMessages(payload: {
 你主动开口和他确认你们现在的关系（例如"我们现在算什么呀""我想和你在一起"）。真诚、有分寸、带一点紧张或期待，不要像完成任务。`,
     ritual: `这是你们的固定仪式时间（早安 / 晚安）。像真的在过日子那样，自然地跟他说一句，可以带一点今天/今天的安排或今天的感受，不要像打卡。`,
     miss: `你已经很久没跟他说上话了，很想他。你想主动找他，说一句真心话（想他/想听他的声音/想知道他在干嘛），但不要抱怨、不要质问、不要显得可怜。`,
+    event_end: `你刚刚结束了「${payload.eventActivity || '手头的事'}」。${
+      payload.eventInterrupted
+        ? '他等不及，让你先停下——这件事被你提前收尾了（例如被从睡梦里叫醒、匆匆结束）。'
+        : '现在这件事自然结束了。'
+    }你要主动给他发一条消息，像真人日常里顺手发的那样，用你自己的口吻告诉他这件事结束了（睡醒了/洗完澡了/吃完饭了/下课了/忙完了），可以带上刚结束时的状态（困、头发还湿着、松了口气、有点饿）。不要像汇报工作，不要解释前因后果，1-2 句就好。`,
   };
 
   return [

@@ -9,11 +9,11 @@ import { saveAssistantMessage, recentActionPhrases, recentReplies } from './engi
 import { personalityMap } from './personality';
 import { attachmentStyle } from './attachment';
 import { humanizeReply } from './humanize';
-import { ensureLife, advanceLife, getActivity, getPsychology, getSharedWorld } from './life';
+import { ensureLife, advanceLife, getActivity, getPsychology, getSharedWorld, getActiveEvent, settleExpiredEvents, type OngoingEventRow } from './life';
 import { advanceIntimacy } from './intimacy';
 import { maybeGenerateDailySummary } from './analysis';
 
-export type ProactiveKind = 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss';
+export type ProactiveKind = 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end';
 
 /** 早安 / 晚安仪式：早 6-10 点、晚 21-23 点各最多一次 */
 function ritualSlotNow(): 'morning' | 'night' | null {
@@ -137,6 +137,28 @@ export async function tickProactive(force = false): Promise<TickResult> {
   ensureLife();
   advanceLife();
   advanceIntimacy();
+
+  // 事件到期：她自己来告诉你"睡醒了 / 洗完澡了 / 吃完了"。
+  // 这类到期提醒不算主动打扰：不占频率额度、不受免打扰与夜间时段限制。
+  const expiredEvents = settleExpiredEvents();
+  if (expiredEvents.length) {
+    const lastAny = dbGet<any>(
+      'SELECT created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+      DEFAULT_USER_ID
+    );
+    const minsSinceMsg = lastAny ? (Date.now() - new Date(lastAny.created_at).getTime()) / 60000 : 99999;
+    if (minsSinceMsg > 3) {
+      const sent = await notifyEventEnd(expiredEvents[0], false);
+      if (sent) {
+        return { sent: true, reason: `「${expiredEvents[0].activity}」结束了，她来告诉你`, kind: 'event_end', message: sent };
+      }
+    }
+  }
+
+  // 她正处在某件事里（睡觉/洗澡/上课/出门…）：期间她不会另外主动发消息
+  const runningEvent = getActiveEvent();
+  if (!force && runningEvent) return skip(`她正在${runningEvent.activity}，先不打扰`);
+
   const act = getActivity();
   const psy = getPsychology();
   if (!force && act.activity_type === 'sleep' && rel.stage < 3) {
@@ -225,6 +247,55 @@ export async function tickProactive(force = false): Promise<TickResult> {
   setCounter('last_proactive_ms', Date.now());
 
   return { sent: true, reason: '已发出主动消息', kind, message: content };
+}
+
+/** 事件结束后她主动来一条消息（不占主动消息额度、不受免打扰限制） */
+export async function notifyEventEnd(evt: OngoingEventRow, interrupted = false): Promise<string | null> {
+  const rel = getRelationshipState();
+  let memoryBlock = '';
+  try {
+    const memories = await retrieveMemories(`${evt.activity} 结束 日常`, 4);
+    memoryBlock = formatMemoryBlock(memories);
+  } catch {
+    /* 没有记忆也能发 */
+  }
+  const messages = buildProactiveMessages({
+    kind: 'event_end',
+    hoursSinceLast: 0,
+    memoryBlock,
+    recentActions: recentActionPhrases(6),
+    eventActivity: evt.activity,
+    eventInterrupted: interrupted,
+  });
+  let content = '';
+  try {
+    content = await chat(messages, { maxTokens: 240, temperature: 0.95, thinking: false });
+  } catch (e: any) {
+    console.warn('[event_end] 生成失败:', e?.message || e);
+    return null;
+  }
+  const raw = String(content || '').trim();
+  if (!raw) return null;
+  const h = humanizeReply(raw, {
+    userName: userName(),
+    agentName: agentName(),
+    stage: rel.stage,
+    personality: personalityMap(),
+    attachmentStyle: attachmentStyle(),
+    mood: rel.mood,
+    recentActions: recentActionPhrases(8),
+    recentReplies: recentReplies(5),
+    userMessage: '',
+  });
+  const text = h.text;
+  if (!text || text.length < 2) return null;
+  const messageId = saveAssistantMessage(text, { isProactive: true });
+  dbRun(
+    'INSERT INTO proactive_messages (user_id, kind, content, message_id, created_at) VALUES (?, ?, ?, ?, ?)',
+    DEFAULT_USER_ID, 'event_end', text, messageId, nowIso()
+  );
+  dbRun('UPDATE ongoing_events SET notified_at = ?, updated_at = ? WHERE id = ?', nowIso(), nowIso(), evt.id);
+  return text;
 }
 
 /** 供设置页展示当前主动消息状态 */

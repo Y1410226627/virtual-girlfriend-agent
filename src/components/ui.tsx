@@ -124,6 +124,7 @@ export function Toast({ text, onClose }: { text: string; onClose: () => void }) 
 export function fmtTime(iso?: string | null) {
   if (!iso) return '';
   const d = new Date(iso);
+  if (!isFinite(d.getTime())) return ''; // 历史数据里可能有非日期文本，避免显示 NaN
   const now = new Date();
   const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   if (d.toDateString() === now.toDateString()) return hm;
