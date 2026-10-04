@@ -588,8 +588,11 @@ export function registerOngoingEvent(activity: string, opts: { expectedEndText?:
   const eventType = eventTypeOf(act);
   const active = getActiveEvent();
   if (active) {
+    // 同一个事件正在进行（"睡觉" 与 "睡觉/休息" 这种包含关系也算同一个）→ 不重复注册
+    const sameAct =
+      active.activity === act || active.activity.includes(act) || act.includes(active.activity);
     const fresh = !!active.expected_end_at && new Date(active.expected_end_at).getTime() > now.getTime() + 60000;
-    if (active.activity === act && fresh) return active; // 同一个事件正在进行，不重复注册
+    if (sameAct && fresh) return active;
     endOngoingEvent('superseded', { keepActivity: true });
   }
   const expected = parseExpectedEnd(opts.expectedEndText || '', now) || isoAfter(now, smartDurationMinutes(eventType, act, now));
@@ -646,6 +649,55 @@ export function settleExpiredEvent(evt: OngoingEventRow, notified: boolean): voi
   if (notified) {
     dbRun('UPDATE ongoing_events SET notified_at = ?, updated_at = ? WHERE id = ?', nowIso(), nowIso(), evt.id);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* 从对话里识别"她开始做某件事"（规则兜底，不依赖后台分析模型）           */
+/* ------------------------------------------------------------------ */
+const EVENT_INTENT_RULES: Array<{ activity: string; re: RegExp }> = [
+  { activity: '睡觉', re: /(我去睡|我先睡|那我睡|我睡了|我睡啦|我睡喽|我要睡|我准备睡|我准备睡了|我也睡|我这就睡|我躺下睡|我上床睡|我睡着|睡着了|沉沉睡去|安心入睡|渐渐入睡|进入梦乡|睡过去了|我去躺了|我先躺了|我躺下了|我上床了|我去床上|我回床上|我钻被窝)/ },
+  { activity: '眯一会儿', re: /(我去午休|我去眯|我眯一会|我小睡|我躺一会|我去躺一会|我休息一下|我歇一会)/ },
+  { activity: '洗澡', re: /(我去洗澡|我去洗个澡|我先洗|我去冲个澡|我去洗洗|我去洗漱|我要去洗澡)/ },
+  { activity: '吃饭', re: /(我去吃饭|我先去吃饭|我去吃个饭|我去吃点东西|我去吃午饭|我去吃晚饭|我去吃早饭|我吃饭去了|我去食堂吃|我去弄点吃的)/ },
+  { activity: '出门', re: /(我出门|我出门了|我先出门|我出去了|我去超市|我去买东西|我去逛街|我出发了|我下楼|我去拿个快递|我去取快递)/ },
+  { activity: '上课', re: /(我去上课|我先去上课|我去教室|我得去上课|我要去上课|我上课去)/ },
+  { activity: '自习', re: /(我去自习|我去图书馆|我去写作业|我去复习|我要去自习)/ },
+  { activity: '工作', re: /(我去上班|我先去上班|我去开会|我去加班)/ },
+];
+
+/**
+ * 从这一轮对话里识别"她开始做某件事"，并登记成可控事件。
+ * 只认她自己第一人称的动作（"你先睡"这类说的是他，不登记）。
+ * 返回是否登记成功。
+ */
+export function detectEventFromConversation(userText: string, assistantText: string): boolean {
+  const her = String(assistantText || '');
+  const him = String(userText || '');
+  if (!her) return false;
+  for (const rule of EVENT_INTENT_RULES) {
+    const m = rule.re.exec(her);
+    if (!m || m.index === undefined) continue;
+    // 匹配词前面 4 个字里出现"你"→ 明显在说他（你先睡/你也睡），跳过
+    const before = her.slice(Math.max(0, m.index - 4), m.index);
+    if (/你/.test(before)) continue;
+    applyActivityChange(rule.activity, '');
+    return true;
+  }
+  // 兜底：他让她去做某件事，她答应了（"你先去睡"这类说的是他不算）
+  const compliant = /(嗯|好|行|知道|马上|这就|那我去|听你|乖)/.test(her);
+  if (compliant) {
+    const askedList: Array<{ ask: RegExp; act: string; echo: RegExp; notAbout: RegExp }> = [
+      { ask: /(去睡|快睡|睡觉吧|睡吧|早点睡|该睡了|晚安)/, act: '睡觉', echo: /(睡|晚安|困|躺|床|被窝)/, notAbout: /你[^。！？]{0,4}(睡|晚安|躺|床)/ },
+      { ask: /(去洗澡|洗个澡|冲个澡|去洗洗)/, act: '洗澡', echo: /洗/, notAbout: /你[^。！？]{0,4}洗/ },
+      { ask: /(去吃饭|吃饭去|去吃点东西|去吃点)/, act: '吃饭', echo: /吃/, notAbout: /你[^。！？]{0,4}吃/ },
+    ];
+    for (const a of askedList) {
+      if (!a.ask.test(him) || !a.echo.test(her) || a.notAbout.test(her)) continue;
+      applyActivityChange(a.act, '');
+      return true;
+    }
+  }
+  return false;
 }
 
 export function applyLocationChange(newLocation: string, reason: string): void {

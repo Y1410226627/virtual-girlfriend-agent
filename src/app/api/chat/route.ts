@@ -2,6 +2,7 @@
 import { prepareTurn, saveAssistantMessage, deleteMessageById, chatStream } from '@/lib/engine';
 import { chat } from '@/lib/llm';
 import { humanizeReply } from '@/lib/humanize';
+import { detectEventFromConversation } from '@/lib/life';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -69,6 +70,13 @@ export async function POST(req: Request) {
         const h = humanizeReply(full, prepared.humanize);
         const assistantMessageId = saveAssistantMessage(h.text);
         assistantSaved = true;
+        // 规则兜底：她话里明确说了"我睡了/我去洗澡/我去吃饭…" → 立刻登记可控事件
+        // （不再只等后台分析模型汇报"活动变化"，那种方式会漏）
+        try {
+          detectEventFromConversation(content, h.text);
+        } catch {
+          /* 登记失败不影响聊天 */
+        }
         send({
           type: 'final',
           text: h.text,
