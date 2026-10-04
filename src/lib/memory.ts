@@ -1,9 +1,19 @@
 // 记忆系统：向量检索 + 关键词/重要度/新鲜度/阶段相关度评分 + 去重 + 遗忘 + 摘要
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, numSetting } from './db';
-import { cosine, nowIso, hoursSince, daysSince, clamp, round1, safeJson } from './utils';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, numSetting, llmConfig } from './db';
+import { cosine, nowIso, hoursSince, daysSince, clamp, round1, safeJson, truncate } from './utils';
 import { embed, embedOne } from './llm';
 import type { MemoryRow, MemoryUpdate } from './types';
 import { getRelationshipState } from './relationship';
+
+/** 当前向量模型标识：换模型/换接口后，旧向量会被识别出来并重新计算 */
+function embedModelTag(): string {
+  try {
+    const cfg = llmConfig();
+    return cfg.embeddingModel ? `api:${cfg.embeddingModel}@${cfg.embeddingBaseUrl || ''}` : 'local';
+  } catch {
+    return 'local';
+  }
+}
 
 const TYPE_LABELS: Record<string, string> = {
   semantic: '事实',
@@ -50,7 +60,7 @@ export async function addMemory(
   }
 
   if (best && best.sim > 0.92) {
-    // 合并：保留更重要的版本
+    // 合并：保留更重要的版本（内容被更新时同步重算向量，避免向量与内容脱节）
     if (importance > Number(best.row.importance)) {
       dbRun(
         'UPDATE memories SET importance = ?, content = ?, emotion = COALESCE(?, emotion), last_accessed_at = ? WHERE id = ?',
@@ -60,12 +70,19 @@ export async function addMemory(
         nowIso(),
         best.row.id
       );
+      dbRun(
+        `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
+        best.row.id,
+        embedModelTag(),
+        vec.length,
+        JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
+        nowIso()
+      );
     }
     return best.row.id;
   }
 
-  const expiry =
-    update.expires_at || (type === 'episodic' && importance < 4 ? null : null);
+  const expiry = update.expires_at || null;
 
   const { lastInsertRowid: id } = dbRun(
     `INSERT INTO memories (user_id, type, content, importance, emotion, source_message_id, created_at, last_accessed_at, expires_at, status, access_count)
@@ -83,7 +100,7 @@ export async function addMemory(
   dbRun(
     `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
     id,
-    'auto',
+    embedModelTag(),
     vec.length,
     JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
     nowIso()
@@ -261,13 +278,17 @@ export function createMemoryManually(type: string, content: string, importance =
   return lastInsertRowid;
 }
 
-/** 补齐缺失的向量（例如手工新增的记忆） */
-export async function backfillEmbeddings(): Promise<number> {
+/** 补齐缺失向量；换过向量模型/接口时，旧向量也会被识别出来并重算 */
+export async function backfillEmbeddings(batch = 50): Promise<number> {
+  const tag = embedModelTag();
   const rows = dbAll<any>(
     `SELECT m.id, m.content FROM memories m
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE m.user_id = ? AND e.memory_id IS NULL LIMIT 50`,
-    DEFAULT_USER_ID
+     WHERE m.user_id = ? AND (e.memory_id IS NULL OR e.model IS NULL OR e.model != ?)
+     ORDER BY m.id DESC LIMIT ?`,
+    DEFAULT_USER_ID,
+    tag,
+    batch
   );
   if (!rows.length) return 0;
   const vecs = await embed(rows.map((r) => r.content));
@@ -275,13 +296,29 @@ export async function backfillEmbeddings(): Promise<number> {
     dbRun(
       `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
       r.id,
-      'auto',
+      tag,
       vecs[i].length,
       JSON.stringify(vecs[i].map((x) => Math.round(x * 10000) / 10000)),
       nowIso()
     );
   });
   return rows.length;
+}
+
+/** 单条记忆内容被编辑后：同步重算它的向量 */
+export async function refreshMemoryEmbedding(id: number): Promise<boolean> {
+  const row = dbGet<any>('SELECT id, content FROM memories WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  if (!row) return false;
+  const vec = await embedOne(String(row.content || ''));
+  dbRun(
+    `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
+    id,
+    embedModelTag(),
+    vec.length,
+    JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
+    nowIso()
+  );
+  return true;
 }
 
 /* ---------------------- 每日摘要 ---------------------- */
@@ -303,6 +340,18 @@ export function listDailySummaries(limit = 60) {
     DEFAULT_USER_ID,
     limit
   );
+}
+
+/** 最近几天的回顾（每日摘要）→ 注入 Prompt，让她真的"记得"这些日子 */
+export function dailySummaryBlock(days = 2): string {
+  const rows = dbAll<any>(
+    'SELECT date, summary, created_at FROM daily_summaries WHERE user_id = ? ORDER BY date DESC LIMIT ?',
+    DEFAULT_USER_ID,
+    days
+  );
+  if (!rows.length) return '';
+  const lines = rows.map((r) => `- ${String(r.date)}：${truncate(String(r.summary || ''), 220)}`);
+  return ['【最近几天的回顾（你亲身经历的，说到相关的事时可以自然地想起来）】', ...lines].join('\n');
 }
 
 export function recentMessagesForSummary(date: string) {

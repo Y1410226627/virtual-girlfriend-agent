@@ -1,6 +1,6 @@
 // 环境自检接口：模型连通性 / 数据库 / 向量模式
-import { dbGet, dbRun, llmConfig, getSetting } from '@/lib/db';
-import { chat, embeddingMode, embed, lastUsedTarget } from '@/lib/llm';
+import { dbGet, dbRun, llmConfig, getSetting, DEFAULT_USER_ID } from '@/lib/db';
+import { chat, embeddingMode, embed, lastUsedTarget, routePreview } from '@/lib/llm';
 import { ensureScheduler } from '@/lib/scheduler';
 import { messageCount } from '@/lib/engine';
 import { getRelationshipState } from '@/lib/relationship';
@@ -46,7 +46,31 @@ export async function GET() {
 
   try {
     const vecs = await embed(['你好，今天过得怎么样']);
-    checks.embedding = { ok: true, mode: embeddingMode(), dim: vecs[0]?.length || 0 };
+    // 向量维度与库里已有记录不一致 → 旧记忆会检索不到，需要"重算全部向量"
+    let dimMismatch: number | null = null;
+    try {
+      const existing = dbGet<{ dim: number }>(
+        `SELECT dim FROM memory_embeddings WHERE dim > 0 GROUP BY dim ORDER BY COUNT(*) DESC LIMIT 1`
+      );
+      const other = dbGet<{ c: number }>(
+        'SELECT COUNT(*) AS c FROM memory_embeddings WHERE dim > 0 AND dim != ?',
+        vecs[0]?.length || 0
+      );
+      if (existing && Number(existing.dim) !== (vecs[0]?.length || 0) && Number(other?.c || 0) > 0) {
+        dimMismatch = Number(existing.dim);
+      }
+    } catch {
+      /* 没有记忆时忽略 */
+    }
+    checks.embedding = {
+      ok: true,
+      mode: embeddingMode(),
+      dim: vecs[0]?.length || 0,
+      dimMismatch,
+      hint: dimMismatch
+        ? `当前向量维度 ${vecs[0]?.length || 0} 与已有记忆的维度 ${dimMismatch} 不一致：请在设置页点"重算全部记忆向量"，否则旧记忆检索不到`
+        : undefined,
+    };
   } catch (e: any) {
     checks.embedding = { ok: false, error: e?.message || String(e) };
   }
@@ -72,13 +96,28 @@ export async function GET() {
         id: p.id,
         label: p.label,
         model: p.chat_model,
+        analysisModel: p.analysis_model,
         isDefault: p.is_default === 1,
-        cooling: isCooling(`${(p.base_url || '').replace(/\/+$/, '')}|${p.chat_model}|chat`),
+        cooling: isCooling(`chat|${(p.base_url || '').replace(/\/+$/, '')}|${p.chat_model}`),
       })),
       lastUsed: lastUsedTarget(),
     };
   } catch (e: any) {
     checks.profiles = { error: e?.message || String(e) };
+  }
+
+  // 实际路由：验证"分析模型"配置有没有真的接上
+  try {
+    const routes = routePreview();
+    checks.routing = {
+      chat: routes.chat,
+      analysis: routes.analysis,
+      analysisModelEffective: routes.analysis[0] || null,
+      configuredAnalysisModel: cfg.analysisModel || null,
+      analysisModelWired: !!cfg.analysisModel && (routes.analysis[0] || '').includes(cfg.analysisModel),
+    };
+  } catch (e: any) {
+    checks.routing = { error: e?.message || String(e) };
   }
 
   return Response.json(checks);

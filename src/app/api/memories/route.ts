@@ -6,6 +6,7 @@ import {
   createMemoryManually,
   memoryStats,
   backfillEmbeddings,
+  refreshMemoryEmbedding,
   forgetSweep,
   listDailySummaries,
 } from '@/lib/memory';
@@ -53,7 +54,8 @@ export async function PATCH(req: Request) {
     emotion: body.emotion,
     status: body.status,
   });
-  await backfillEmbeddings();
+  // 内容被编辑 → 重算这一条的向量（否则语义检索会按旧内容走）
+  if (ok && body.content !== undefined) await refreshMemoryEmbedding(id);
   return Response.json({ ok });
 }
 

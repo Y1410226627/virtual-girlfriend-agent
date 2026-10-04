@@ -1,5 +1,5 @@
 // 全量状态快照（供各页面读取）
-import { getAllSettings, getCounter, dbAll, DEFAULT_USER_ID, numSetting } from '@/lib/db';
+import { getAllSettings, getCounter, dbAll, DEFAULT_USER_ID, numSetting, maskSettingsForClient } from '@/lib/db';
 import { getRelationshipState, getPersona } from '@/lib/relationship';
 import { stageOf, stageListForUi } from '@/lib/stages';
 import { personalityMap, signalProgress } from '@/lib/personality';
@@ -70,7 +70,7 @@ export async function GET() {
     proactive: proactiveStatus(),
     stages: stageListForUi(),
     events: dbAll('SELECT * FROM events WHERE user_id = ? ORDER BY event_date ASC', DEFAULT_USER_ID),
-    settings,
+    settings: maskSettingsForClient(settings),
     embeddingMode: embeddingMode(),
     stickers: STICKERS,
     life: (() => {

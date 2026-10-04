@@ -10,7 +10,7 @@ import { attachmentStyle } from './attachment';
 import { humanizeReply, type HumanizeContext } from './humanize';
 import { detectScene, type Scene } from './scene';
 import { renderContentForModel } from './stickers';
-import { ensureLife, advanceLife, whatHappenedSince, settleExpiredEvents } from './life';
+import { ensureLife, advanceLife, whatHappenedSince, getExpiredEvent, settleExpiredEvent } from './life';
 import type { MessageRow } from './types';
 
 export interface PreparedTurn {
@@ -46,6 +46,12 @@ export function insertMessage(
 
 export function saveAssistantMessage(content: string, opts: { isProactive?: boolean; emotion?: string } = {}): number {
   return insertMessage('assistant', content.trim(), opts);
+}
+
+/** 删除一条消息（生成失败时把刚落库的用户消息撤掉，避免留下"孤儿消息"） */
+export function deleteMessageById(id: number): void {
+  if (!Number.isFinite(id) || id <= 0) return;
+  dbRun('DELETE FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
 }
 
 export function listMessages(opts: { afterId?: number; limit?: number } = {}): MessageRow[] {
@@ -126,7 +132,8 @@ export async function prepareTurn(userText: string): Promise<PreparedTurn> {
     ensureLife();
     advanceLife();
     // 事件已到期而用户先来消息：静默结束（她用"刚结束"的状态回复，这里就不再补一条提醒）
-    settleExpiredEvents();
+    const expired = getExpiredEvent();
+    if (expired) settleExpiredEvent(expired, false);
   } catch (e: any) {
     console.warn('[life] advance failed:', e?.message || e);
   }

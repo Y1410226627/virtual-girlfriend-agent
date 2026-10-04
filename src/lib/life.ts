@@ -1,6 +1,6 @@
 // 世界模拟与生活系统：她有自己的作息、身体、心理、位置、活动与日常事件
 // 设计要点：连续性优先（一切由"流逝了多少时间"推导，不随机跳变）、独立生活、逐步揭露、状态影响对话
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, boolSetting, numSetting } from './db';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, boolSetting, numSetting, getCounter } from './db';
 import { clamp, nowIso, localHour, localDateStr, localTimeStr, round1, safeJson, hoursSince } from './utils';
 import { getRelationshipState, getPersona } from './relationship';
 import { attachmentStyle, getAttachmentState } from './attachment';
@@ -161,7 +161,7 @@ const EVENT_POOL: Array<{ type: string; content: string; impact: Record<string, 
 
 function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
   const todayCount = dbAll<any>(
-    "SELECT id FROM agent_daily_events WHERE user_id = ? AND substr(created_at,1,10) = ?",
+    "SELECT id FROM agent_daily_events WHERE user_id = ? AND date(created_at, 'localtime') = ?",
     DEFAULT_USER_ID,
     localDateStr(d)
   ).length;
@@ -182,16 +182,18 @@ function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
     DEFAULT_USER_ID, pick.type, pick.content, JSON.stringify(pick.impact), d.toISOString()
   );
   const psy = getPsychology();
-  const moodMap: Record<string, [keyof PsychRow, number]> = {};
   let stress = psy.stress, lon = psy.loneliness, miss = psy.missing_user, worth = psy.self_worth, me = psy.mental_energy;
   stress = clamp(stress + (pick.impact.stress || 0), 0, 100);
   lon = clamp(lon + (pick.impact.loneliness || 0), 0, 100);
   miss = clamp(miss + (pick.impact.missing_user || 0), 0, 100);
   worth = clamp(worth + (pick.impact.self_worth || 0), 0, 100);
   me = clamp(me + (pick.impact.mental_energy || 0), 0, 100);
+  // 事件的心情影响：直接体现在情绪基调上（好心情 / 低落）
+  const moodDelta = Number(pick.impact.mood || 0);
+  const emotion = moodDelta >= 5 ? '开心' : moodDelta <= -4 ? '低落' : psy.base_emotion;
   dbRun(
-    'UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?',
-    round1(stress), round1(lon), round1(miss), round1(worth), round1(me), nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_psychology SET base_emotion = ?, stress = ?, loneliness = ?, missing_user = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?',
+    emotion, round1(stress), round1(lon), round1(miss), round1(worth), round1(me), nowIso(), DEFAULT_USER_ID
   );
   if ((pick.impact.illnessRisk || 0) > 0 && normalized < (pick.impact.illnessRisk as number)) {
     startIllness('感冒', 2 + ((hash >>> 16) % 2000) / 1000);
@@ -401,7 +403,20 @@ export function applyLifeDeltas(input: { health?: Record<string, any>; psycholog
   );
 
   const illnessEvent = String(hd.illness || 'none');
-  if (illnessEvent === 'new') startIllness('感冒', 2 + Math.random() * 2);
+  if (illnessEvent === 'new') {
+    // 时长确定性推导（同一天同一轮给同样的值，避免随机跳变）
+    const seed = Number(getCounter('turn_count') || 0);
+    startIllness('感冒', 2 + (seed % 20) / 10);
+  } else if (illnessEvent === 'recovered' && h.illness !== 'none') {
+    // 模型判定"这轮之后康复了" → 直接结束病程（比机械等天数自然）
+    dbRun(
+      "UPDATE agent_health SET illness = 'none', illness_severity = 0, illness_duration_days = 0, updated_at = ? WHERE user_id = ?",
+      nowIso(),
+      DEFAULT_USER_ID
+    );
+    logLife('illness', h.illness, '恢复', '对话里被照顾，判定康复');
+    logRelationship('milestone', `她的${h.illness}好了`, null, h.illness, '健康系统');
+  }
 
   const stress = clamp(p.stress + num(pd.stress), 0, 100);
   const loneliness = clamp(p.loneliness + num(pd.loneliness), 0, 100);
@@ -611,17 +626,26 @@ export function setEventExpectedEnd(mode: 'smart' | 'manual', minutes = 0): Ongo
   return dbGet<OngoingEventRow>('SELECT * FROM ongoing_events WHERE id = ?', evt.id) || null;
 }
 
-/** 结算已到期的事件；返回"应当主动来消息"的事件（太久以前到期的直接静默结束） */
-export function settleExpiredEvents(): OngoingEventRow[] {
+/** 已到期但还没结束的事件（只读，不改状态；由调用方决定"发提醒"还是"静默结束"） */
+export function getExpiredEvent(): OngoingEventRow | null {
   const evt = getActiveEvent();
-  if (!evt || !evt.expected_end_at || evt.notified_at) return [];
+  if (!evt || !evt.expected_end_at || evt.notified_at) return null;
   const endMs = new Date(evt.expected_end_at).getTime();
-  if (!isFinite(endMs) || Date.now() < endMs) return [];
-  const lateMinutes = (Date.now() - endMs) / 60000;
-  const ended = endOngoingEvent('expired');
-  if (!ended) return [];
-  const window = evt.event_type === 'sleep' ? 180 : 90;
-  return lateMinutes <= window ? [ended] : [];
+  if (!isFinite(endMs) || Date.now() < endMs) return null;
+  return evt;
+}
+
+/** 到期多久之后就不再打扰（直接静默结束）：睡觉这类长事件给更宽的窗口 */
+export function eventLateWindowMinutes(evt: OngoingEventRow): number {
+  return evt.event_type === 'sleep' ? 180 : 90;
+}
+
+/** 结算一个到期事件：结束 + 记录"已提醒过"（提醒失败时不写，下次 tick 会重试） */
+export function settleExpiredEvent(evt: OngoingEventRow, notified: boolean): void {
+  endOngoingEvent('expired');
+  if (notified) {
+    dbRun('UPDATE ongoing_events SET notified_at = ?, updated_at = ? WHERE id = ?', nowIso(), nowIso(), evt.id);
+  }
 }
 
 export function applyLocationChange(newLocation: string, reason: string): void {
@@ -641,7 +665,7 @@ export function applyLocationChange(newLocation: string, reason: string): void {
     newAct, /家|宿舍/.test(loc) ? 'home' : 'out', nowIso(), nowIso(), DEFAULT_USER_ID
   );
   logLife('location', cur.current_location, loc, reason || '对话里提到');
-  if (act.current_activity) logLife('activity', act.current_activity, '跟随位置变化', reason || '');
+  if (act.current_activity) logLife('activity', act.current_activity, newAct, reason || '位置变化');
   // 去某处待着也算一件事，可以控制它什么时候结束
   const evt = registerOngoingEvent(newAct, {});
   if (evt?.expected_end_at) {

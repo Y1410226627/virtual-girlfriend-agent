@@ -200,9 +200,9 @@ export async function analyzeTurn(params: {
     });
 
     const raw = await chatJson(messages, {
-      maxTokens: 2400,
-      temperature: 0.2,
-      thinking: boolSetting('analysis_thinking', true),
+      maxTokens: 2600,
+      temperature: 0.25,
+      thinking: boolSetting('analysis_thinking', false),
     });
     if (!raw) {
       outcome.error = '分析模型未返回有效 JSON（本轮已跳过，不影响聊天）';
@@ -387,7 +387,7 @@ export async function analyzeTurn(params: {
           const attRaw = await chatJson(buildAttachmentAnalysisMessages(transcript(20), turn), {
             maxTokens: 900,
             temperature: 0.2,
-            thinking: boolSetting('analysis_thinking', true),
+            thinking: boolSetting('analysis_thinking', false),
           });
           if (attRaw) {
             const sig: AttachmentSignal = {
@@ -471,28 +471,42 @@ export async function analyzeTurn(params: {
   }
 }
 
-/** 每日摘要（跨天后生成昨天的摘要） */
+/** 每日摘要：跨天后生成昨天的摘要；错过多天会逐天补齐；失败会自动重试 */
 export async function maybeGenerateDailySummary(force = false): Promise<string | null> {
-  const today = localDateStr();
-  const lastDate = getCounter('last_summary_day'); // 存成 YYYYMMDD 数字
-  const todayNum = Number(today.replace(/-/g, ''));
-  if (!force && lastDate === todayNum) return null;
+  // 失败后 30 分钟内不再重试，避免后台每次 tick 都打模型
+  const retryAfter = getCounter('summary_retry_after');
+  if (!force && retryAfter > Date.now()) return null;
 
-  const yesterday = localDateStr(new Date(Date.now() - 86400000));
-  const target = force ? today : yesterday;
+  const today = localDateStr();
+  let target = today; // force：直接生成今天的
+  if (!force) {
+    // 最近一天"聊过（≥4 条）但还没有摘要"的日子，最多回看 14 天
+    const row = dbGet<{ d: string }>(
+      `SELECT d FROM (
+         SELECT date(created_at, 'localtime') AS d, COUNT(*) AS c FROM messages
+         WHERE user_id = ? AND date(created_at, 'localtime') < ?
+         GROUP BY d HAVING c >= 4 ORDER BY d DESC LIMIT 14
+       )
+       WHERE d NOT IN (SELECT date FROM daily_summaries WHERE user_id = ?)
+       ORDER BY d DESC LIMIT 1`,
+      DEFAULT_USER_ID,
+      today,
+      DEFAULT_USER_ID
+    );
+    if (!row?.d) return null;
+    target = row.d;
+  }
+
   const rows = recentMessagesForSummary(target);
   const lifeEvents = dbAll<any>(
-    "SELECT event_type, content, created_at FROM agent_daily_events WHERE user_id = ? AND substr(created_at, 1, 10) = ? ORDER BY id ASC",
+    "SELECT event_type, content, created_at FROM agent_daily_events WHERE user_id = ? AND date(created_at, 'localtime') = ? ORDER BY id ASC",
     DEFAULT_USER_ID, target
   );
   const lifeLogs = dbAll<any>(
-    "SELECT field, new_value, reason, created_at FROM life_state_logs WHERE user_id = ? AND substr(created_at, 1, 10) = ? AND field IN ('activity', 'illness', 'care', 'shared_plan', 'shared_ritual', 'shared_place', 'shared_item') ORDER BY id ASC",
+    "SELECT field, new_value, reason, created_at FROM life_state_logs WHERE user_id = ? AND date(created_at, 'localtime') = ? AND field IN ('activity', 'illness', 'care', 'shared_plan', 'shared_ritual', 'shared_place', 'shared_item') ORDER BY id ASC",
     DEFAULT_USER_ID, target
   );
-  if (rows.length < 4 && !lifeEvents.length && !lifeLogs.length) {
-    setCounter('last_summary_day', todayNum);
-    return null;
-  }
+  if (rows.length < 4 && !lifeEvents.length && !lifeLogs.length) return null;
   const conversation = rows
     .map((r) => `${r.role === 'user' ? userName() : agentName()}：${truncate(r.content, 300)}`)
     .join('\n');
@@ -507,17 +521,17 @@ export async function maybeGenerateDailySummary(force = false): Promise<string |
       maxTokens: 800,
       temperature: 0.3,
       thinking: false,
+      kind: 'analysis',
     });
     if (plain && plain.length > 10) {
       saveDailySummary(target, plain.slice(0, 800), { messages: rows.length, lifeEvents: lifeEvents.length, lifeChanges: lifeLogs.length });
       logRelationship('milestone', `生成 ${target} 的每日摘要`, null, null, '每日摘要把对话压缩为长期记忆');
-      setCounter('last_summary_day', todayNum);
       return plain;
     }
   } catch {
-    /* ignore */
+    /* 失败：下面统一安排重试 */
   }
-  setCounter('last_summary_day', todayNum);
+  setCounter('summary_retry_after', Date.now() + 30 * 60 * 1000);
   return null;
 }
 

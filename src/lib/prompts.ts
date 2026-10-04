@@ -6,7 +6,7 @@ import { attachmentPromptBlock, getAttachmentState } from './attachment';
 import { getRelationshipState, agentName, userName, getPersona } from './relationship';
 import { bankEffectGuide, tensionEffectGuide, repairCreditGuide, bankStats } from './emotionalBank';
 import { conflictBehaviorGuide, openConflictCount } from './conflict';
-import { formatMemoryBlock, memoriesByType, stableFacts } from './memory';
+import { formatMemoryBlock, memoriesByType, stableFacts, dailySummaryBlock } from './memory';
 import { ATTACHMENT_STYLES, attachmentStyleOf, type MemoryRow } from './types';
 import { round1, humanTime, hoursSince, localTimeStr, localDateStr, cnDate } from './utils';
 import { dbAll, DEFAULT_USER_ID, getSetting, customModeOn } from './db';
@@ -105,6 +105,8 @@ ${rel.anniversary ? `\n你们的重要日子：${rel.anniversary}。` : ''}
 ${memoryBlock}
 
 （这些记忆是你"想起来"的，不要说"根据记录""我的记忆里"，就像人一样自然地回忆）
+
+${dailySummaryBlock()}
 
 【你们之间重要的记忆】
 ${relMemories.length ? relMemories.map((m) => `- ${m.content}`).join('\n') : '（还没有特别的关系记忆）'}
@@ -483,6 +485,8 @@ ${attachmentPromptBlock()}
 
 【你记得的事】
 ${payload.memoryBlock}
+
+${dailySummaryBlock()}
 
 【阶段行为约束】
 ${stage.promptGuide}

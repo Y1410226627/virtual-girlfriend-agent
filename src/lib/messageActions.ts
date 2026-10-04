@@ -175,8 +175,10 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
       );
       if (bankRows.length) {
         const sum = bankRows.reduce((s, r) => s + Number(r.delta), 0);
+        // 优先用这一轮"实际生效"的余额增量：银行流水是申请值，触及 ±100 边界时两者会不一致
+        const applied = eff && Number.isFinite(Number(eff.balance_delta)) ? Number(eff.balance_delta) : sum;
         const s = getRelationshipState();
-        s.emotional_balance = clamp(s.emotional_balance - sum, -100, 100);
+        s.emotional_balance = clamp(s.emotional_balance - applied, -100, 100);
         saveRelationshipState(s);
         const bankDel = dbRun(
           `DELETE FROM emotional_bank WHERE user_id = ? AND message_id IN (${ph})`,
@@ -214,7 +216,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
             report.notes.push('缺少还原快照，已按增量扣回');
           }
         }
-        // 增量扣回（两种情况都再扣一次"实际增量"，保证累计值不虚高）
+        // 增量扣回（仅非最新轮：按实际增量往回扣，保留之后的成长）
         if (!isLatest) {
           s.intimacy = clamp(s.intimacy - Number(eff.intimacy_delta || 0), 0, 100);
           s.trust = clamp(s.trust - Number(eff.trust_delta || 0), 0, 100);

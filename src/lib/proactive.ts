@@ -9,9 +9,10 @@ import { saveAssistantMessage, recentActionPhrases, recentReplies } from './engi
 import { personalityMap } from './personality';
 import { attachmentStyle } from './attachment';
 import { humanizeReply } from './humanize';
-import { ensureLife, advanceLife, getActivity, getPsychology, getSharedWorld, getActiveEvent, settleExpiredEvents, type OngoingEventRow } from './life';
+import { ensureLife, advanceLife, getActivity, getPsychology, getSharedWorld, getActiveEvent, getExpiredEvent, eventLateWindowMinutes, settleExpiredEvent, type OngoingEventRow } from './life';
 import { advanceIntimacy } from './intimacy';
 import { maybeGenerateDailySummary } from './analysis';
+import { fadeTension } from './conflict';
 
 export type ProactiveKind = 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end';
 
@@ -25,7 +26,7 @@ function ritualSlotNow(): 'morning' | 'night' | null {
   if (!hasRitual) return null;
   const today = localDateStr();
   const sent = dbAll<any>(
-    "SELECT created_at FROM proactive_messages WHERE user_id = ? AND kind = 'ritual' AND substr(created_at,1,10) = ?",
+    "SELECT created_at FROM proactive_messages WHERE user_id = ? AND kind = 'ritual' AND date(created_at, 'localtime') = ?",
     DEFAULT_USER_ID,
     today
   );
@@ -117,8 +118,53 @@ export async function tickProactive(force = false): Promise<TickResult> {
   const freq = getSetting('proactive_frequency') || 'medium';
   const limits = FREQ_LIMITS[freq] || FREQ_LIMITS.medium;
 
-  // 每日摘要
+  // 她的生活先推进到此刻（按流逝时间推导，幂等）
+  ensureLife();
+  advanceLife();
+  advanceIntimacy();
+
+  // 张力自然衰减：每天最多一次（很慢）
+  try {
+    const fadeKey = `tension_fade_${localDateStr()}`;
+    if (getCounter(fadeKey) === 0) {
+      setCounter(fadeKey, 1);
+      fadeTension(-1);
+    }
+  } catch {
+    /* 衰减失败不影响主流程 */
+  }
+
+  // 每日摘要（跨天/补漏；失败会自动重试）
   await maybeGenerateDailySummary().catch(() => null);
+
+  // 事件到期：她自己来告诉你"睡醒了 / 洗完澡了 / 吃完了"。
+  // 放在所有限流判断之前：这类到期提醒不算主动打扰，不受频率额度、免打扰与夜间时段限制。
+  const expired = getExpiredEvent();
+  if (expired) {
+    const endMs = new Date(expired.expected_end_at || '').getTime();
+    const lateMinutes = (Date.now() - endMs) / 60000;
+    const lastAnyMsg = dbGet<any>(
+      'SELECT created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+      DEFAULT_USER_ID
+    );
+    const minsSinceMsg = lastAnyMsg ? (Date.now() - new Date(lastAnyMsg.created_at).getTime()) / 60000 : 99999;
+    const notifyRetryAfter = getCounter('event_notify_retry_after');
+    if (lateMinutes > eventLateWindowMinutes(expired) || minsSinceMsg <= 3) {
+      // 太久以前到期了 / 用户刚好在旁边：静默结束，不补提醒
+      settleExpiredEvent(expired, false);
+    } else if (notifyRetryAfter <= Date.now()) {
+      const sent = await notifyEventEnd(expired, false);
+      if (sent) {
+        settleExpiredEvent(expired, true);
+        return { sent: true, reason: `「${expired.activity}」结束了，她来告诉你`, kind: 'event_end', message: sent };
+      }
+      // 生成失败（比如模型临时挂了）：不结束事件，10 分钟后再试
+      setCounter('event_notify_retry_after', Date.now() + 10 * 60 * 1000);
+      return skip('事件结束提醒生成失败，稍后重试');
+    } else {
+      return skip('事件结束提醒等待重试');
+    }
+  }
 
   if (!force) {
     if (limits.perDay === 0) return skip('主动消息已关闭');
@@ -132,28 +178,6 @@ export async function tickProactive(force = false): Promise<TickResult> {
     DEFAULT_USER_ID
   );
   const hours = hoursSince(lastMsg?.created_at || rel.last_interaction_at);
-
-  // 她的生活状态：睡觉时不发消息（关系很深时也只在必要时）
-  ensureLife();
-  advanceLife();
-  advanceIntimacy();
-
-  // 事件到期：她自己来告诉你"睡醒了 / 洗完澡了 / 吃完了"。
-  // 这类到期提醒不算主动打扰：不占频率额度、不受免打扰与夜间时段限制。
-  const expiredEvents = settleExpiredEvents();
-  if (expiredEvents.length) {
-    const lastAny = dbGet<any>(
-      'SELECT created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1',
-      DEFAULT_USER_ID
-    );
-    const minsSinceMsg = lastAny ? (Date.now() - new Date(lastAny.created_at).getTime()) / 60000 : 99999;
-    if (minsSinceMsg > 3) {
-      const sent = await notifyEventEnd(expiredEvents[0], false);
-      if (sent) {
-        return { sent: true, reason: `「${expiredEvents[0].activity}」结束了，她来告诉你`, kind: 'event_end', message: sent };
-      }
-    }
-  }
 
   // 她正处在某件事里（睡觉/洗澡/上课/出门…）：期间她不会另外主动发消息
   const runningEvent = getActiveEvent();
@@ -294,7 +318,7 @@ export async function notifyEventEnd(evt: OngoingEventRow, interrupted = false):
     'INSERT INTO proactive_messages (user_id, kind, content, message_id, created_at) VALUES (?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, 'event_end', text, messageId, nowIso()
   );
-  dbRun('UPDATE ongoing_events SET notified_at = ?, updated_at = ? WHERE id = ?', nowIso(), nowIso(), evt.id);
+  // 注：结束与 notified_at 由调用方 settleExpiredEvent() 处理（提醒失败时不会误标）
   return text;
 }
 

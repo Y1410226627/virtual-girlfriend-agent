@@ -1,5 +1,5 @@
 // 设置：模型档案（随时切换 + 自动备用链）/ 主动频率 / 场景 / 隐私
-import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpCounter, DEFAULT_USER_ID } from '@/lib/db';
+import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient } from '@/lib/db';
 import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState, logRelationship } from '@/lib/relationship';
 import { clamp } from '@/lib/utils';
 import { STAGES } from '@/lib/stages';
@@ -57,7 +57,7 @@ export async function GET() {
   const cfg = llmConfig();
   const persona = getPersona();
   return Response.json({
-    settings,
+    settings: maskSettingsForClient(settings),
     persona,
     effective: {
       baseUrl: cfg.baseUrl,
@@ -73,7 +73,11 @@ export async function GET() {
       activeProfile: activeProfile()?.label || null,
       lastUsed: lastUsedTarget(),
     },
-    profiles: listProfiles(),
+    profiles: listProfiles().map((p) => ({
+      ...p,
+      api_key: maskSecret(p.api_key),
+      embedding_api_key: maskSecret(p.embedding_api_key),
+    })),
     health: healthSnapshot(),
   });
 }
@@ -84,6 +88,8 @@ export async function PUT(req: Request) {
   const changed: string[] = [];
   for (const [k, v] of Object.entries(incoming || {})) {
     if (!EDITABLE.has(k)) continue;
+    // 前端回传的掩码值不算修改（避免把"••••1234"当成新 Key 存进去）
+    if (SECRET_SETTING_KEYS.includes(k) && looksLikeMask(v)) continue;
     setSetting(k, typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v ?? ''));
     changed.push(k);
   }
@@ -98,7 +104,7 @@ export async function PUT(req: Request) {
   if ('cycle_enabled' in (incoming || {})) {
     dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', String(incoming.cycle_enabled) === 'true' ? 1 : 0, DEFAULT_USER_ID);
   }
-  return Response.json({ ok: true, changed, settings: getAllSettings(), profiles: listProfiles() });
+  return Response.json({ ok: true, changed, settings: maskSettingsForClient(getAllSettings()), profiles: listProfiles().map((p) => ({ ...p, api_key: maskSecret(p.api_key), embedding_api_key: maskSecret(p.embedding_api_key) })) });
 }
 
 export async function POST(req: Request) {
@@ -173,13 +179,13 @@ export async function POST(req: Request) {
   }
 
   if (action === 'rebuild_embeddings') {
-    // 换向量模型后重算全部记忆向量（分批，避免一次太久）
-    const limit = Math.min(200, Number(body.limit) || 60);
+    // 换向量模型/接口后，把全部记忆向量按当前模型重算（也补齐缺失的）
+    const limit = Math.min(2000, Math.max(50, Number(body.limit) || 400));
     let total = 0;
-    for (let i = 0; i < 5; i++) {
-      const n = await backfillEmbeddings();
+    for (let i = 0; i < 40; i++) {
+      const n = await backfillEmbeddings(50);
       total += n;
-      if (n < 50) break;
+      if (n < 50 || total >= limit) break;
     }
     return Response.json({ ok: true, count: total, limit });
   }
@@ -251,14 +257,20 @@ export async function POST(req: Request) {
 
   if (action === 'export') {
     const data: Record<string, any> = {
+      schema_version: 1,
       exported_at: new Date().toISOString(),
       persona: getPersona(),
       user: { name: getAllSettings().user_name },
       relationship_state: getRelationshipState(),
       attachment_state: getAttachmentState(),
       personality_state: getPersonalityRows(),
-      settings: getAllSettings(),
-      model_profiles: listProfiles(),
+      // 导出的文件可能被分享：Key 同样只给掩码
+      settings: maskSettingsForClient(getAllSettings()),
+      model_profiles: listProfiles().map((p) => ({
+        ...p,
+        api_key: maskSecret(p.api_key),
+        embedding_api_key: maskSecret(p.embedding_api_key),
+      })),
     };
     for (const t of [
       'messages',

@@ -1,5 +1,5 @@
 // 聊天接口（流式 SSE）
-import { prepareTurn, saveAssistantMessage, chatStream } from '@/lib/engine';
+import { prepareTurn, saveAssistantMessage, deleteMessageById, chatStream } from '@/lib/engine';
 import { chat } from '@/lib/llm';
 import { humanizeReply } from '@/lib/humanize';
 
@@ -25,6 +25,7 @@ export async function POST(req: Request) {
 
   const encoder = new TextEncoder();
   let full = '';
+  let assistantSaved = false;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -67,6 +68,7 @@ export async function POST(req: Request) {
         // 兜底二：人味层（清洗 AI 腔 / 控制长度 / 补神态动作 / 空回复用兜底台词）
         const h = humanizeReply(full, prepared.humanize);
         const assistantMessageId = saveAssistantMessage(h.text);
+        assistantSaved = true;
         send({
           type: 'final',
           text: h.text,
@@ -75,6 +77,14 @@ export async function POST(req: Request) {
         });
         send({ type: 'done', assistantMessageId, userMessageId: prepared.userMessageId, fullText: h.text });
       } catch (e: any) {
+        // 整轮失败：把刚落库的用户消息撤掉，避免刷新后"复活"一条没人回应的消息
+        if (!assistantSaved && prepared.userMessageId) {
+          try {
+            deleteMessageById(Number(prepared.userMessageId));
+          } catch {
+            /* 删除失败不影响错误上报 */
+          }
+        }
         send({ type: 'error', message: e?.message || String(e) });
       } finally {
         controller.close();

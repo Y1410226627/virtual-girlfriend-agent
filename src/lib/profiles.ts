@@ -48,10 +48,24 @@ export function seedProfilesIfEmpty(): void {
   const embBase = (getSetting('embedding_base_url') || chatBase).replace(/\/+$/, '');
   const embKey = getSetting('embedding_api_key') || chatKey;
 
-  const isZhipuDefault = /bigmodel\.cn/i.test(chatBase);
+  // 已经配好接口（.env.local 或设置里）时：不改动任何设置，只把当前配置收录成第一个档案
+  const hasConfigured = !!(chatBase || chatKey || chatModel);
   const seeds: Array<Partial<ModelProfile> & { label: string; base_url: string; api_key: string; chat_model: string }> = [];
 
-  // 1) 智谱 GLM-4.7-Flash（用户指定的默认）
+  if (hasConfigured) {
+    seeds.push({
+      label: '当前配置',
+      base_url: chatBase,
+      api_key: chatKey,
+      chat_model: chatModel || 'qwen3.8-27b',
+      analysis_model: analysisModel,
+      embedding_base_url: embBase,
+      embedding_api_key: embKey,
+      embedding_model: embModel,
+      note: '来自 .env.local / 当前设置（首次启动自动收录）',
+    });
+  }
+  // 智谱 GLM-4.7-Flash（免费 flash，可作为备用）
   seeds.push({
     label: '智谱 GLM-4.7-Flash',
     base_url: 'https://open.bigmodel.cn/api/paas/v4',
@@ -60,24 +74,10 @@ export function seedProfilesIfEmpty(): void {
     analysis_model: 'glm-4.5-air',
     embedding_base_url: embBase || '',
     embedding_api_key: embKey || '',
-    embedding_model: embModel || 'qwen3-vl-embedding-8b',
+    embedding_model: embModel,
     note: '智谱开放平台。免费 flash 模型，高峰期可能限流，会自动切到备用模型',
   });
-  // 2) 本地 vLLM（质量最好，作为备用主力）
-  if (chatBase && !isZhipuDefault) {
-    seeds.push({
-      label: '本地 vLLM · qwen3.8-27b',
-      base_url: chatBase,
-      api_key: chatKey,
-      chat_model: chatModel || 'qwen3.8-27b',
-      analysis_model: analysisModel,
-      embedding_base_url: embBase,
-      embedding_api_key: embKey,
-      embedding_model: embModel,
-      note: '本机内网模型，中文角色扮演质量最好',
-    });
-  }
-  // 3) 智谱 GLM-4.5-Air（实测最快）
+  // 智谱 GLM-4.5-Air（实测最快）
   seeds.push({
     label: '智谱 GLM-4.5-Air',
     base_url: 'https://open.bigmodel.cn/api/paas/v4',
@@ -86,7 +86,7 @@ export function seedProfilesIfEmpty(): void {
     analysis_model: 'glm-4.5-air',
     embedding_base_url: embBase || '',
     embedding_api_key: embKey || '',
-    embedding_model: embModel || 'qwen3-vl-embedding-8b',
+    embedding_model: embModel,
     note: '同平台更轻快的模型，实测响应最快',
   });
 
@@ -114,9 +114,12 @@ export function seedProfilesIfEmpty(): void {
     });
   });
 
-  // 把默认档案写进设置（首次即以 GLM-4.7-Flash 为默认）
-  const first = listProfiles()[0];
-  if (first) applyProfile(first.id, true);
+  // 完全没有配置过接口时，才把第一个档案（智谱 flash）写进设置当默认；
+  // 已经配过（.env.local / 设置）则不动设置，避免覆盖用户自己的接口
+  if (!hasConfigured) {
+    const first = listProfiles()[0];
+    if (first) applyProfile(first.id, true);
+  }
 }
 
 /** 切换当前使用的模型档案（立即生效：设置写入后每次请求都会重新读取） */
@@ -140,6 +143,13 @@ export function applyProfile(id: number, silent = false): boolean {
   return true;
 }
 
+/** 前端回传的掩码值（••••xxxx）不能当成真实 Key：保留旧值 */
+function keepSecretValue(incoming: unknown, cur: string | null | undefined): string {
+  if (incoming === undefined || incoming === null) return String(cur || '');
+  const s = String(incoming);
+  return s.includes('•') ? String(cur || '') : s;
+}
+
 export function upsertProfile(data: Partial<ModelProfile> & { label: string; base_url: string; chat_model: string }): number {
   const now = nowIso();
   if (data.id) {
@@ -151,11 +161,11 @@ export function upsertProfile(data: Partial<ModelProfile> & { label: string; bas
        WHERE id = ? AND user_id = ?`,
       data.label,
       data.base_url,
-      data.api_key ?? cur.api_key,
+      keepSecretValue(data.api_key, cur.api_key),
       data.chat_model,
       data.analysis_model ?? cur.analysis_model,
       data.embedding_base_url ?? cur.embedding_base_url,
-      data.embedding_api_key ?? cur.embedding_api_key,
+      keepSecretValue(data.embedding_api_key, cur.embedding_api_key),
       data.embedding_model ?? cur.embedding_model,
       data.note ?? cur.note,
       now,
@@ -177,11 +187,11 @@ export function upsertProfile(data: Partial<ModelProfile> & { label: string; bas
     DEFAULT_USER_ID,
     data.label,
     data.base_url,
-    data.api_key || '',
+    keepSecretValue(data.api_key, ''),
     data.chat_model,
     data.analysis_model || data.chat_model,
     data.embedding_base_url || '',
-    data.embedding_api_key || '',
+    keepSecretValue(data.embedding_api_key, ''),
     data.embedding_model || '',
     data.note || null,
     maxOrder + 1,

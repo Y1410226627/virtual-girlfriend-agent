@@ -40,6 +40,17 @@ export default function ChatPage() {
   const listRef = useRef<HTMLDivElement>(null);
   const lastIdRef = useRef(0);
   const sendingRef = useRef(false);
+  const analysisTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /* 卸载时清掉分析轮询定时器（避免路由切换后还在跑、对已卸载组件 setState） */
+  useEffect(() => {
+    return () => {
+      if (analysisTimerRef.current) {
+        clearInterval(analysisTimerRef.current);
+        analysisTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const scrollToBottom = useCallback((smooth = false) => {
     const el = listRef.current;
@@ -167,7 +178,7 @@ export default function ChatPage() {
         return;
       }
       if (j.ended) {
-        setToast('这件事结束了，看看她说了什么～');
+        setToast(j.message ? '这件事结束了，看看她说了什么～' : '已结束（她这次没说出话，你发一句试试）');
         await loadMessages();
       } else {
         setToast('结束时间已更新，到点她会来告诉你');
@@ -323,17 +334,22 @@ export default function ChatPage() {
       });
 
       // 轮询后台进度：跑完了再刷新状态、给一个小提示
+      if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
       const timer = setInterval(async () => {
         try {
           const st = await (await fetch('/api/analyze', { cache: 'no-store' })).json();
           const done = !st?.busy && Number(st?.lastFinishedAt || 0) > enqueueAt;
-          if (st?.error || Date.now() - enqueueAt > 120000) {
-            clearInterval(timer);
+          // 分析失败：真实错误在 st.last.error（旧代码看的 st.error 并不存在）
+          const failed = !!st?.last && st.last.ok === false && Number(st.lastFinishedAt || 0) > enqueueAt;
+          if (failed || st?.error || Date.now() - enqueueAt > 120000) {
+            if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
+            analysisTimerRef.current = null;
             setRecalling(false);
             return;
           }
           if (!done) return;
-          clearInterval(timer);
+          if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
+          analysisTimerRef.current = null;
           setRecalling(false);
           const last = st.last;
           if (last?.ok) {
@@ -352,10 +368,12 @@ export default function ChatPage() {
           /* 继续轮询 */
         }
       }, 2500);
+      analysisTimerRef.current = timer;
     } catch (e: any) {
       setTyping(false);
       setToast(`发送失败：${e?.message || e}`);
-      setMessages((prev) => prev.filter((m) => m.id !== streamId));
+      // 连自己那条临时消息一起撤掉（服务端失败时也会删掉落库的那条，刷新不会"复活"）
+      setMessages((prev) => prev.filter((m) => m.id !== streamId && m.id !== tempId));
     } finally {
       setSending(false);
       sendingRef.current = false;

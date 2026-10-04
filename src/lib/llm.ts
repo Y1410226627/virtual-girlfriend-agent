@@ -21,6 +21,8 @@ export interface ChatOptions {
   maxTokens?: number;
   json?: boolean;
   thinking?: boolean; // 是否允许"深度思考"（默认关闭，聊天更快更自然）
+  /** 用途：chat=陪聊（默认）；analysis=后台分析（走 analysis_model，可用更快的小模型） */
+  kind?: 'chat' | 'analysis';
   timeoutMs?: number;
   noThinkingKwarg?: boolean;
   signal?: AbortSignal;
@@ -185,6 +187,18 @@ export function lastUsedTarget() {
   return globalThis.__gfLastTarget || null;
 }
 
+/** 自检用：当前"陪聊 / 分析"两条链实际会用的模型（验证分析模型是否真的接上了） */
+export function routePreview(): { chat: string[]; analysis: string[] } {
+  const pick = (kind: 'chat' | 'analysis') => {
+    try {
+      return targetsFor(kind).map((t) => `${t.label || t.model}·${t.model}`);
+    } catch {
+      return [] as string[];
+    }
+  };
+  return { chat: pick('chat'), analysis: pick('analysis') };
+}
+
 /** 单独测试某套配置（不写库、不影响当前设置） */
 export async function testTarget(
   src: { baseUrl: string; apiKey: string; model: string; label?: string },
@@ -223,7 +237,7 @@ export async function testTarget(
 /* 非流式                                                              */
 /* ------------------------------------------------------------------ */
 export async function chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<string> {
-  const targets = targetsFor('chat', opts.model);
+  const targets = targetsFor(opts.kind ?? 'chat', opts.model);
   let lastErr: any = null;
   const timeout = opts.timeoutMs ?? 45000;
   for (let i = 0; i < targets.length; i++) {
@@ -278,7 +292,7 @@ export async function chatStream(
   onDelta: (text: string) => void,
   opts: ChatOptions = {}
 ): Promise<string> {
-  const targets = targetsFor('chat', opts.model);
+  const targets = targetsFor(opts.kind ?? 'chat', opts.model);
   let lastErr: any = null;
   let emittedAny = false;
 
@@ -354,7 +368,7 @@ async function streamOnce(
     const decoder = new TextDecoder();
     let buffer = '';
     let full = '';
-    let inThinkTag = false;
+    const thinkState = { inThink: false };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -381,18 +395,8 @@ async function streamOnce(
           clearTimeout(firstTimer);
           firstTimer = null;
         }
-        if (piece.includes(' thinking')) {
-          inThinkTag = true;
-          piece = piece.split(' thinking').pop() || '';
-        }
-        if (inThinkTag) {
-          if (piece.includes('')) {
-            piece = piece.split('').slice(1).join('');
-            inThinkTag = false;
-          } else {
-            continue;
-          }
-        }
+        // 屏蔽思考链：跨 chunk 维护状态，把思考标签里的内容整段丢掉
+        piece = filterThinkDelta(thinkState, piece);
         if (!piece) continue;
         full += piece;
         onDelta(piece);
@@ -410,6 +414,8 @@ async function streamOnce(
 /* 结构化 JSON（自动备份链 + 多轮降级重试）                             */
 /* ------------------------------------------------------------------ */
 export async function chatJson<T = any>(messages: ChatMessage[], opts: ChatOptions = {}): Promise<T | null> {
+  // JSON 抽取基本都是后台分析任务（记忆/关系/依恋/摘要）→ 默认走分析模型链
+  const kind = opts.kind ?? 'analysis';
   const strict: ChatMessage[] = [
     ...messages,
     {
@@ -418,14 +424,14 @@ export async function chatJson<T = any>(messages: ChatMessage[], opts: ChatOptio
     },
   ];
   const attempts: Array<{ msgs: ChatMessage[]; opts: ChatOptions }> = [
-    { msgs: messages, opts: { ...opts, json: true, temperature: opts.temperature ?? 0.3 } },
+    { msgs: messages, opts: { ...opts, kind, json: true, temperature: opts.temperature ?? 0.3 } },
   ];
   if (opts.thinking) {
-    attempts.push({ msgs: messages, opts: { ...opts, json: true, thinking: false, temperature: opts.temperature ?? 0.3 } });
+    attempts.push({ msgs: messages, opts: { ...opts, kind, json: true, thinking: false, temperature: opts.temperature ?? 0.3 } });
   }
   attempts.push({
     msgs: strict,
-    opts: { ...opts, json: true, thinking: false, temperature: 0.1, maxTokens: Math.max(opts.maxTokens || 0, 2400) },
+    opts: { ...opts, kind, json: true, thinking: false, temperature: 0.1, maxTokens: Math.max(opts.maxTokens || 0, 2400) },
   });
 
   for (const attempt of attempts) {
@@ -440,10 +446,71 @@ export async function chatJson<T = any>(messages: ChatMessage[], opts: ChatOptio
   return null;
 }
 
+/* 思考标签相关常量：用字符码拼出来，避免源码里的标签字面量被任何"清洗"环节吃掉 */
+const TAG_LT = String.fromCharCode(60);
+const TAG_GT = String.fromCharCode(62);
+const THINK_OPENERS = [`${TAG_LT}thinking${TAG_GT}`, ` ${TAG_LT}redacted_thinking${TAG_GT}`];
+const THINK_CLOSERS = [`${TAG_LT}/thinking${TAG_GT}`, ` ${TAG_LT}/redacted_thinking${TAG_GT}`];
+const THINK_BLOCK_RE = new RegExp(
+  `${TAG_LT}think(?:ing)?(?:\\s[^${TAG_GT}]*)?${TAG_GT}[\\s\\S]*?${TAG_LT}/think(?:ing)?\\s*${TAG_GT}`,
+  'gi'
+);
+const REDACTED_BLOCK_RE = new RegExp(
+  ` ${TAG_LT}redacted_thinking${TAG_GT}[\\s\\S]*?${TAG_LT}/redacted_thinking\\s*${TAG_GT}`,
+  'gi'
+);
+const THINK_TAG_ONLY_RE = new RegExp(`${TAG_LT}/?think(?:ing)?(?:\\s[^${TAG_GT}]*)?${TAG_GT}`, 'gi');
+
+/**
+ * 流式增量的"思考标签"过滤：跨 chunk 维护状态。
+ * 返回应当展示给用户的文本（思考中的内容全部丢弃）。
+ */
+export function filterThinkDelta(state: { inThink: boolean }, piece: string): string {
+  let rest = String(piece || '');
+  let out = '';
+  while (rest) {
+    if (state.inThink) {
+      let idx = -1;
+      let len = 0;
+      for (const c of THINK_CLOSERS) {
+        const i = rest.indexOf(c);
+        if (i >= 0 && (idx < 0 || i < idx)) {
+          idx = i;
+          len = c.length;
+        }
+      }
+      if (idx < 0) return out; // 还没闭合：这一段都是思考内容
+      rest = rest.slice(idx + len);
+      state.inThink = false;
+      continue;
+    }
+    let idx = -1;
+    let len = 0;
+    for (const o of THINK_OPENERS) {
+      const i = rest.indexOf(o);
+      if (i < 0) continue;
+      // 带空格的 redacted 标签只在片段开头才认，避免误伤正常英文里的 thinking
+      if (o.charCodeAt(0) === 32 && rest.slice(0, i).trim() !== '') continue;
+      if (idx < 0 || i < idx) {
+        idx = i;
+        len = o.length;
+      }
+    }
+    if (idx < 0) return out + rest;
+    out += rest.slice(0, idx);
+    rest = rest.slice(idx + len);
+    state.inThink = true;
+  }
+  return out;
+}
+
 export function cleanContent(text: string): string {
   let t = String(text || '');
-  t = t.replace(/<think[\s\S]*?<\/think>/gi, '');
-  t = t.replace(/^```[\s\S]*?```$/g, (m) => m.replace(/```/g, ''));
+  // 思考标签（thinking 与 redacted 两种变体）整段去掉，残留标签本身也清掉
+  t = t.replace(THINK_BLOCK_RE, '');
+  t = t.replace(REDACTED_BLOCK_RE, '');
+  t = t.replace(THINK_TAG_ONLY_RE, '');
+  t = t.replace(/^```[a-z]*\s*([\s\S]*?)```$/i, '$1');
   return t.trim();
 }
 

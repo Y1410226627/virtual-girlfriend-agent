@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
+  maximumScale: 5, // 允许缩放（无障碍：不要锁死用户的双指缩放）
   themeColor: '#FFF9F5',
 };
 

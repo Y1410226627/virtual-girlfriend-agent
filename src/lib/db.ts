@@ -805,6 +805,31 @@ export function getAllSettings(): Record<string, string> {
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* 敏感项掩码：读取给前端时只回传掩码，写入时忽略掩码值                  */
+/* ------------------------------------------------------------------ */
+export const SECRET_SETTING_KEYS = ['llm_api_key', 'embedding_api_key'];
+
+export function maskSecret(value: string | null | undefined): string {
+  const v = String(value || '');
+  if (!v) return '';
+  if (v.length <= 4) return '••••';
+  return `••••••••${v.slice(-4)}`;
+}
+
+export function looksLikeMask(value: unknown): boolean {
+  return typeof value === 'string' && value.includes('•');
+}
+
+/** 给前端展示用的设置副本（API Key 只回传掩码，明文不出后端） */
+export function maskSettingsForClient(settings: Record<string, string>): Record<string, string> {
+  const out = { ...settings };
+  for (const k of SECRET_SETTING_KEYS) {
+    if (out[k]) out[k] = maskSecret(out[k]);
+  }
+  return out;
+}
+
 export function numSetting(key: string, def: number): number {
   const v = getSetting(key);
   const n = Number(v);
@@ -907,6 +932,7 @@ export function wipeAllData(keepSettings = true): void {
     'counters',
     'agent_daily_events',
     'life_state_logs',
+    'ongoing_events',
     'intimacy_aftercare',
     'intimacy_preferences',
     'world_weekly_snapshots',
