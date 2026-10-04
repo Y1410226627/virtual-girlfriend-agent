@@ -1,0 +1,22 @@
+# dependencies
+node_modules
+
+# build output
+.next
+out
+*.tsbuildinfo
+
+# 用户数据（聊天记录 / 记忆数据库：绝对不要提交）
+data/
+
+# 本地私密配置（API Key 等：绝对不要提交）
+.env
+.env.local
+.env*.local
+*.bak-*
+
+# misc
+_probe.mjs
+*.log
+.DS_Store
+Thumbs.db

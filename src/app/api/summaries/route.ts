@@ -1,0 +1,15 @@
+// 每日摘要：查看 / 手动生成
+import { listDailySummaries } from '@/lib/memory';
+import { maybeGenerateDailySummary } from '@/lib/analysis';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  return Response.json({ summaries: listDailySummaries(60) });
+}
+
+export async function POST() {
+  const summary = await maybeGenerateDailySummary(true);
+  return Response.json({ ok: true, summary, summaries: listDailySummaries(60) });
+}

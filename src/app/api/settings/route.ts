@@ -1,0 +1,221 @@
+// 设置：模型档案（随时切换 + 自动备用链）/ 主动频率 / 场景 / 隐私
+import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpCounter, DEFAULT_USER_ID } from '@/lib/db';
+import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState } from '@/lib/relationship';
+import { embeddingMode, lastUsedTarget, testTarget } from '@/lib/llm';
+import {
+  listProfiles,
+  applyProfile,
+  upsertProfile,
+  deleteProfile,
+  moveProfile,
+  saveCurrentAsProfile,
+  activeProfile,
+  seedProfilesIfEmpty,
+  healthSnapshot,
+} from '@/lib/profiles';
+import { getPersonalityRows } from '@/lib/personality';
+import { getAttachmentState } from '@/lib/attachment';
+import { backfillEmbeddings } from '@/lib/memory';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+const EDITABLE = new Set([
+  'agent_name',
+  'user_name',
+  'user_profile',
+  'agent_story',
+  'personality_openness',
+  'proactive_frequency',
+  'quiet_start',
+  'quiet_end',
+  'dnd',
+  'stage_dwell_days',
+  'context_size',
+  'memory_top_k',
+  'scene_mode',
+  'life_enabled',
+  'cycle_enabled',
+  'life_share_chance',
+  'llm_base_url',
+  'llm_api_key',
+  'llm_model',
+  'llm_analysis_model',
+  'embedding_model',
+  'embedding_base_url',
+  'embedding_api_key',
+  'analysis_thinking',
+]);
+
+export async function GET() {
+  seedProfilesIfEmpty();
+  const settings = getAllSettings();
+  const cfg = llmConfig();
+  const persona = getPersona();
+  return Response.json({
+    settings,
+    persona,
+    effective: {
+      baseUrl: cfg.baseUrl,
+      model: cfg.model,
+      analysisModel: cfg.analysisModel,
+      embeddingModel: cfg.embeddingModel,
+      embeddingBaseUrl: cfg.embeddingBaseUrl,
+      hasKey: !!cfg.apiKey,
+      keyFromEnv: !settings.llm_api_key && !!process.env.LLM_API_KEY,
+      baseUrlFromEnv: !settings.llm_base_url && !!process.env.LLM_BASE_URL,
+      embeddingMode: embeddingMode(),
+      analysisThinking: cfg.analysisThinking,
+      activeProfile: activeProfile()?.label || null,
+      lastUsed: lastUsedTarget(),
+    },
+    profiles: listProfiles(),
+    health: healthSnapshot(),
+  });
+}
+
+export async function PUT(req: Request) {
+  const body = await req.json().catch(() => ({}));
+  const incoming = body?.settings && typeof body.settings === 'object' ? body.settings : body;
+  const changed: string[] = [];
+  for (const [k, v] of Object.entries(incoming || {})) {
+    if (!EDITABLE.has(k)) continue;
+    setSetting(k, typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v ?? ''));
+    changed.push(k);
+  }
+  if ('agent_name' in (incoming || {})) setPersonaField('agent_name', String(incoming.agent_name || ''));
+  if ('agent_story' in (incoming || {})) setPersonaField('self_story', String(incoming.agent_story || ''));
+  if ('user_name' in (incoming || {})) setUserName(String(incoming.user_name || ''));
+
+  // 改模型 / 向量相关设置后，让缓存按新配置重建，确保立即生效
+  if (changed.some((k) => k.startsWith('llm_') || k.startsWith('embedding_') || k === 'analysis_thinking')) {
+    bumpCounter('config_version', 1);
+  }
+  if ('cycle_enabled' in (incoming || {})) {
+    dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', String(incoming.cycle_enabled) === 'true' ? 1 : 0, DEFAULT_USER_ID);
+  }
+  return Response.json({ ok: true, changed, settings: getAllSettings(), profiles: listProfiles() });
+}
+
+export async function POST(req: Request) {
+  const body = await req.json().catch(() => ({}));
+  const action = String(body?.action || '');
+  seedProfilesIfEmpty();
+
+  if (action === 'apply_profile') {
+    const id = Number(body.id);
+    const ok = applyProfile(id);
+    return Response.json({
+      ok,
+      message: ok ? `已切换到「${activeProfile()?.label}」，立即生效` : '档案不存在',
+      profiles: listProfiles(),
+      effective: {
+        baseUrl: llmConfig().baseUrl,
+        model: llmConfig().model,
+        analysisModel: llmConfig().analysisModel,
+        embeddingMode: embeddingMode(),
+      },
+    });
+  }
+
+  if (action === 'save_profile' || action === 'update_profile') {
+    const label = String(body.label || '').trim();
+    const baseUrl = String(body.base_url || '').trim();
+    const chatModel = String(body.chat_model || '').trim();
+    if (!label || !baseUrl || !chatModel) return Response.json({ error: '名称、接口地址、模型名都不能为空' }, { status: 400 });
+    const id = upsertProfile({
+      id: body.id ? Number(body.id) : undefined,
+      label,
+      base_url: baseUrl.replace(/\/+$/, ''),
+      api_key: String(body.api_key || ''),
+      chat_model: chatModel,
+      analysis_model: String(body.analysis_model || chatModel),
+      embedding_base_url: body.embedding_base_url !== undefined ? String(body.embedding_base_url) : undefined,
+      embedding_api_key: body.embedding_api_key !== undefined ? String(body.embedding_api_key) : undefined,
+      embedding_model: body.embedding_model !== undefined ? String(body.embedding_model) : undefined,
+      note: body.note !== undefined ? String(body.note) : undefined,
+    });
+    return Response.json({ ok: true, id, profiles: listProfiles() });
+  }
+
+  if (action === 'save_current') {
+    const label = String(body.label || '').trim() || `当前配置 ${new Date().toLocaleDateString('zh-CN')}`;
+    const id = saveCurrentAsProfile(label, body.note ? String(body.note) : undefined);
+    return Response.json({ ok: true, id, profiles: listProfiles() });
+  }
+
+  if (action === 'delete_profile') {
+    const ok = deleteProfile(Number(body.id));
+    return Response.json({ ok, profiles: listProfiles(), activeProfile: activeProfile()?.label || null });
+  }
+
+  if (action === 'move_profile') {
+    moveProfile(Number(body.id), Number(body.dir) < 0 ? -1 : 1);
+    return Response.json({ ok: true, profiles: listProfiles() });
+  }
+
+  if (action === 'test_profile') {
+    const p = body.id ? listProfiles().find((x) => x.id === Number(body.id)) : null;
+    const target = p
+      ? { baseUrl: p.base_url, apiKey: p.api_key, model: p.chat_model, label: p.label }
+      : {
+          baseUrl: String(body.base_url || llmConfig().baseUrl),
+          apiKey: String(body.api_key || llmConfig().apiKey),
+          model: String(body.chat_model || llmConfig().model),
+          label: String(body.label || '当前配置'),
+        };
+    const r = await testTarget(target, { timeoutMs: Number(body.timeoutMs) || 30000 });
+    return Response.json({ ok: r.ok, result: r });
+  }
+
+  if (action === 'rebuild_embeddings') {
+    // 换向量模型后重算全部记忆向量（分批，避免一次太久）
+    const limit = Math.min(200, Number(body.limit) || 60);
+    let total = 0;
+    for (let i = 0; i < 5; i++) {
+      const n = await backfillEmbeddings();
+      total += n;
+      if (n < 50) break;
+    }
+    return Response.json({ ok: true, count: total, limit });
+  }
+
+  if (action === 'reset') {
+    const keepSettings = body.keepSettings !== false;
+    wipeAllData(keepSettings);
+    return Response.json({ ok: true, message: keepSettings ? '已清空记忆、性格、依恋、关系与聊天记录（设置保留）' : '已恢复初始状态（包含设置）' });
+  }
+
+  if (action === 'export') {
+    const data: Record<string, any> = {
+      exported_at: new Date().toISOString(),
+      persona: getPersona(),
+      user: { name: getAllSettings().user_name },
+      relationship_state: getRelationshipState(),
+      attachment_state: getAttachmentState(),
+      personality_state: getPersonalityRows(),
+      settings: getAllSettings(),
+      model_profiles: listProfiles(),
+    };
+    for (const t of [
+      'messages',
+      'memories',
+      'relationship_logs',
+      'emotional_bank',
+      'daily_summaries',
+      'events',
+      'personality_logs',
+      'personality_signals',
+      'personality_snapshots',
+      'attachment_logs',
+      'attachment_signals',
+      'conflict_logs',
+      'proactive_messages',
+    ]) {
+      data[t] = dbAll(`SELECT * FROM ${t} WHERE user_id = ?`, DEFAULT_USER_ID);
+    }
+    return Response.json({ ok: true, data });
+  }
+
+  return Response.json({ error: '未知操作' }, { status: 400 });
+}

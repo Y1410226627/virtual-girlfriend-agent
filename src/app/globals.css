@@ -1,0 +1,231 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #fff9f5;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 100% -10%, #ffe7dc 0%, rgba(255, 231, 220, 0) 55%),
+    radial-gradient(900px 500px at -10% 0%, #ffe2e9 0%, rgba(255, 226, 233, 0) 50%),
+    var(--bg);
+  color: #3b2b33;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(246, 92, 138, 0.22);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@layer components {
+  .card {
+    @apply rounded-3xl bg-white/85 backdrop-blur shadow-soft border border-rose-100/70 p-5;
+  }
+  .card-tight {
+    @apply rounded-2xl bg-white/85 backdrop-blur border border-rose-100/70 p-4;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-sm font-medium transition
+      bg-rose-500 text-white hover:bg-rose-600 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium transition
+      bg-white/80 text-ink-700 border border-rose-200 hover:bg-rose-50 active:scale-[0.97];
+  }
+  .btn-soft {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium transition
+      bg-rose-100 text-rose-700 hover:bg-rose-200 active:scale-[0.97];
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium bg-rose-100/80 text-rose-700;
+  }
+  .chip-plain {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium bg-peach-50 text-ink-700 border border-peach-100;
+  }
+  .label {
+    @apply text-xs font-medium text-ink-500 mb-1.5 block;
+  }
+  .input {
+    @apply w-full rounded-2xl border border-rose-200/80 bg-white/90 px-4 py-2.5 text-sm outline-none
+      focus:border-rose-400 focus:ring-2 focus:ring-rose-100 transition placeholder:text-ink-300;
+  }
+  .textarea {
+    @apply w-full rounded-2xl border border-rose-200/80 bg-white/90 px-4 py-3 text-sm outline-none
+      focus:border-rose-400 focus:ring-2 focus:ring-rose-100 transition resize-y placeholder:text-ink-300;
+  }
+  .section-title {
+    @apply text-sm font-semibold text-ink-900 mb-2 flex items-center gap-2;
+  }
+  .dim {
+    @apply text-xs text-ink-500;
+  }
+}
+
+.bubble-agent {
+  border-radius: 22px 22px 22px 6px;
+}
+.bubble-user {
+  border-radius: 22px 22px 6px 22px;
+}
+
+@keyframes dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+.dot-1 { animation: dot 1.2s infinite 0s; }
+.dot-2 { animation: dot 1.2s infinite 0.15s; }
+.dot-3 { animation: dot 1.2s infinite 0.3s; }
+
+/* ---------------- 启动动画 ---------------- */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  background:
+    radial-gradient(900px 520px at 16% 4%, rgba(255, 214, 228, 0.9), rgba(255, 214, 228, 0) 60%),
+    radial-gradient(1000px 620px at 88% 94%, rgba(255, 228, 212, 0.95), rgba(255, 228, 212, 0) 55%),
+    linear-gradient(160deg, #fff3f7 0%, #ffe9f1 45%, #ffe4ea 100%);
+  animation: splash-in 0.45s ease both;
+}
+.splash-leave {
+  animation: splash-out 0.85s ease forwards;
+  pointer-events: none;
+}
+@keyframes splash-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes splash-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.splash-petals {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.splash-petal {
+  position: absolute;
+  top: -6vh;
+  width: 14px;
+  height: 11px;
+  border-radius: 62% 38% 55% 45% / 55% 62% 38% 45%;
+  background: linear-gradient(140deg, #ffd3e4, #ffabc8);
+  opacity: 0.8;
+  animation-name: splash-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.splash-petal-r {
+  animation-name: splash-fall-r;
+}
+@keyframes splash-fall {
+  0% { transform: translate3d(0, -8vh, 0) rotate(0deg); opacity: 0; }
+  12% { opacity: 0.85; }
+  100% { transform: translate3d(9vw, 114vh, 0) rotate(300deg); opacity: 0.45; }
+}
+@keyframes splash-fall-r {
+  0% { transform: translate3d(0, -8vh, 0) rotate(0deg) scaleX(-1); opacity: 0; }
+  12% { opacity: 0.85; }
+  100% { transform: translate3d(-8vw, 114vh, 0) rotate(-300deg) scaleX(-1); opacity: 0.45; }
+}
+
+.splash-stage {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 24px 28px 20px;
+  border-radius: 34px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(255, 190, 214, 0.55);
+  box-shadow:
+    0 26px 80px rgba(244, 114, 182, 0.24),
+    0 6px 22px rgba(244, 114, 182, 0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: splash-pop 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes splash-pop {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.splash-photo {
+  animation: splash-float 3.6s ease-in-out infinite;
+}
+.splash-photo img {
+  display: block;
+  max-height: min(46vh, 430px);
+  max-width: 70vw;
+  width: auto;
+  height: auto;
+  border-radius: 24px;
+  box-shadow: 0 18px 52px rgba(236, 72, 153, 0.26);
+  user-select: none;
+}
+@keyframes splash-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-9px); }
+}
+
+.splash-title {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  background: linear-gradient(120deg, #e11d63, #f472b6 58%, #fb923c);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.splash-sub {
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  color: #9d5d72;
+  min-height: 18px;
+}
+.splash-skip {
+  position: absolute;
+  bottom: 26px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: rgba(157, 93, 114, 0.72);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash,
+  .splash-stage,
+  .splash-photo {
+    animation: none !important;
+  }
+  .splash-petal {
+    display: none;
+  }
+}
