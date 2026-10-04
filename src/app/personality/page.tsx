@@ -131,12 +131,12 @@ export default function PersonalityPage() {
               .filter((s: any) => s.weightedCount > 0)
               .sort((a: any, b: any) => b.weightedCount - a.weightedCount)
               .map((s: any) => (
-                <div key={s.dimension + s.direction} className="rounded-2xl border border-rose-100/80 bg-white/70 px-3.5 py-2.5">
+                <div key={s.dimension + s.direction} className="rounded-2xl border line surf px-3.5 py-2.5">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-ink-900">
-                      {s.label} <span className={s.direction === '+' ? 'text-rose-500' : 'text-sky-500'}>{s.direction === '+' ? '增强 ↗' : '减弱 ↘'}</span>
+                    <span className="font-medium ink-1">
+                      {s.label} <span className={s.direction === '+' ? 'acc' : 'text-sky-500'}>{s.direction === '+' ? '增强 ↗' : '减弱 ↘'}</span>
                     </span>
-                    <span className="text-ink-300">
+                    <span className="ink-3">
                       {s.weightedCount}/{s.thresholdCount} 信号 · {s.contexts}/{s.thresholdContexts} 情境
                     </span>
                   </div>
@@ -147,7 +147,7 @@ export default function PersonalityPage() {
                       tone={s.direction === '+' ? 'rose' : 'peach'}
                     />
                   </div>
-                  <div className="mt-1 text-[11px] text-ink-300">
+                  <div className="mt-1 text-[11px] ink-3">
                     平均强度 {s.avgStrength}
                     {s.ready
                       ? ' · 已达阈值，下一轮会调整'
@@ -174,11 +174,11 @@ export default function PersonalityPage() {
         >
           <div className="grid gap-3 md:grid-cols-2">
             {state.map((s: any, i: number) => (
-              <div key={s.key} className="rounded-2xl border border-rose-100/80 bg-white/70 px-4 py-3">
+              <div key={s.key} className="rounded-2xl border line surf px-4 py-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-ink-900">{s.label}</span>
+                      <span className="text-sm font-medium ink-1">{s.label}</span>
                       {s.solidified ? <Chip>已半固化</Chip> : null}
                     </div>
                     <div className="dim mt-0.5">{s.desc}</div>
@@ -224,15 +224,15 @@ export default function PersonalityPage() {
           <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
             {(data?.logs || []).length === 0 ? <p className="dim">还没有发生过性格调整。</p> : null}
             {(data?.logs || []).map((l: any) => (
-              <div key={l.id} className="rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+              <div key={l.id} className="rounded-2xl border line surf px-3.5 py-2.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-ink-900">
+                  <span className="font-medium ink-1">
                     {state.find((s: any) => s.key === l.dimension)?.label || l.dimension}
-                    <span className={l.delta >= 0 ? ' text-rose-500' : ' text-sky-500'}>
+                    <span className={l.delta >= 0 ? ' acc' : ' text-sky-500'}>
                       {' '}{l.old_value} → {l.new_value}
                     </span>
                   </span>
-                  <span className="text-ink-300">{fmtTime(l.created_at)}</span>
+                  <span className="ink-3">{fmtTime(l.created_at)}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   <Chip tone="plain">
@@ -251,9 +251,9 @@ export default function PersonalityPage() {
           {(data?.snapshots || []).length === 0 ? <p className="dim">还没有快照。</p> : null}
           <div className="space-y-2">
             {(data?.snapshots || []).map((s: any) => (
-              <div key={s.id} className="flex items-center justify-between rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+              <div key={s.id} className="flex items-center justify-between rounded-2xl border line surf px-3.5 py-2.5">
                 <div>
-                  <div className="text-xs font-medium text-ink-900">{s.week}</div>
+                  <div className="text-xs font-medium ink-1">{s.week}</div>
                   <div className="dim mt-0.5">
                     {Object.entries(safeParse(s.values_json))
                       .map(([k, v]) => `${state.find((x: any) => x.key === k)?.label || k} ${v}`)

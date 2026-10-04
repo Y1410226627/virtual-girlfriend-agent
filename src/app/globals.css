@@ -2,8 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------- 主题变量：浅色为默认，html.dark 覆盖 ---------------- */
 :root {
-  --bg: #fff9f5;
+  color-scheme: light;
+  --bg: #fff9f5; /* 页面底色 */
+  --surface: rgba(255, 255, 255, 0.86); /* 卡片 / 气泡底 */
+  --surface-2: rgba(255, 255, 255, 0.66); /* 次级底：输入框 / 侧栏 */
+  --line: rgba(255, 210, 222, 0.85); /* 边框 */
+  --ink-1: #3b2b33; /* 正文（近黑） */
+  --ink-2: #5b4650; /* 次要文字 */
+  --ink-3: #a88e99; /* 最次文字 */
+  --accent: #f65c8a; /* 玫瑰主色（实心底色） */
+  --accent-hover: #e03e70;
+  --accent-text: #e03e70; /* 玫瑰色文字 */
+  --accent-2-text: #e85a38; /* 暖橙文字 */
+  --accent-soft: rgba(255, 241, 244, 0.9); /* 浅粉底（chip / 提示框） */
+  --glow-1: #ffe7dc; /* 页面底色光晕 */
+  --glow-2: #ffe2e9;
+  --scroll-thumb: rgba(246, 92, 138, 0.22);
+}
+
+/* 暗色：暗玫瑰氛围，避免纯黑纯灰 */
+html.dark {
+  color-scheme: dark;
+  --bg: #191216;
+  --surface: rgba(35, 26, 30, 0.92);
+  --surface-2: rgba(28, 21, 25, 0.92);
+  --line: #3a2c31;
+  --ink-1: #f3e8ea;
+  --ink-2: #c9b6bb;
+  --ink-3: #8f7d83;
+  --accent: #fb7185;
+  --accent-hover: #f85f78;
+  --accent-text: #fb7185;
+  --accent-2-text: #ffb59a;
+  --accent-soft: rgba(251, 113, 133, 0.16);
+  --glow-1: rgba(251, 113, 133, 0.14);
+  --glow-2: rgba(255, 150, 190, 0.12);
+  --scroll-thumb: rgba(251, 113, 133, 0.32);
 }
 
 html,
@@ -13,10 +49,10 @@ body {
 
 body {
   background:
-    radial-gradient(1200px 600px at 100% -10%, #ffe7dc 0%, rgba(255, 231, 220, 0) 55%),
-    radial-gradient(900px 500px at -10% 0%, #ffe2e9 0%, rgba(255, 226, 233, 0) 50%),
+    radial-gradient(1200px 600px at 100% -10%, var(--glow-1) 0%, transparent 55%),
+    radial-gradient(900px 500px at -10% 0%, var(--glow-2) 0%, transparent 50%),
     var(--bg);
-  color: #3b2b33;
+  color: var(--ink-1);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -32,14 +68,14 @@ a:active,
 
 html {
   scrollbar-width: thin;
-  scrollbar-color: rgba(246, 92, 138, 0.22) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(246, 92, 138, 0.22);
+  background: var(--scroll-thumb);
   border-radius: 999px;
 }
 ::-webkit-scrollbar-track {
@@ -48,45 +84,117 @@ html {
 
 @layer components {
   .card {
-    @apply rounded-3xl bg-white/85 shadow-soft border border-rose-100/70 p-5;
+    @apply rounded-3xl shadow-soft p-5;
+    background-color: var(--surface);
+    border: 1px solid var(--line);
   }
   .card-tight {
-    @apply rounded-2xl bg-white/85 backdrop-blur border border-rose-100/70 p-4;
+    @apply rounded-2xl backdrop-blur p-4;
+    background-color: var(--surface);
+    border: 1px solid var(--line);
   }
   .btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-sm font-medium transition
-      bg-rose-500 text-white hover:bg-rose-600 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-sm font-medium text-white transition active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: var(--accent);
+  }
+  .btn:hover {
+    background-color: var(--accent-hover);
   }
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium transition
-      bg-white/80 text-ink-700 border border-rose-200 hover:bg-rose-50 active:scale-[0.97];
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium transition active:scale-[0.97];
+    background-color: var(--surface-2);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    backdrop-filter: blur(6px);
+  }
+  .btn-ghost:hover {
+    background-color: var(--accent-soft);
   }
   .btn-soft {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium transition
-      bg-rose-100 text-rose-700 hover:bg-rose-200 active:scale-[0.97];
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium transition active:scale-[0.97];
+    background-color: var(--accent-soft);
+    color: var(--accent-text);
+  }
+  .btn-soft:hover {
+    filter: brightness(0.97);
   }
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium bg-rose-100/80 text-rose-700;
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium;
+    background-color: var(--accent-soft);
+    color: var(--accent-text);
   }
   .chip-plain {
-    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium bg-peach-50 text-ink-700 border border-peach-100;
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium;
+    background-color: var(--surface-2);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
   }
   .label {
-    @apply text-xs font-medium text-ink-500 mb-1.5 block;
+    @apply text-xs font-medium mb-1.5 block;
+    color: var(--ink-2);
   }
   .input {
-    @apply w-full rounded-2xl border border-rose-200/80 bg-white/90 px-4 py-2.5 text-sm outline-none
-      focus:border-rose-400 focus:ring-2 focus:ring-rose-100 transition placeholder:text-ink-300;
+    @apply w-full rounded-2xl px-4 py-2.5 text-sm outline-none transition;
+    background-color: var(--surface-2);
+    color: var(--ink-1);
+    border: 1px solid var(--line);
+  }
+  .input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
   }
   .textarea {
-    @apply w-full rounded-2xl border border-rose-200/80 bg-white/90 px-4 py-3 text-sm outline-none
-      focus:border-rose-400 focus:ring-2 focus:ring-rose-100 transition resize-y placeholder:text-ink-300;
+    @apply w-full rounded-2xl px-4 py-3 text-sm outline-none transition resize-y;
+    background-color: var(--surface-2);
+    color: var(--ink-1);
+    border: 1px solid var(--line);
+  }
+  .textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  .input::placeholder,
+  .textarea::placeholder {
+    color: var(--ink-3);
   }
   .section-title {
-    @apply text-sm font-semibold text-ink-900 mb-2 flex items-center gap-2;
+    @apply text-sm font-semibold mb-2 flex items-center gap-2;
+    color: var(--ink-1);
   }
   .dim {
-    @apply text-xs text-ink-500;
+    @apply text-xs;
+    color: var(--ink-2);
+  }
+}
+
+/* 语义工具类：颜色全部走主题变量，供页面 className 使用（支持 hover: 等变体） */
+@layer utilities {
+  .surf {
+    background-color: var(--surface);
+  }
+  .surf-2 {
+    background-color: var(--surface-2);
+  }
+  .accent-soft {
+    background-color: var(--accent-soft);
+  }
+  .line {
+    border-color: var(--line);
+  }
+  .ink-1 {
+    color: var(--ink-1);
+  }
+  .ink-2 {
+    color: var(--ink-2);
+  }
+  .ink-3 {
+    color: var(--ink-3);
+  }
+  .acc {
+    color: var(--accent-text);
+  }
+  .acc-2 {
+    color: var(--accent-2-text);
   }
 }
 

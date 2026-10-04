@@ -32,6 +32,13 @@ export default function ChatPage() {
   const [delCascade, setDelCascade] = useState(false); // 默认不连带撤销记忆/数值（要撤销需自己勾）
   const [deleting, setDeleting] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
+  // 语音条：当前正在朗读的消息 id（null = 没有在播）
+  const [playingId, setPlayingId] = useState<number | null>(null);
+  // 她的照片弹层
+  const [photoOpen, setPhotoOpen] = useState(false);
+  const [photoLoading, setPhotoLoading] = useState(false);
+  const [photoSrc, setPhotoSrc] = useState<string | null>(null);
+  const [photoCaption, setPhotoCaption] = useState('');
   // 当前事件控制（她开始睡觉/吃饭/洗澡这类事情时，由你决定它什么时候结束）
   const [evBusy, setEvBusy] = useState(false);
   const [evCustomOpen, setEvCustomOpen] = useState(false);
@@ -47,6 +54,10 @@ export default function ChatPage() {
   const visitAtRef = useRef<number>(Date.now()); // "你这次进来"的时间（用于"她等了你多久"）
   const delCancelRef = useRef<HTMLButtonElement>(null);
   const analysisTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null); // 当前在播的语音
+  const audioUrlRef = useRef<string | null>(null); // 对应 blob URL，需回收
+  const stickerPanelRef = useRef<HTMLDivElement>(null); // 表情面板（点外部关闭）
+  const stickerBtnRef = useRef<HTMLButtonElement>(null); // 表情按钮（点它不算外部）
 
   /* 卸载时清掉分析轮询定时器（避免路由切换后还在跑、对已卸载组件 setState） */
   useEffect(() => {
@@ -54,6 +65,15 @@ export default function ChatPage() {
       if (analysisTimerRef.current) {
         clearInterval(analysisTimerRef.current);
         analysisTimerRef.current = null;
+      }
+      // 顺手停掉可能在播的语音、回收 blob URL
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
       }
     };
   }, []);
@@ -78,6 +98,35 @@ export default function ChatPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [delTarget]);
+
+  /* 表情面板：点面板/按钮之外的地方，或按 Esc 都收起 */
+  useEffect(() => {
+    if (!stickerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setStickerOpen(false);
+    };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (stickerPanelRef.current?.contains(t) || stickerBtnRef.current?.contains(t)) return;
+      setStickerOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [stickerOpen]);
+
+  /* 她的照片弹层：Esc 关闭 */
+  useEffect(() => {
+    if (!photoOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPhotoOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [photoOpen]);
 
   const scrollToBottom = useCallback((smooth = false, force = false) => {
     const el = listRef.current;
@@ -404,9 +453,106 @@ export default function ChatPage() {
     }
   };
 
-  const sendSticker = async (id: string) => {
+  /* 表情面板选一个：把 token 追加进输入框（不直接发送），然后收起面板 */
+  const insertSticker = (id: string) => {
+    const token = `[[sticker:${id}]]`;
+    setInput((cur) => (cur && !cur.endsWith(' ') ? `${cur} ${token}` : `${cur}${token}`));
     setStickerOpen(false);
-    await send(`[[sticker:${id}]]`);
+  };
+
+  /* 语音条：停掉当前播放并回收 blob URL */
+  const stopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current = null;
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+    setPlayingId(null);
+  };
+
+  /* 朗读文本清洗：去掉表情包标记与（动作）这类舞台提示，避免念出来很奇怪 */
+  const ttsText = (content: string) =>
+    String(content || '')
+      .replace(/\[\[\s*(?:sticker|表情包)\s*[:：]?\s*[a-z_]+\s*\]\]/gi, ' ')
+      .replace(/（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  /* 朗读一条她的消息：同一个按钮再点一次 = 停止；同时只允许一个在播 */
+  const playTts = async (m: Msg) => {
+    if (playingId === m.id) {
+      stopAudio();
+      return;
+    }
+    stopAudio();
+    const text = ttsText(m.content);
+    if (!text) {
+      setToast('这条没什么可读的');
+      return;
+    }
+    setPlayingId(m.id); // 立刻给出"加载中/在播"的视觉反馈
+    try {
+      const r = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setPlayingId(null);
+        setToast(j?.error || '语音生成失败');
+        return;
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audioUrlRef.current = url;
+      audio.onended = () => {
+        if (audioUrlRef.current === url) {
+          URL.revokeObjectURL(url);
+          audioUrlRef.current = null;
+        }
+        audioRef.current = null;
+        setPlayingId(null);
+      };
+      audio.onerror = () => {
+        setToast('语音播放失败');
+        stopAudio();
+      };
+      await audio.play();
+    } catch (e: any) {
+      setToast(`语音播放失败：${e?.message || e}`);
+      stopAudio();
+    }
+  };
+
+  /* 打开"她的照片"弹层：每次点击都重新请求，失败也显示本地立绘兜底 */
+  const openPhoto = async () => {
+    setPhotoOpen(true);
+    setPhotoLoading(true);
+    setPhotoSrc(null);
+    setPhotoCaption('');
+    try {
+      const r = await fetch('/api/photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const j = await r.json().catch(() => ({}));
+      setPhotoSrc(j?.image || j?.imageUrl || '/splash-girl.jpg');
+      setPhotoCaption(j?.caption || '');
+    } catch {
+      setPhotoSrc('/splash-girl.jpg');
+      setPhotoCaption('（她今天不太想拍照…）');
+    } finally {
+      setPhotoLoading(false);
+    }
   };
 
   const doDelete = async () => {
@@ -614,24 +760,29 @@ export default function ChatPage() {
   return (
     <div className="flex h-screen flex-col">
       {/* 顶部状态 */}
-      <header className="sticky top-0 z-30 border-b border-rose-100/80 bg-white/75 px-5 py-3 backdrop-blur md:px-8">
+      <header className="sticky top-0 z-30 border-b line surf px-5 py-3 backdrop-blur md:px-8">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-rose-300 to-peach-400 text-lg text-white shadow-bubble">
+          <button
+            onClick={openPhoto}
+            title="看看她"
+            aria-label="看看她"
+            className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-gradient-to-br from-rose-300 to-peach-400 text-lg text-white shadow-bubble transition hover:scale-105 active:scale-95"
+          >
             {her.slice(0, 1)}
-          </div>
+          </button>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-ink-900">{her}</span>
+              <span className="font-semibold ink-1">{her}</span>
               <span className="chip">{stageName}期</span>
               <span className="chip-plain">{mood}</span>
               {state?.relationship?.conflict_state && state.relationship.conflict_state !== 'none' ? (
-                <span className="chip !bg-rose-200/90">别扭中</span>
+                <span className="chip !accent-soft">别扭中</span>
               ) : null}
               {state?.relationship?.pending_relationship_talk ? <span className="chip-plain">想谈谈</span> : null}
               {state?.relationship?.pending_stage_confirm ? <span className="chip-plain">想确认关系</span> : null}
             </div>
             <div className="mt-1 flex items-center gap-2">
-              <span className="text-[11px] text-ink-300">亲密度 {Math.round(intimacy)}</span>
+              <span className="text-[11px] ink-3">亲密度 {Math.round(intimacy)}</span>
               <div className="w-24">
                 <Bar value={intimacy} height={5} />
               </div>
@@ -639,12 +790,12 @@ export default function ChatPage() {
           </div>
           <div className="flex items-center gap-2">
             <span
-              className={`chip-plain hidden sm:inline-flex ${scene === 'offline' ? '!bg-peach-100 !text-peach-700' : ''}`}
+              className={`chip-plain hidden sm:inline-flex ${scene === 'offline' ? '!accent-soft !acc-2' : ''}`}
               title={state?.relationship?.sceneReason || ''}
             >
               {scene === 'offline' ? '线下相处' : '线上聊天'}
             </span>
-            <div className="flex items-center gap-0.5 rounded-full border border-rose-100 bg-white/70 p-0.5 text-[11px]">
+            <div className="flex items-center gap-0.5 rounded-full border line surf p-0.5 text-[11px]">
               {(
                 [
                   ['auto', '自动'],
@@ -657,7 +808,7 @@ export default function ChatPage() {
                   onClick={() => setSceneMode(k)}
                   title={k === 'auto' ? '智能识别线上/线下' : `强制${label}对话`}
                   className={`rounded-full px-2.5 py-1 transition ${
-                    sceneMode === k ? 'bg-rose-500 text-white' : 'text-ink-500 hover:bg-rose-50'
+                    sceneMode === k ? 'bg-rose-500 text-white' : 'ink-2 hover:accent-soft'
                   }`}
                 >
                   {label}
@@ -669,7 +820,7 @@ export default function ChatPage() {
             </Link>
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-ink-500">
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] ink-2">
           {state?.life ? (
             <>
               <span title="她当前的位置">📍 {state.life.location}</span>
@@ -677,17 +828,17 @@ export default function ChatPage() {
               <span title="精力">精力 {Math.round(state.life.energy)}</span>
               <span title="情绪">{state.life.emotion}</span>
               {state.life.illness && state.life.illness !== 'none' ? (
-                <span className="text-rose-500">🤒 {state.life.illness}中</span>
+                <span className="acc">🤒 {state.life.illness}中</span>
               ) : null}
             </>
           ) : null}
-          {state?.intimacy?.inAftercare ? <span className="text-rose-500">刚亲密过 · 事后</span> : null}
+          {state?.intimacy?.inAftercare ? <span className="acc">刚亲密过 · 事后</span> : null}
         </div>
         {state?.life?.ongoingEvent ? (
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-peach-200 bg-peach-50/70 px-3 py-2 text-[11px]">
-            <span className="text-ink-900">
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border line accent-soft px-3 py-2 text-[11px]">
+            <span className="ink-1">
               她正在「{state.life.ongoingEvent.activity}」
-              <span className="ml-2 text-ink-300">
+              <span className="ml-2 ink-3">
                 {state.life.ongoingEvent.expectedEnd
                   ? `预计 ${fmtTime(state.life.ongoingEvent.expectedEnd)} 结束 · ${remainText(state.life.ongoingEvent.expectedEnd)}`
                   : '结束时间由你定'}
@@ -695,7 +846,7 @@ export default function ChatPage() {
             </span>
             <span className="flex-1" />
             <button
-              className={`btn-ghost !px-2 !py-1 text-[11px] ${evImmediateOpen ? '!bg-rose-100 !text-rose-700' : ''}`}
+              className={`btn-ghost !px-2 !py-1 text-[11px] ${evImmediateOpen ? '!accent-soft !acc' : ''}`}
               disabled={evBusy}
               onClick={() => {
                 setEvImmediateOpen((v) => !v);
@@ -714,7 +865,7 @@ export default function ChatPage() {
               智能时长
             </button>
             <button
-              className={`btn-ghost !px-2 !py-1 text-[11px] ${evCustomOpen ? '!bg-rose-100 !text-rose-700' : ''}`}
+              className={`btn-ghost !px-2 !py-1 text-[11px] ${evCustomOpen ? '!accent-soft !acc' : ''}`}
               disabled={evBusy}
               onClick={() => {
                 setEvCustomOpen((v) => !v);
@@ -724,11 +875,11 @@ export default function ChatPage() {
             >
               自定义时长
             </button>
-            {evBusy ? <span className="animate-pulse-soft text-rose-500">处理中…</span> : null}
+            {evBusy ? <span className="animate-pulse-soft acc">处理中…</span> : null}
           </div>
         ) : null}
         {state?.life?.ongoingEvent && evImmediateOpen ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] ink-2">
             <span>按等效时长结束：假定「{state.life.ongoingEvent.activity}」持续了</span>
             <input
               className="input !w-20 !px-2 !py-1 text-xs"
@@ -772,7 +923,7 @@ export default function ChatPage() {
           </div>
         ) : null}
         {state?.life?.ongoingEvent && evCustomOpen ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] ink-2">
             <span>再过</span>
             <input
               className="input !w-20 !px-2 !py-1 text-xs"
@@ -805,14 +956,14 @@ export default function ChatPage() {
           </div>
         ) : null}
         {recalling ? (
-          <div className="mt-2 text-[11px] text-rose-500 animate-pulse-soft">她在回味刚才的对话…（更新记忆、性格信号、关系数值）</div>
+          <div className="mt-2 text-[11px] acc animate-pulse-soft">她在回味刚才的对话…（更新记忆、性格信号、关系数值）</div>
         ) : null}
       </header>
 
       {/* 消息列表 */}
       <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 md:px-8">
         {loadErr ? (
-          <div className="mx-auto max-w-md rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-700">
+          <div className="mx-auto max-w-md rounded-2xl border line accent-soft px-4 py-3 text-xs acc">
             {loadErr}
           </div>
         ) : null}
@@ -820,7 +971,7 @@ export default function ChatPage() {
         {messages.length === 0 && !onboard ? (
           <div className="mx-auto mt-16 max-w-md text-center">
             <div className="text-4xl">💌</div>
-            <p className="mt-4 text-sm leading-relaxed text-ink-700">
+            <p className="mt-4 text-sm leading-relaxed ink-2">
               你们还没有聊过。
               <br />
               说句话试试——她还不知道你的名字，也不知道自己该叫什么。
@@ -846,7 +997,7 @@ export default function ChatPage() {
 
         {onboard ? (
           <div className="mx-auto mt-10 max-w-md card animate-fade-up">
-            <h2 className="text-base font-semibold text-ink-900">先认识一下吧</h2>
+            <h2 className="text-base font-semibold ink-1">先认识一下吧</h2>
             <p className="dim mt-1 leading-relaxed">
               她还没有名字，也还不知道怎么称呼你。可以现在填，也可以在聊天里慢慢聊出来。
             </p>
@@ -882,7 +1033,7 @@ export default function ChatPage() {
         ) : null}
 
         <div className="mx-auto max-w-3xl space-y-3">
-          {waitHint ? <div className="text-center text-[11px] text-ink-300">{waitHint}</div> : null}
+          {waitHint ? <div className="text-center text-[11px] ink-3">{waitHint}</div> : null}
           {messages.map((m) => (
             <div
               key={m.id}
@@ -895,7 +1046,7 @@ export default function ChatPage() {
                     setDelCascade(false);
                   }}
                   title="删除这条消息"
-                  className="shrink-0 rounded-full border border-rose-100 bg-white/80 px-2 py-0.5 text-[11px] text-ink-300 opacity-50 transition hover:bg-rose-50 hover:text-rose-500 focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                  className="shrink-0 rounded-full border line surf px-2 py-0.5 text-[11px] ink-3 opacity-50 transition hover:accent-soft hover:acc focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
                 >
                   ✕
                 </button>
@@ -905,16 +1056,26 @@ export default function ChatPage() {
                   className={
                     m.role === 'user'
                       ? 'bubble-user bg-gradient-to-br from-rose-400 to-rose-500 px-4 py-2.5 text-sm text-white shadow-bubble whitespace-pre-wrap break-words'
-                      : 'bubble-agent border border-rose-100 bg-white px-4 py-2.5 text-sm text-ink-900 shadow-bubble whitespace-pre-wrap break-words'
+                      : 'bubble-agent border line surf px-4 py-2.5 text-sm ink-1 shadow-bubble whitespace-pre-wrap break-words'
                   }
                 >
                   <RichText text={m.content} tone={m.role === 'user' ? 'user' : 'agent'} stickers={state?.stickers} />
                   {m.streaming ? <span className="ml-1 inline-block h-3 w-1.5 animate-pulse-soft bg-rose-400 align-middle" /> : null}
                 </div>
-                <div className={`mt-1 flex items-center gap-2 text-[10px] text-ink-300 ${m.role === 'user' ? 'justify-end' : ''}`}>
+                <div className={`mt-1 flex items-center gap-2 text-[10px] ink-3 ${m.role === 'user' ? 'justify-end' : ''}`}>
                   <span>{fmtTime(m.created_at)}</span>
                   {m.role === 'assistant' && m.emotion ? <span className="chip">{m.emotion}</span> : null}
                   {m.is_proactive ? <span className="chip-plain">她主动找你的</span> : null}
+                  {m.role === 'assistant' && !m.streaming && m.id > 0 && state?.ttsEnabled ? (
+                    <button
+                      onClick={() => playTts(m)}
+                      title={playingId === m.id ? '停止播放' : '朗读这条'}
+                      aria-label={playingId === m.id ? '停止播放' : '朗读这条'}
+                      className={`btn-ghost !px-1.5 !py-0.5 text-[11px] ${playingId === m.id ? '!accent-soft !acc' : ''}`}
+                    >
+                      {playingId === m.id ? '⏹' : '🔊'}
+                    </button>
+                  ) : null}
                 </div>
                 {m.role === 'assistant' && m.id === lastMsgId && !m.streaming && !sending ? (
                   <div className="mt-1 flex items-center gap-2 opacity-70 transition focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100">
@@ -934,7 +1095,7 @@ export default function ChatPage() {
                     setDelCascade(false);
                   }}
                   title="删除这条消息"
-                  className="shrink-0 rounded-full border border-rose-100 bg-white/80 px-2 py-0.5 text-[11px] text-ink-300 opacity-50 transition hover:bg-rose-50 hover:text-rose-500 focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                  className="shrink-0 rounded-full border line surf px-2 py-0.5 text-[11px] ink-3 opacity-50 transition hover:accent-soft hover:acc focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
                 >
                   ✕
                 </button>
@@ -944,11 +1105,11 @@ export default function ChatPage() {
 
           {typing ? (
             <div className="flex justify-start">
-              <div className="bubble-agent flex items-center gap-1 border border-rose-100 bg-white px-4 py-3 shadow-bubble">
+              <div className="bubble-agent flex items-center gap-1 border line surf px-4 py-3 shadow-bubble">
                 <span className="dot-1 h-1.5 w-1.5 rounded-full bg-rose-400" />
                 <span className="dot-2 h-1.5 w-1.5 rounded-full bg-rose-400" />
                 <span className="dot-3 h-1.5 w-1.5 rounded-full bg-rose-400" />
-                <span className="ml-2 text-[11px] text-ink-300">{busyNote || '对方正在输入…'}</span>
+                <span className="ml-2 text-[11px] ink-3">{busyNote || '对方正在输入…'}</span>
               </div>
             </div>
           ) : null}
@@ -956,11 +1117,11 @@ export default function ChatPage() {
       </div>
 
       {/* 输入框 */}
-      <div className="sticky bottom-0 border-t border-rose-100/80 bg-white/85 px-4 py-3 pb-20 backdrop-blur md:px-8 md:pb-3">
+      <div className="sticky bottom-0 border-t line surf px-4 py-3 pb-20 backdrop-blur md:px-8 md:pb-3">
         {stickerOpen ? (
-          <div className="mx-auto mb-2 max-w-3xl animate-fade-up rounded-2xl border border-rose-100 bg-white/95 p-3 shadow-soft">
+          <div ref={stickerPanelRef} className="mx-auto mb-2 max-w-3xl animate-fade-up rounded-2xl border line surf p-3 shadow-soft">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-medium text-ink-700">挑一个表情包发给她</span>
+              <span className="text-xs font-medium ink-2">挑一个表情，放进输入框再发</span>
               <button className="btn-ghost !py-1 text-xs" onClick={() => setStickerOpen(false)}>
                 收起
               </button>
@@ -969,25 +1130,27 @@ export default function ChatPage() {
               {(state?.stickers || []).map((s: any) => (
                 <button
                   key={s.id}
-                  onClick={() => sendSticker(s.id)}
-                  title={s.meaning}
-                  className="flex flex-col items-center gap-0.5 rounded-2xl border border-rose-100 bg-gradient-to-br from-peach-50 to-rose-50 px-2 py-2 transition hover:border-rose-300 active:scale-95"
+                  onClick={() => insertSticker(s.id)}
+                  title={`${s.caption} · ${s.meaning}`}
+                  className="flex flex-col items-center gap-0.5 rounded-2xl border line accent-soft px-2 py-2 transition hover:border-rose-300 active:scale-95"
                 >
                   <span className="text-2xl leading-none">{s.emoji}</span>
-                  <span className="text-[10px] text-ink-500">{s.caption}</span>
+                  <span className="text-[10px] ink-2">{s.caption}</span>
                 </button>
               ))}
             </div>
-            <p className="dim mt-2">她会看懂你发的表情包（含含义），也会在合适的时候回你一个。</p>
+            <p className="dim mt-2">点一个会加到输入框里（不会直接发出去），可以配着文字一起发。她会看懂你发的表情包（含含义）。</p>
           </div>
         ) : null}
         <div className="mx-auto flex max-w-3xl items-end gap-2">
           <button
-            className={`btn-ghost h-[46px] px-3.5 ${stickerOpen ? '!bg-rose-100 !text-rose-700' : ''}`}
+            ref={stickerBtnRef}
+            className={`btn-ghost h-[46px] px-3.5 ${stickerOpen ? '!accent-soft !acc' : ''}`}
             onClick={() => setStickerOpen((v) => !v)}
-            title="发表情包"
+            title="表情包"
+            aria-label="表情包"
           >
-            😀
+            😊
           </button>
           <textarea
             className="textarea max-h-32 min-h-[46px] flex-1 py-3"
@@ -1025,14 +1188,14 @@ export default function ChatPage() {
           onClick={() => setDelTarget(null)}
         >
           <div
-            className="w-full max-w-md animate-fade-up rounded-3xl bg-white p-5 shadow-xl"
+            className="w-full max-w-md animate-fade-up rounded-3xl surf p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-base font-semibold text-ink-900">删除这条消息？</h3>
-            <div className="mt-2 rounded-2xl bg-rose-50/70 px-3 py-2 text-xs leading-relaxed text-ink-500">
+            <h3 className="text-base font-semibold ink-1">删除这条消息？</h3>
+            <div className="mt-2 rounded-2xl accent-soft px-3 py-2 text-xs leading-relaxed ink-2">
               <RichText text={delTarget.content} stickers={state?.stickers} />
             </div>
-            <label className="mt-3 flex items-start gap-2 text-sm text-ink-700">
+            <label className="mt-3 flex items-start gap-2 text-sm ink-2">
               <input
                 type="checkbox"
                 className="mt-0.5 accent-rose-500"
@@ -1041,7 +1204,7 @@ export default function ChatPage() {
               />
               <span>
                 同时撤销这条消息产生的记忆与影响
-                <span className="mt-1 block text-[11px] leading-relaxed text-ink-300">
+                <span className="mt-1 block text-[11px] leading-relaxed ink-3">
                   会一起撤销：这一轮抽取的记忆、性格信号与性格调整、依恋信号、情感银行收支、亲密度/信任/张力/修复信用等数值变化，以及这一轮的关系日志。
                   关系数值如果是最近这一轮，会精确还原到聊天前；更早的轮次按增量扣回，保留之后的成长。
                   只删被选中的这一条，同轮的另一条消息会保留。
@@ -1055,6 +1218,44 @@ export default function ChatPage() {
               <button className="btn" onClick={doDelete} disabled={deleting}>
                 {deleting ? '处理中…' : '删除'}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {photoOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="她"
+          onClick={() => setPhotoOpen(false)}
+        >
+          <div
+            className="w-full max-w-md animate-fade-up rounded-3xl surf p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold ink-1">她</h3>
+              <button className="btn-ghost !px-2 !py-1 text-xs" onClick={() => setPhotoOpen(false)}>
+                关闭
+              </button>
+            </div>
+            <div className="mt-3 flex flex-col items-center">
+              {photoLoading ? (
+                <div className="flex h-64 w-full items-center justify-center rounded-2xl accent-soft text-sm ink-2 animate-pulse-soft">
+                  正在翻相册…
+                </div>
+              ) : (
+                <img
+                  src={photoSrc || '/splash-girl.jpg'}
+                  alt="她"
+                  className="max-h-[60vh] w-auto rounded-2xl border line object-contain shadow-soft"
+                />
+              )}
+              {!photoLoading && photoCaption ? (
+                <p className="mt-2 text-center text-xs leading-relaxed ink-2">{photoCaption}</p>
+              ) : null}
             </div>
           </div>
         </div>

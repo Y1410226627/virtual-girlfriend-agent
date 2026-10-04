@@ -3,7 +3,7 @@ import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, setCount
 import { clamp, nowIso, localDateStr, round1, truncate } from './utils';
 import { chat, chatJson } from './llm';
 import { buildAnalysisMessages, buildAttachmentAnalysisMessages, buildDailySummaryMessages } from './prompts';
-import { addMemory, forgetSweep, saveDailySummary, recentMessagesForSummary } from './memory';
+import { addMemory, forgetSweep, saveDailySummary, recentMessagesForSummary, applyMemoryCorrection } from './memory';
 import { applyRelationshipDelta, checkStageTransition, getRelationshipState, saveRelationshipState, logRelationship, agentName, userName } from './relationship';
 import { addBankEntry } from './emotionalBank';
 import { registerConflict, registerRepair, type ConflictType, type RepairQuality } from './conflict';
@@ -171,6 +171,18 @@ function normalize(raw: any): AnalysisResult {
   };
 }
 
+/** 解析"记忆纠正"：只保留字段完整、语义有效的项，最多 2 条（字段缺失即视为无纠正） */
+function parseMemoryCorrections(raw: any): { old_hint: string; new_fact: string }[] {
+  const list = Array.isArray(raw?.memory_corrections) ? raw.memory_corrections : [];
+  return list
+    .filter((c: any) => c && typeof c.new_fact === 'string' && c.new_fact.trim().length > 1)
+    .slice(0, 2)
+    .map((c: any) => ({
+      old_hint: typeof c.old_hint === 'string' ? c.old_hint.trim().slice(0, 300) : '',
+      new_fact: String(c.new_fact).trim().slice(0, 500),
+    }));
+}
+
 /** 把一轮对话的上下文整理成文字（供分析使用） */
 function transcript(limit = 10): string {
   const rows = dbAll<any>(
@@ -232,6 +244,16 @@ export async function analyzeTurn(params: {
     for (const m of result.memory_updates) {
       const id = await addMemory(m, params.assistantMessageId ?? null);
       if (id) outcome.applied.memories++;
+    }
+
+    // 1.5) 记忆纠正：用户明确指出她记错了 → 推翻旧记忆并写入正确事实
+    // 全部包在 try/catch 里：字段缺失或落库失败时行为与现在完全一致，绝不影响主流程
+    try {
+      for (const c of parseMemoryCorrections(raw)) {
+        await applyMemoryCorrection(c.old_hint, c.new_fact, params.userMessageId ?? null);
+      }
+    } catch (e) {
+      console.warn('[analysis] memory_corrections 处理失败:', (e as any)?.message || e);
     }
 
     // 2) 关系数值（自定义模式跳过：数值由用户直控）

@@ -12,6 +12,7 @@ const ITEMS = [
   { href: '/personality', label: '性格', icon: '🌱' },
   { href: '/attachment', label: '依恋', icon: '🫧' },
   { href: '/memories', label: '记忆', icon: '📖' },
+  { href: '/story', label: '纪念册', icon: '📔' },
   { href: '/settings', label: '设置', icon: '⚙️' },
 ];
 
@@ -56,9 +57,9 @@ export default function Nav() {
   return (
     <>
       {/* 桌面端侧边栏 */}
-      <aside aria-label="主导航" className="hidden md:flex fixed left-0 top-0 h-screen w-60 flex-col gap-1 border-r border-rose-100/80 bg-white/60 backdrop-blur px-4 py-6">
+      <aside aria-label="主导航" className="hidden md:flex fixed left-0 top-0 h-screen w-60 flex-col gap-1 border-r line surf-2 backdrop-blur px-4 py-6">
         <div className="px-2 pb-4">
-          <div className="text-lg font-semibold text-rose-600">她</div>
+          <div className="text-lg font-semibold acc">她</div>
           <div className="dim mt-0.5">会慢慢长成自己的性格</div>
         </div>
         {ITEMS.map((it) => (
@@ -69,7 +70,7 @@ export default function Nav() {
             className={`flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm transition ${
               isActive(it.href)
                 ? 'bg-rose-500 text-white shadow-bubble'
-                : 'text-ink-700 hover:bg-rose-50'
+                : 'ink-2 hover:accent-soft'
             }`}
           >
             <span className="relative text-base" aria-hidden>
@@ -79,13 +80,13 @@ export default function Nav() {
             {it.label}
           </Link>
         ))}
-        <div className="mt-auto px-3 text-[11px] leading-relaxed text-ink-300">
+        <div className="mt-auto px-3 text-[11px] leading-relaxed ink-3">
           所有数据都存在你自己电脑的本地数据库里，可随时查看、编辑、删除。
         </div>
       </aside>
 
       {/* 移动端底部导航（可横向滚动，页面多了也不会挤） */}
-      <nav aria-label="主导航" className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-rose-100 bg-white/90 backdrop-blur">
+      <nav aria-label="主导航" className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t line surf backdrop-blur">
         <div className="flex items-stretch overflow-x-auto">
           {ITEMS.map((it) => (
             <Link
@@ -93,7 +94,7 @@ export default function Nav() {
               href={it.href}
               aria-current={isActive(it.href) ? 'page' : undefined}
               className={`flex min-w-[62px] flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] ${
-                isActive(it.href) ? 'text-rose-600 font-medium' : 'text-ink-500'
+                isActive(it.href) ? 'acc font-medium' : 'ink-2'
               }`}
             >
               <span className="relative text-lg leading-none" aria-hidden>

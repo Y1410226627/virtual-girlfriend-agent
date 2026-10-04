@@ -10,10 +10,78 @@ import {
   listDailySummaries,
 } from '@/lib/memory';
 import { dbAll, dbRun, DEFAULT_USER_ID } from '@/lib/db';
-import { clamp } from '@/lib/utils';
+import { clamp, truncate } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/**
+ * 记忆星图：在原有 memoryStats() 基础上，追加"最常想起 / 重要度分布 / 散点 / 状态计数"。
+ * 全部在服务端聚合，前端只拿结果，不拉全量再算。
+ * 复用 memoryStats() 的 total / archived / byType，保持既有字段不变。
+ */
+function starStats() {
+  const base = memoryStats();
+
+  // 状态计数：active / archived / superseded（active、archived 复用 memoryStats 的结果）
+  const superseded = Number(
+    dbAll<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM memories WHERE user_id = ? AND status = 'superseded'",
+      DEFAULT_USER_ID
+    )[0]?.c || 0
+  );
+  const counts = {
+    active: Number(base.total || 0),
+    archived: Number(base.archived || 0),
+    superseded,
+  };
+
+  // 最常想起：active 记忆按 access_count 倒序取前 10
+  const topAccessed = dbAll<any>(
+    `SELECT id, content, importance, access_count, type FROM memories
+     WHERE user_id = ? AND status = 'active'
+     ORDER BY access_count DESC, importance DESC, id DESC LIMIT 10`,
+    DEFAULT_USER_ID
+  ).map((m) => ({
+    id: m.id,
+    content: truncate(String(m.content || ''), 60),
+    importance: Number(m.importance || 0),
+    access_count: Number(m.access_count || 0),
+    type: m.type,
+  }));
+
+  // 重要度分布：0-2 / 3-5 / 6-8 / 9-10 四档的 active 计数
+  const bucketRows = dbAll<{ b: number; c: number }>(
+    `SELECT CASE
+        WHEN importance <= 2 THEN 0
+        WHEN importance <= 5 THEN 1
+        WHEN importance <= 8 THEN 2
+        ELSE 3 END AS b,
+       COUNT(*) AS c
+     FROM memories WHERE user_id = ? AND status = 'active'
+     GROUP BY b`,
+    DEFAULT_USER_ID
+  );
+  const importanceBuckets = ['0-2', '3-5', '6-8', '9-10'].map((label, i) => ({
+    label,
+    count: Number(bucketRows.find((r) => Number(r.b) === i)?.c || 0),
+  }));
+
+  // 散点：active 记忆按重要度倒序取最多 200 条
+  const scatter = dbAll<any>(
+    `SELECT id, importance, access_count, content FROM memories
+     WHERE user_id = ? AND status = 'active'
+     ORDER BY importance DESC, access_count DESC, id DESC LIMIT 200`,
+    DEFAULT_USER_ID
+  ).map((m) => ({
+    id: m.id,
+    importance: Number(m.importance || 0),
+    access_count: Number(m.access_count || 0),
+    content: truncate(String(m.content || ''), 40),
+  }));
+
+  return { ...base, counts, topAccessed, importanceBuckets, scatter };
+}
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -30,7 +98,7 @@ export async function GET(req: Request) {
         'SELECT * FROM memories WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
         DEFAULT_USER_ID, status, limit, offset
       );
-  return Response.json({ memories, stats: memoryStats(), summaries: listDailySummaries(30) });
+  return Response.json({ memories, stats: starStats(), summaries: listDailySummaries(30) });
 }
 
 export async function POST(req: Request) {

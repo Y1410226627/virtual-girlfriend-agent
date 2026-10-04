@@ -21,12 +21,15 @@ export function ensureScheduler(): void {
     running = true;
     try {
       // 她的生活先推进（按流逝时间推导，幂等）
-      const { ensureLife, advanceLife, saveWeeklyWorldSnapshot } = await import('./life');
+      const { ensureLife, advanceLife, saveWeeklyWorldSnapshot, tickLifeArc, ensureDailyDiaries } = await import('./life');
       const { advanceIntimacy } = await import('./intimacy');
       ensureLife();
       advanceLife();
       advanceIntimacy();
       saveWeeklyWorldSnapshot();
+      // 跨天剧情线 + 她的日记（内部有节流、失败静默，不会阻塞主流程）
+      await tickLifeArc();
+      await ensureDailyDiaries();
     } catch (e: any) {
       console.warn('[life] advance failed:', e?.message || e);
     }

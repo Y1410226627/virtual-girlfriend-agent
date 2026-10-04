@@ -26,6 +26,19 @@ export const STICKERS: Sticker[] = [
   { id: 'eat', emoji: '🍜', caption: '吃饭了没', meaning: '关心他有没有好好吃饭', tags: ['关心', '日常'] },
   { id: 'miss', emoji: '🥺', caption: '你好久没找我了', meaning: '失落、被冷落了，想被在意', tags: ['失落', '求关注'] },
   { id: 'celebrate', emoji: '🎉', caption: '太好了', meaning: '替他高兴、庆祝', tags: ['开心', '庆祝'] },
+  // 后加的一批：日常问候 / 撒娇 / 关心，保持和上面同一套 emoji 体系
+  { id: 'morning', emoji: '🌞', caption: '早安呀', meaning: '早上的问候，想他今天顺顺利利', tags: ['问候', '日常'] },
+  { id: 'night', emoji: '🌙', caption: '晚安', meaning: '晚上道别、准备睡觉，语气温柔', tags: ['晚安', '温柔'] },
+  { id: 'flower', emoji: '🌸', caption: '送你花花', meaning: '表达喜欢、想讨他开心', tags: ['甜', '喜欢'] },
+  { id: 'angel', emoji: '🥰', caption: '好甜', meaning: '甜到心里、很喜欢他', tags: ['甜', '亲密'] },
+  { id: 'ok', emoji: '👌', caption: '没问题', meaning: '爽快答应、俏皮', tags: ['答应', '俏皮'] },
+  { id: 'proud', emoji: '😌', caption: '拿捏了', meaning: '小得意、胸有成竹', tags: ['得意', '俏皮'] },
+  { id: 'think', emoji: '🤔', caption: '让我想想', meaning: '在思考、有点犹豫', tags: ['思考', '犹豫'] },
+  { id: 'dizzy', emoji: '😵', caption: '脑子转不动了', meaning: '累到发懵，想撒娇求安慰', tags: ['累', '撒娇'] },
+  { id: 'thirsty', emoji: '🥤', caption: '喝口水', meaning: '提醒他喝水、注意身体', tags: ['关心', '日常'] },
+  { id: 'cake', emoji: '🍰', caption: '吃点甜的', meaning: '想一起分享好吃的、哄他开心', tags: ['日常', '甜'] },
+  { id: 'gift', emoji: '🎁', caption: '给你个惊喜', meaning: '想给他准备惊喜、藏着小心思', tags: ['惊喜', '甜'] },
+  { id: 'awkward', emoji: '😅', caption: '有点尴尬', meaning: '小尴尬、想缓和气氛', tags: ['尴尬', '缓和'] },
 ];
 
 export const TOKEN_RE = /\[\[\s*(?:sticker|表情包)\s*[:：]?\s*([a-z_]+)\s*\]\]/gi;

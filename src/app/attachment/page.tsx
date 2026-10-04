@@ -66,7 +66,7 @@ export default function AttachmentPage() {
         </Card>
 
         <Card title="这种倾向意味着什么">
-          <p className="text-sm leading-relaxed text-ink-700">{info.desc}</p>
+          <p className="text-sm leading-relaxed ink-2">{info.desc}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             <Chip tone="plain">{info.tone}</Chip>
             {(data?.pendingSignals || []).map((p: any) => (
@@ -84,8 +84,8 @@ export default function AttachmentPage() {
           <div className="space-y-4">
             <div>
               <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-ink-900">焦虑轴（怕被抛弃）</span>
-                <span className="text-rose-600 font-semibold">{anxiety}</span>
+                <span className="font-medium ink-1">焦虑轴（怕被抛弃）</span>
+                <span className="acc font-semibold">{anxiety}</span>
               </div>
               <input
                 type="range"
@@ -98,8 +98,8 @@ export default function AttachmentPage() {
             </div>
             <div>
               <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-ink-900">回避轴（情感疏离）</span>
-                <span className="text-peach-600 font-semibold">{avoidance}</span>
+                <span className="font-medium ink-1">回避轴（情感疏离）</span>
+                <span className="acc-2 font-semibold">{avoidance}</span>
               </div>
               <input
                 type="range"
@@ -144,12 +144,12 @@ export default function AttachmentPage() {
           {(data?.logs || []).length === 0 ? <p className="dim">还没有调整过。</p> : null}
           <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
             {(data?.logs || []).map((l: any) => (
-              <div key={l.id} className="rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+              <div key={l.id} className="rounded-2xl border line surf px-3.5 py-2.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-ink-900">
+                  <span className="font-medium ink-1">
                     焦虑 {l.old_anxiety} → {l.new_anxiety} · 回避 {l.old_avoidance} → {l.new_avoidance}
                   </span>
-                  <span className="text-ink-500">{fmtTime(l.created_at)}</span>
+                  <span className="ink-2">{fmtTime(l.created_at)}</span>
                 </div>
                 <div className="mt-1 flex items-center gap-2">
                   <Chip tone="plain">{l.trigger}</Chip>
@@ -163,7 +163,7 @@ export default function AttachmentPage() {
 
       <div className="px-5 pt-4 md:px-8">
         <Card title="她现在的依恋行为提示（真实注入到对话里的一段）">
-          <p className="whitespace-pre-wrap text-xs leading-relaxed text-ink-500">{data?.styleMeaning}</p>
+          <p className="whitespace-pre-wrap text-xs leading-relaxed ink-2">{data?.styleMeaning}</p>
         </Card>
       </div>
 

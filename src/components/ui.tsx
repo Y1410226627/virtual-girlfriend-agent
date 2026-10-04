@@ -41,7 +41,7 @@ export function PageHeader({ title, desc, right }: { title: string; desc?: strin
   return (
     <div className="flex items-start justify-between gap-3 px-5 pt-6 pb-3 md:px-8">
       <div>
-        <h1 className="text-xl font-semibold text-ink-900">{title}</h1>
+        <h1 className="text-xl font-semibold ink-1">{title}</h1>
         {desc ? <p className="dim mt-1 max-w-2xl leading-relaxed">{desc}</p> : null}
       </div>
       {right}
@@ -64,13 +64,13 @@ export function Card({ title, right, children, className = '' }: any) {
 }
 
 export function Stat({ label, value, unit, tone = 'rose' }: { label: string; value: any; unit?: string; tone?: 'rose' | 'peach' | 'ink' }) {
-  const color = tone === 'peach' ? 'text-peach-600' : tone === 'ink' ? 'text-ink-700' : 'text-rose-600';
+  const color = tone === 'peach' ? 'acc-2' : tone === 'ink' ? 'ink-2' : 'acc';
   return (
-    <div className="rounded-2xl bg-white/70 border border-rose-100/70 px-3.5 py-3">
+    <div className="rounded-2xl surf border line px-3.5 py-3">
       <div className="dim">{label}</div>
       <div className={`mt-1 text-lg font-semibold ${color}`}>
         {value}
-        {unit ? <span className="ml-0.5 text-xs font-normal text-ink-300">{unit}</span> : null}
+        {unit ? <span className="ml-0.5 text-xs font-normal ink-3">{unit}</span> : null}
       </div>
     </div>
   );
@@ -85,7 +85,7 @@ export function Bar({ value, max = 100, min = 0, tone = 'rose', height = 8 }: { 
         ? 'bg-gradient-to-r from-ink-300 to-ink-500'
         : 'bg-gradient-to-r from-rose-300 to-rose-500';
   return (
-    <div className="w-full rounded-full bg-rose-100/70 overflow-hidden" style={{ height }}>
+    <div className="w-full rounded-full accent-soft overflow-hidden" style={{ height }}>
       <div className={`h-full ${bg} transition-all`} style={{ width: `${pct}%` }} />
     </div>
   );
@@ -101,7 +101,7 @@ export function Loading({ text = '加载中…' }: { text?: string }) {
 
 export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
-    <div role="alert" className="mx-5 my-3 rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 md:mx-8">
+    <div role="alert" className="mx-5 my-3 rounded-2xl border line accent-soft px-4 py-3 text-sm acc md:mx-8">
       <div className="font-medium">出错了</div>
       <div className="mt-1 break-all text-xs leading-relaxed">{message}</div>
       {onRetry ? (
@@ -152,12 +152,12 @@ export function fmtDate(iso?: string | null) {
 export function StickerCard({ id, stickers }: { id: string; stickers?: any[] }) {
   const s = (stickers || []).find((x: any) => x.id === id);
   if (!s) {
-    return <span className="italic text-ink-300">（表情包）</span>;
+    return <span className="italic ink-3">（表情包）</span>;
   }
   return (
-    <span className="my-0.5 inline-flex flex-col items-center gap-0.5 rounded-2xl border border-rose-100 bg-gradient-to-br from-peach-50 to-rose-50 px-3.5 py-2 shadow-bubble">
+    <span className="my-0.5 inline-flex flex-col items-center gap-0.5 rounded-2xl border line accent-soft px-3.5 py-2 shadow-bubble">
       <span className="text-4xl leading-none">{s.emoji}</span>
-      <span className="text-[11px] text-ink-500">{s.caption}</span>
+      <span className="text-[11px] ink-2">{s.caption}</span>
     </span>
   );
 }
@@ -177,7 +177,7 @@ export function RichText({
   tone?: 'agent' | 'user';
   stickers?: any[];
 }) {
-  const actionCls = tone === 'user' ? 'italic text-white/75' : 'italic text-rose-400';
+  const actionCls = tone === 'user' ? 'italic text-white/75' : 'italic acc';
   const src = String(text || '');
   const nodes: React.ReactNode[] = [];
   let key = 0;

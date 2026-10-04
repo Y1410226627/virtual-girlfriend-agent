@@ -58,6 +58,9 @@ export default function WorldPage() {
   const [editStates, setEditStates] = useState(false);
   const [sv, setSv] = useState<Record<string, any>>({});
   const [showAllEvents, setShowAllEvents] = useState(false);
+  // 她身边的人（具名社会关系）编辑
+  const [editCast, setEditCast] = useState(false);
+  const [castDraft, setCastDraft] = useState<Array<{ name: string; role: string; note: string }>>([]);
 
   const post = async (body: any, msg?: string) => {
     setBusy(true);
@@ -124,11 +127,11 @@ export default function WorldPage() {
         <div className="space-y-4 px-5 pt-4 md:px-8">
           <Card title="她现在在做什么">
             <div className="flex flex-wrap items-center gap-3">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-peach-100 to-rose-100 text-2xl">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl accent-soft text-2xl">
                 {emoMap[p.baseEmotion] || '🙂'}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-base font-medium text-ink-900">{act.name}</div>
+                <div className="text-base font-medium ink-1">{act.name}</div>
                 <div className="dim mt-0.5">
                   📍 {loc.name}
                   {act.expectedEnd ? ` · 大约到 ${fmtTime(act.expectedEnd)} 结束` : ''}
@@ -138,9 +141,9 @@ export default function WorldPage() {
               {h.illness !== 'none' ? <Chip tone="plain">🤒 {h.illness}中 · 第 {h.illnessDay} 天</Chip> : null}
             </div>
             {data.recently?.length ? (
-              <div className="mt-3 rounded-2xl bg-rose-50/60 px-3.5 py-3">
-                <div className="text-xs font-medium text-ink-700">最近这段时间她……</div>
-                <ul className="mt-1.5 space-y-1 text-xs leading-relaxed text-ink-700">
+              <div className="mt-3 rounded-2xl accent-soft px-3.5 py-3">
+                <div className="text-xs font-medium ink-2">最近这段时间她……</div>
+                <ul className="mt-1.5 space-y-1 text-xs leading-relaxed ink-2">
                   {data.recently.map((r: string, i: number) => (
                     <li key={i}>· {r}</li>
                   ))}
@@ -189,7 +192,7 @@ export default function WorldPage() {
                   ['运动', h.exercise, 'peach'],
                 ].map(([label, v, tone]: any) => (
                   <div key={label}>
-                    <div className="mb-1 flex items-center justify-between text-xs text-ink-500">
+                    <div className="mb-1 flex items-center justify-between text-xs ink-2">
                       <span>{label}</span>
                       <span>{Math.round(v)}</span>
                     </div>
@@ -210,6 +213,143 @@ export default function WorldPage() {
               </div>
             </Card>
           </div>
+
+          <Card title="她最近的生活">
+            {data.lifeArc ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-base font-medium ink-1">{data.lifeArc.title}</div>
+                  {data.lifeArc.description ? <div className="dim mt-0.5">{data.lifeArc.description}</div> : null}
+                </div>
+                <Chip>第 {data.lifeArc.day} 天</Chip>
+                {data.lifeArc.plannedDays ? (
+                  <span className="text-[11px] ink-3">计划 {data.lifeArc.plannedDays} 天</span>
+                ) : null}
+              </div>
+            ) : (
+              <p className="dim">最近没什么特别的，日子平平淡淡地过。</p>
+            )}
+          </Card>
+
+          <Card
+            title="她身边的人"
+            right={
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  setCastDraft(
+                    editCast
+                      ? []
+                      : (data.cast || []).map((c: any) => ({ name: c.name || '', role: c.role || '', note: c.note || '' }))
+                  );
+                  setEditCast((v) => !v);
+                }}
+                title="编辑她身边的人（室友、闺蜜……）"
+              >
+                {editCast ? '收起' : '编辑'}
+              </button>
+            }
+          >
+            {data.cast?.length ? (
+              <div className="space-y-2">
+                {data.cast.map((c: any, i: number) => (
+                  <div key={i} className="flex items-start gap-3 rounded-2xl border line surf px-3.5 py-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium ink-1">{c.name}</span>
+                        {c.role ? <Chip tone="plain">{c.role}</Chip> : null}
+                      </div>
+                      {c.note ? <div className="dim mt-1">{c.note}</div> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="dim">她身边还没有登记的人。</p>
+            )}
+
+            {editCast ? (
+              <div className="mt-4 rounded-2xl border line surf p-3.5">
+                <div className="space-y-3">
+                  {castDraft.map((c, i) => (
+                    <div key={i} className="rounded-2xl border line surf p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs ink-2">第 {i + 1} 位</span>
+                        <button
+                          className="btn-ghost !py-1 text-xs"
+                          onClick={() => setCastDraft((d) => d.filter((_, k) => k !== i))}
+                        >
+                          删除
+                        </button>
+                      </div>
+                      <div className="mt-2 grid gap-2 md:grid-cols-3">
+                        <div>
+                          <label className="label">名字</label>
+                          <input
+                            className="input"
+                            maxLength={12}
+                            value={c.name}
+                            placeholder="例如：小夏"
+                            onChange={(e) => setCastDraft((d) => d.map((x, k) => (k === i ? { ...x, name: e.target.value } : x)))}
+                          />
+                        </div>
+                        <div>
+                          <label className="label">关系</label>
+                          <input
+                            className="input"
+                            maxLength={10}
+                            value={c.role}
+                            placeholder="例如：室友"
+                            onChange={(e) => setCastDraft((d) => d.map((x, k) => (k === i ? { ...x, role: e.target.value } : x)))}
+                          />
+                        </div>
+                        <div>
+                          <label className="label">备注</label>
+                          <input
+                            className="input"
+                            maxLength={60}
+                            value={c.note}
+                            placeholder="例如：同一个宿舍，爱睡懒觉"
+                            onChange={(e) => setCastDraft((d) => d.map((x, k) => (k === i ? { ...x, note: e.target.value } : x)))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {castDraft.length < 6 ? (
+                  <button
+                    className="btn-ghost mt-3"
+                    onClick={() => setCastDraft((d) => [...d, { name: '', role: '', note: '' }])}
+                  >
+                    + 再加一位
+                  </button>
+                ) : null}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    className="btn"
+                    disabled={busy || !castDraft.length || castDraft.some((c) => !c.name.trim())}
+                    onClick={async () => {
+                      await post(
+                        {
+                          action: 'set_cast',
+                          cast: castDraft.map((c) => ({ name: c.name.trim(), role: c.role.trim(), note: c.note.trim() })),
+                        },
+                        '已保存她身边的人'
+                      );
+                      setEditCast(false);
+                    }}
+                  >
+                    保存
+                  </button>
+                  <button className="btn-ghost" onClick={() => setEditCast(false)}>
+                    取消
+                  </button>
+                  <span className="dim">她聊天时会自然提到这些人（她们也有自己的事），但不会每轮都提。</span>
+                </div>
+              </div>
+            ) : null}
+          </Card>
 
           {editStates ? (
             <Card title="手动调整她此刻的状态（立刻生效）">
@@ -320,10 +460,10 @@ export default function WorldPage() {
             {data.timeline?.length ? (
               <div className="space-y-2">
                 {data.timeline.map((l: any, i: number) => (
-                  <div key={i} className="flex items-start gap-3 rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
-                    <span className="mt-0.5 shrink-0 whitespace-nowrap text-[11px] text-ink-300">{fmtTime(l.created_at)}</span>
+                  <div key={i} className="flex items-start gap-3 rounded-2xl border line surf px-3.5 py-2.5">
+                    <span className="mt-0.5 shrink-0 whitespace-nowrap text-[11px] ink-3">{fmtTime(l.created_at)}</span>
                     <div className="min-w-0">
-                      <div className="text-xs text-ink-900">{timelineText(l)}</div>
+                      <div className="text-xs ink-1">{timelineText(l)}</div>
                       {l.reason ? <div className="dim mt-0.5">{l.reason}</div> : null}
                     </div>
                   </div>
@@ -338,12 +478,12 @@ export default function WorldPage() {
             {data.events?.length ? (
               <div className="space-y-2">
                 {(showAllEvents ? data.events : data.events.slice(0, 20)).map((e: any) => (
-                  <div key={e.id} className="rounded-2xl bg-rose-50/60 px-3.5 py-2.5">
+                  <div key={e.id} className="rounded-2xl accent-soft px-3.5 py-2.5">
                     <div className="flex items-center gap-2">
                       <Chip tone="plain">{e.event_type}</Chip>
-                      <span className="text-[11px] text-ink-300">{fmtTime(e.created_at)}</span>
+                      <span className="text-[11px] ink-3">{fmtTime(e.created_at)}</span>
                     </div>
-                    <div className="mt-1 text-xs leading-relaxed text-ink-700">{e.content}</div>
+                    <div className="mt-1 text-xs leading-relaxed ink-2">{e.content}</div>
                   </div>
                 ))}
                 {data.events.length > 20 ? (
@@ -361,9 +501,9 @@ export default function WorldPage() {
             {data.weeklySnapshots?.length ? (
               <div className="space-y-2">
                 {data.weeklySnapshots.map((snapshot: any) => (
-                  <div key={snapshot.week} className="flex items-center justify-between gap-3 border-b border-rose-100/70 py-2 last:border-0">
-                    <span className="text-xs font-medium text-ink-700">{snapshot.week}</span>
-                    <span className="text-right text-xs text-ink-500">{weeklySnapshotSummary(snapshot.state_json)}</span>
+                  <div key={snapshot.week} className="flex items-center justify-between gap-3 border-b line py-2 last:border-0">
+                    <span className="text-xs font-medium ink-2">{snapshot.week}</span>
+                    <span className="text-right text-xs ink-2">{weeklySnapshotSummary(snapshot.state_json)}</span>
                   </div>
                 ))}
               </div>
@@ -384,18 +524,18 @@ export default function WorldPage() {
           >
             <div className="space-y-2">
               {data.profile.fields.map((f: any) => (
-                <div key={f.field} className="flex items-start justify-between gap-3 rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+                <div key={f.field} className="flex items-start justify-between gap-3 rounded-2xl border line surf px-3.5 py-2.5">
                   <div className="min-w-0">
-                    <div className="text-xs font-medium text-ink-700">{f.label}</div>
+                    <div className="text-xs font-medium ink-2">{f.label}</div>
                     <div className="mt-0.5 text-xs leading-relaxed">
                       {f.value ? (
                         f.revealed ? (
-                          <span className="text-ink-900">{f.value}</span>
+                          <span className="ink-1">{f.value}</span>
                         ) : (
-                          <span className="text-ink-300">她还有些事没告诉你</span>
+                          <span className="ink-3">她还有些事没告诉你</span>
                         )
                       ) : (
-                        <span className="text-ink-300">（还没设定）</span>
+                        <span className="ink-3">（还没设定）</span>
                       )}
                     </div>
                   </div>
@@ -417,7 +557,7 @@ export default function WorldPage() {
             </p>
 
             {editProfile ? (
-              <div className="mt-4 rounded-2xl border border-rose-100 bg-white/70 p-3.5">
+              <div className="mt-4 rounded-2xl border line surf p-3.5">
                 <div className="grid gap-2.5 md:grid-cols-2">
                   {data.profile.fields.map((f: any) => (
                     <div key={f.field}>
@@ -450,9 +590,9 @@ export default function WorldPage() {
             {data.shared.plans?.length ? (
               <div className="space-y-2">
                 {data.shared.plans.map((pl: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between gap-2 rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+                  <div key={i} className="flex items-center justify-between gap-2 rounded-2xl border line surf px-3.5 py-2.5">
                     <div className="min-w-0">
-                      <div className={`text-xs ${pl.status === 'done' ? 'text-ink-300 line-through' : 'text-ink-900'}`}>{pl.content || pl.title}</div>
+                      <div className={`text-xs ${pl.status === 'done' ? 'ink-3 line-through' : 'ink-1'}`}>{pl.content || pl.title}</div>
                       <div className="dim mt-0.5">{pl.status === 'done' ? '已完成' : '计划中'} · {fmtTime(pl.created_at)}</div>
                     </div>
                     <button className="btn-ghost shrink-0 !py-1 text-xs" disabled={busy} onClick={() => post({ action: 'toggle_plan', index: i }, '已更新')}>
@@ -476,8 +616,8 @@ export default function WorldPage() {
             {data.shared.rituals?.length ? (
               <div className="space-y-2">
                 {data.shared.rituals.map((r: any, i: number) => (
-                  <div key={i} className="rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
-                    <div className="text-xs text-ink-900">{r.content || r.title}</div>
+                  <div key={i} className="rounded-2xl border line surf px-3.5 py-2.5">
+                    <div className="text-xs ink-1">{r.content || r.title}</div>
                     <div className="dim mt-0.5">{fmtTime(r.created_at)}</div>
                   </div>
                 ))}
@@ -509,9 +649,9 @@ export default function WorldPage() {
             {data.shared.items?.length ? (
               <div className="space-y-2">
                 {data.shared.items.map((item: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between gap-3 border-b border-rose-100/70 py-2 last:border-0">
-                    <span className="text-xs text-ink-800">{item.content || item.title}</span>
-                    <span className="shrink-0 text-[11px] text-ink-300">{fmtTime(item.created_at)}</span>
+                  <div key={i} className="flex items-center justify-between gap-3 border-b line py-2 last:border-0">
+                    <span className="text-xs ink-1">{item.content || item.title}</span>
+                    <span className="shrink-0 text-[11px] ink-3">{fmtTime(item.created_at)}</span>
                   </div>
                 ))}
               </div>

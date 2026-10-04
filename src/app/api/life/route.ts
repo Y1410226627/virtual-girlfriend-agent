@@ -28,6 +28,8 @@ import {
   setEventExpectedEnd,
   applyEventEffectsAsIf,
   logLife,
+  getCast,
+  getActiveArc,
 } from '@/lib/life';
 import { notifyEventEnd } from '@/lib/proactive';
 import { ensureScheduler } from '@/lib/scheduler';
@@ -107,6 +109,21 @@ export async function GET() {
       filledCount: fields.filter((f) => f.value).length,
     },
     shared: getSharedWorld(),
+    cast: getCast(),
+    lifeArc: (() => {
+      const arc = getActiveArc();
+      return arc
+        ? {
+            id: arc.id,
+            title: arc.title,
+            description: arc.description,
+            progress: arc.progress,
+            plannedDays: arc.planned_days,
+            day: Math.min(arc.planned_days || 1, (arc.progress || 0) + 1),
+            startedAt: arc.started_at,
+          }
+        : null;
+    })(),
     weeklySnapshots: dbAll<any>('SELECT week, state_json, created_at FROM world_weekly_snapshots WHERE user_id = ? ORDER BY week DESC LIMIT 8', DEFAULT_USER_ID),
     settings: {
       lifeEnabled: getSetting('life_enabled') === 'true',
@@ -208,6 +225,25 @@ export async function POST(req: Request) {
   if (action === 'add_item') {
     addSharedItem(String(body.content || '').trim());
     return Response.json({ ok: true, shared: getSharedWorld() });
+  }
+
+  if (action === 'set_cast') {
+    // 她身边的人：整组替换 [{name, role, note}]
+    const raw = body.cast;
+    if (!Array.isArray(raw)) return Response.json({ ok: false, error: '格式不正确' }, { status: 400 });
+    if (raw.length > 6) return Response.json({ ok: false, error: '最多 6 位' }, { status: 400 });
+    const cast: Array<{ name: string; role: string; note: string }> = [];
+    for (const item of raw) {
+      const name = String(item?.name ?? '').trim();
+      const role = String(item?.role ?? '').trim();
+      const note = String(item?.note ?? '').trim();
+      if (!name || name.length > 12) return Response.json({ ok: false, error: '名字需要 1-12 个字' }, { status: 400 });
+      if (role.length > 10) return Response.json({ ok: false, error: '关系最多 10 个字' }, { status: 400 });
+      if (note.length > 60) return Response.json({ ok: false, error: '备注最多 60 个字' }, { status: 400 });
+      cast.push({ name, role, note });
+    }
+    dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(cast), nowIso(), DEFAULT_USER_ID);
+    return Response.json({ ok: true, cast });
   }
 
   if (action === 'set_illness') {

@@ -12,7 +12,7 @@ import { round1, humanTime, hoursSince, localTimeStr, localDateStr } from './uti
 import { dbAll, DEFAULT_USER_ID, getSetting, customModeOn } from './db';
 import { sceneBlock, type Scene } from './scene';
 import { stickerPromptBlock } from './stickers';
-import { lifePromptBlock, profilePromptBlock, preferencePromptBlock } from './life';
+import { lifePromptBlock, profilePromptBlock, preferencePromptBlock, getCast, getActiveArc } from './life';
 import { intimacyPromptBlock, getIntimacy } from './intimacy';
 
 export interface ReplyContext {
@@ -125,6 +125,10 @@ ${lifePromptBlock()}
 
 ${profilePromptBlock()}
 
+${castBlock()}
+
+${lifeArcBlock()}
+
 ${intimacyPromptBlock()}
 
 ${preferencePromptBlock()}
@@ -146,6 +150,7 @@ ${stickerPromptBlock({ scene: rel.scene === 'offline' ? 'offline' : 'online', st
 6. 不要每轮都以问句结尾。追问是为了让对话继续，不是查户口。
 7. 别忘了你有自己的生活：可以主动分享你在做什么、想什么，让关系是双向的。
 8. 只输出你这一刻要说的话。不要任何旁白、解释、角色名前缀。
+9. 如果他指出你记错了、纠正你说过的事实：先自然地轻轻承认（"啊对，是我记混了""抱歉抱歉"），然后立刻用他说的正确信息继续——不要辩解、不要坚持错误版本、也不要连续道歉（道一次就够了）。
 
 【神态与动作 —— 这段很重要】
 你要让对方"看得见你"。回复里必须自然地带上括号里的神态/动作描写，用中文全角括号（），每条 3-14 个字。
@@ -212,6 +217,30 @@ function customModeBlock(): string {
 - 性格（0-100）：温柔 ${p.warmth} · 俏皮 ${p.playfulness} · 浪漫 ${p.romance} · 直接 ${p.directness} · 独立 ${p.independence} · 情绪强度 ${p.emotional_intensity}
 - 依恋倾向（0-100）：焦虑 ${round1(att.anxiety)} · 回避 ${round1(att.avoidance)}
 - 亲密状态（0-100）：性欲 ${round1(s.libido)} · 亲密需求 ${round1(s.intimacy_need)} · 性满意度 ${round1(s.sexual_satisfaction)} · 性压力 ${round1(s.sexual_stress)}`;
+  } catch {
+    return '';
+  }
+}
+
+/** 她身边的人（具名社会关系）注入块 */
+function castBlock(): string {
+  try {
+    const cast = getCast();
+    if (!cast.length) return '';
+    const parts = cast.map((c) => `你的${c.role || '朋友'}叫${c.name}${c.note ? `（${c.note}）` : ''}`);
+    return `【你身边的人】${parts.join('；')}。聊天时可以自然提起她们（她们有自己的事，不总围着你转），但别每轮都提。`;
+  } catch {
+    return '';
+  }
+}
+
+/** 她最近的生活线（跨天剧情）注入块 */
+function lifeArcBlock(): string {
+  try {
+    const arc = getActiveArc();
+    if (!arc) return '';
+    const day = Math.min(arc.planned_days || 1, (arc.progress || 0) + 1);
+    return `【你最近的生活线】你正在「${arc.title}」：${arc.description}（第 ${day} 天 / 计划 ${arc.planned_days} 天）。聊到相关话题可以自然提起，但不要每轮汇报、不要念台词。`;
   } catch {
     return '';
   }
@@ -295,6 +324,9 @@ ${payload.recentTranscript || '（无）'}
   "memory_updates": [
     {"type": "semantic|episodic|emotional|relationship|attachment", "content": "...", "importance": 0-10, "emotion": "...", "expires_at": null}
   ],
+  "memory_corrections": [
+    {"old_hint": "被推翻的旧记忆原文", "new_fact": "正确的信息"}
+  ],
   "relationship_delta": {
     "intimacy": -2~+2,
     "trust": -2~+2,
@@ -335,6 +367,7 @@ ${payload.recentTranscript || '（无）'}
 【判断规则】
 1. memory_updates：只记录"值得长期记住"的内容，每条要具体、可复用（例如"${him}喜欢冰美式，讨厌香菜"、"${him}10月3日加班到11点，很累"）。type 含义：semantic=稳定事实/偏好/生日；episodic=具体事件；emotional=他当时的情绪状态；relationship=关系进展/承诺/昵称/吵架与和好；attachment=依恋相关的重要节点。没有值得记的就返回空数组。不要把寒暄、无信息量的话写进记忆。
    措辞要求：用第三人称陈述事实，主语直接用"${him}"和她的名字"${her}"，**不要出现"虚拟女友""AI""用户"这类词**——这些记忆之后会直接放回她的脑海中。
+   - memory_corrections：**仅当**他明确纠正你记错了的事实时才输出（"我不是做老师的""你记错了""我没说过这个""我什么时候说过"）：old_hint 填你之前记错的那条内容（尽量接近原文），new_fact 填他给出的正确信息；一次最多 2 条。他单纯分享新事实（比如第一次告诉你他住哪）不算纠正，交给 memory_updates，不要填这里。
 2. personality_signals：只记录**行为反馈信号**，绝不直接改性格。
    - dimension 取值（必须用英文键）：warmth(温柔/关怀)、playfulness(俏皮/轻松)、romance(浪漫表达)、directness(直接性)、independence(独立性)、emotional_intensity(情绪表达强度)。
    - 依据：${him}对撒娇/关心/幽默/吃醋/粘人的反应（回复长度、情感词、表情、是否继续话题）；他主动分享的深度；他明确的评价。

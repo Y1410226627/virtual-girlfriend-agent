@@ -62,7 +62,7 @@ export default function IntimacyPage() {
             <Stat label="性压力" value={s.sexualStress} tone="ink" />
           </div>
           {s.inAftercare ? (
-            <div className="mt-3 rounded-2xl bg-rose-50/70 px-3.5 py-2.5 text-xs leading-relaxed text-ink-700">
+            <div className="mt-3 rounded-2xl accent-soft px-3.5 py-2.5 text-xs leading-relaxed ink-2">
               <b>她正处于事后状态</b>：{s.aftercareState}
               <div className="dim mt-1">到 {fmtTime(s.aftercareUntil)} 前后渐渐过去。这时候抱一下、说句话，比什么都重要。</div>
             </div>
@@ -78,11 +78,11 @@ export default function IntimacyPage() {
                 aria-pressed={lv.level === l.v}
                 onClick={() => post({ action: 'set_level', level: l.v }, `已设为「${l.label}」`)}
                 className={`w-full rounded-2xl border px-3.5 py-2.5 text-left transition ${
-                  lv.level === l.v ? 'border-rose-300 bg-rose-50/70' : 'border-rose-100/80 bg-white/70 hover:bg-rose-50/40'
+                  lv.level === l.v ? 'border-rose-300 accent-soft' : 'line surf hover:accent-soft'
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-ink-900">
+                  <span className="text-sm font-medium ink-1">
                     {l.v} · {l.label}
                   </span>
                   {lv.level === l.v ? <Chip>当前</Chip> : null}
@@ -101,11 +101,11 @@ export default function IntimacyPage() {
         <Card title="她的偏好（会随关系变深逐渐透露）">
           <div className="space-y-2">
             {data.preferences.map((p: any) => (
-              <div key={p.id} className="flex items-start justify-between gap-2 rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+              <div key={p.id} className="flex items-start justify-between gap-2 rounded-2xl border line surf px-3.5 py-2.5">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium text-ink-700">{p.type}</div>
+                  <div className="text-xs font-medium ink-2">{p.type}</div>
                   <div className="mt-0.5 text-xs leading-relaxed">
-                    {p.revealed ? <span className="text-ink-900">{p.content}</span> : <span className="text-ink-300">她还没说过这件事</span>}
+                    {p.revealed ? <span className="ink-1">{p.content}</span> : <span className="ink-3">她还没说过这件事</span>}
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-col gap-1">
@@ -156,9 +156,9 @@ export default function IntimacyPage() {
           {data.aftercare?.length ? (
             <div className="space-y-2">
               {data.aftercare.map((a: any) => (
-                <div key={a.id} className="flex items-center justify-between rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+                <div key={a.id} className="flex items-center justify-between rounded-2xl border line surf px-3.5 py-2.5">
                   <div>
-                    <div className="text-xs text-ink-900">{a.agent_state}</div>
+                    <div className="text-xs ink-1">{a.agent_state}</div>
                     <div className="dim mt-0.5">
                       {fmtTime(a.created_at)} · 关怀质量：
                       {a.aftercare_quality === 'good' ? '被好好照顾' : a.aftercare_quality === 'ignored' ? '被忽略' : '一般'}

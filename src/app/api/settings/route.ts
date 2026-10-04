@@ -49,7 +49,30 @@ const EDITABLE = new Set([
   'embedding_base_url',
   'embedding_api_key',
   'analysis_thinking',
+  // 语音（TTS）
+  'tts_enabled',
+  'tts_base_url',
+  'tts_api_key',
+  'tts_model',
+  'tts_voice',
+  // 她的照片（图片生成）
+  'img_enabled',
+  'img_base_url',
+  'img_api_key',
+  'img_model',
 ]);
+
+// 需要"掩码值不回写"保护的敏感键（db 里只登记了模型的，这里补上语音/图片的）
+const SECRET_KEYS = [...SECRET_SETTING_KEYS, 'tts_api_key', 'img_api_key'];
+
+// 对外返回设置：模型 Key 走 db 的掩码，语音/图片 Key 在这里补打码
+const maskedSettings = (settings: Record<string, string>) => {
+  const out = maskSettingsForClient(settings);
+  for (const k of ['tts_api_key', 'img_api_key']) {
+    if (out[k]) out[k] = maskSecret(out[k]);
+  }
+  return out;
+};
 
 // 对外返回的模型档案一律打码，避免明文 Key 泄露
 const maskedProfiles = () =>
@@ -65,7 +88,7 @@ export async function GET() {
   const cfg = llmConfig();
   const persona = getPersona();
   return Response.json({
-    settings: maskSettingsForClient(settings),
+    settings: maskedSettings(settings),
     persona,
     effective: {
       baseUrl: cfg.baseUrl,
@@ -104,7 +127,7 @@ export async function PUT(req: Request) {
   for (const [k, v] of Object.entries(incoming || {})) {
     if (!EDITABLE.has(k)) continue;
     // 前端回传的掩码值不算修改（避免把"••••1234"当成新 Key 存进去）
-    if (SECRET_SETTING_KEYS.includes(k) && looksLikeMask(v)) continue;
+    if (SECRET_KEYS.includes(k) && looksLikeMask(v)) continue;
     let value: string;
     if (k in RANGE) {
       // 数值型键：越界钳制，非数字跳过
@@ -118,6 +141,11 @@ export async function PUT(req: Request) {
     } else if (k === 'llm_base_url') {
       const s = String(v ?? '').trim();
       if (!/^https?:\/\//.test(s)) continue;
+      value = s;
+    } else if (k === 'tts_base_url' || k === 'img_base_url') {
+      // 语音/图片接口地址：允许留空（= 关闭该功能，走优雅降级），填了才校验协议
+      const s = String(v ?? '').trim();
+      if (s && !/^https?:\/\//.test(s)) continue;
       value = s;
     } else {
       value = typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v ?? '');
@@ -136,7 +164,7 @@ export async function PUT(req: Request) {
   if ('cycle_enabled' in (incoming || {})) {
     dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', String(incoming.cycle_enabled) === 'true' ? 1 : 0, DEFAULT_USER_ID);
   }
-  return Response.json({ ok: true, changed, settings: maskSettingsForClient(getAllSettings()), profiles: listProfiles().map((p) => ({ ...p, api_key: maskSecret(p.api_key), embedding_api_key: maskSecret(p.embedding_api_key) })) });
+  return Response.json({ ok: true, changed, settings: maskedSettings(getAllSettings()), profiles: listProfiles().map((p) => ({ ...p, api_key: maskSecret(p.api_key), embedding_api_key: maskSecret(p.embedding_api_key) })) });
 }
 
 export async function POST(req: Request) {
@@ -302,7 +330,7 @@ export async function POST(req: Request) {
       attachment_state: getAttachmentState(),
       personality_state: getPersonalityRows(),
       // 导出的文件可能被分享：Key 同样只给掩码
-      settings: maskSettingsForClient(getAllSettings()),
+      settings: maskedSettings(getAllSettings()),
       model_profiles: listProfiles().map((p) => ({
         ...p,
         api_key: maskSecret(p.api_key),

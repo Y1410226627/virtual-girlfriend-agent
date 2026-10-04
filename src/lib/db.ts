@@ -608,6 +608,40 @@ CREATE INDEX IF NOT EXISTS idx_messages_proactive ON messages(user_id, is_proact
 CREATE INDEX IF NOT EXISTS idx_memories_source_msg ON memories(source_message_id);
 `,
   },
+  {
+    version: 11,
+    name: 'cast_and_life_arc_and_diaries',
+    sql: `
+-- 具名社会关系（她身边的人）：存 JSON 数组 [{name, role, note}]
+ALTER TABLE shared_world ADD COLUMN cast_json TEXT;
+
+-- 跨天剧情线：她这几天正在忙的一件事
+CREATE TABLE IF NOT EXISTS life_arcs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  progress INTEGER NOT NULL DEFAULT 0,
+  planned_days INTEGER NOT NULL DEFAULT 5,
+  meta_json TEXT,
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_life_arcs_user_status ON life_arcs(user_id, status);
+
+-- 她的日记：每天一条，第一人称
+CREATE TABLE IF NOT EXISTS agent_diaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_diaries_user_date ON agent_diaries(user_id, date);
+`,
+  },
 ];
 
 /* ------------------------------------------------------------------ */

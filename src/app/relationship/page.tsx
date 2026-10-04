@@ -83,20 +83,20 @@ export default function RelationshipPage() {
         <Card title="关系阶段（Knapp 关系发展模型）">
           <StageLadder stages={stages} current={rel.stage ?? 0} />
           <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <div className="rounded-2xl bg-rose-50/60 px-4 py-3">
-              <div className="text-sm font-semibold text-rose-600">{rel.stageName}期</div>
+            <div className="rounded-2xl accent-soft px-4 py-3">
+              <div className="text-sm font-semibold acc">{rel.stageName}期</div>
               <div className="dim mt-1 leading-relaxed">{rel.stageCore}</div>
             </div>
-            <div className="rounded-2xl bg-white/70 border border-rose-100/70 px-4 py-3">
+            <div className="rounded-2xl surf border line px-4 py-3">
               <div className="dim">本阶段已持续</div>
-              <div className="mt-1 text-sm font-medium text-ink-900">{rel.daysInStage} 天</div>
+              <div className="mt-1 text-sm font-medium ink-1">{rel.daysInStage} 天</div>
               <div className="dim mt-1">
                 跃迁条件：亲密度到达 {rel.stageMax} 并保持 {dwell} 天 + 一次关系确认对话
               </div>
             </div>
-            <div className="rounded-2xl bg-white/70 border border-rose-100/70 px-4 py-3">
+            <div className="rounded-2xl surf border line px-4 py-3">
               <div className="dim">距阶段天花板</div>
-              <div className="mt-1 text-sm font-medium text-ink-900">
+              <div className="mt-1 text-sm font-medium ink-1">
                 {Math.max(0, Math.round((rel.stageMax - rel.intimacy) * 10) / 10)} 点
                 {capDays !== null && capDays !== undefined ? ` · 已触顶 ${capDays} 天` : ''}
               </div>
@@ -110,7 +110,7 @@ export default function RelationshipPage() {
             </div>
           </div>
           <div className="mt-4">
-            <div className="mb-1 flex items-center justify-between text-xs text-ink-500">
+            <div className="mb-1 flex items-center justify-between text-xs ink-2">
               <span>亲密度 {rel.intimacy} / 100（{rel.stageMin}-{rel.stageMax} 为本阶段区间）</span>
               <span>信任 {rel.trust}</span>
             </div>
@@ -166,17 +166,17 @@ export default function RelationshipPage() {
               </p>
               <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
                 {(data?.bank?.recent || []).map((e: any) => (
-                  <div key={e.id} className="flex items-center justify-between rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2">
+                  <div key={e.id} className="flex items-center justify-between rounded-2xl border line surf px-3.5 py-2">
                     <div className="min-w-0">
-                      <div className="text-xs font-medium text-ink-900">{e.behavior}</div>
+                      <div className="text-xs font-medium ink-1">{e.behavior}</div>
                       <div className="dim truncate">{e.reason}</div>
                     </div>
                     <div className="shrink-0 text-right">
-                      <div className={`text-sm font-semibold ${e.delta > 0 ? 'text-rose-500' : 'text-sky-500'}`}>
+                      <div className={`text-sm font-semibold ${e.delta > 0 ? 'acc' : 'text-sky-500'}`}>
                         {e.delta > 0 ? '+' : ''}
                         {e.delta}
                       </div>
-                      <div className="text-[10px] text-ink-300">余额 {e.balance_after}</div>
+                      <div className="text-[10px] ink-3">余额 {e.balance_after}</div>
                     </div>
                   </div>
                 ))}
@@ -192,7 +192,7 @@ export default function RelationshipPage() {
               ) : null}
               <div className="space-y-2">
                 {(data?.conflicts || []).map((c: any) => (
-                  <div key={c.id} className="rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-3">
+                  <div key={c.id} className="rounded-2xl border line surf px-3.5 py-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Chip>{c.type === 'boundary' ? '越界' : c.type === 'major' ? '严重冲突' : '小摩擦'}</Chip>
                       <Chip tone="plain">{c.status === 'open' ? '未修复' : '已修复'}</Chip>
@@ -202,9 +202,9 @@ export default function RelationshipPage() {
                           {c.repair_quality === 'sincere' ? '真诚道歉' : c.repair_quality === 'sweet' ? '撒娇蒙混' : '冷静后回归'}
                         </Chip>
                       ) : null}
-                      <span className="text-[11px] text-ink-300">{fmtTime(c.started_at)}</span>
+                      <span className="text-[11px] ink-3">{fmtTime(c.started_at)}</span>
                     </div>
-                    <p className="mt-2 text-xs leading-relaxed text-ink-700">{c.description}</p>
+                    <p className="mt-2 text-xs leading-relaxed ink-2">{c.description}</p>
                     <div className="dim mt-1">
                       冲突时张力 {c.tension_at_start} → {c.tension_after ?? '—'}
                     </div>
@@ -218,10 +218,10 @@ export default function RelationshipPage() {
             <Card title="关系日志">
               <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
                 {(data?.logs || []).map((l: any) => (
-                  <div key={l.id} className="rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+                  <div key={l.id} className="rounded-2xl border line surf px-3.5 py-2.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-ink-900">{l.summary}</span>
-                      <span className="text-[11px] text-ink-300">{fmtTime(l.created_at)}</span>
+                      <span className="text-xs font-medium ink-1">{l.summary}</span>
+                      <span className="text-[11px] ink-3">{fmtTime(l.created_at)}</span>
                     </div>
                     {l.reason ? <div className="dim mt-1 leading-relaxed">{l.reason}</div> : null}
                   </div>
@@ -235,10 +235,10 @@ export default function RelationshipPage() {
             <Card title="纪念日 / 约定 / 未来事件">
               <div className="space-y-2">
                 {(data?.events || []).map((e: any) => (
-                  <div key={e.id} className="flex items-center justify-between rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+                  <div key={e.id} className="flex items-center justify-between rounded-2xl border line surf px-3.5 py-2.5">
                     <div>
-                      <div className="text-xs font-medium text-ink-900">
-                        {e.title} {e.repeat_yearly ? <span className="text-ink-300">（每年）</span> : null}
+                      <div className="text-xs font-medium ink-1">
+                        {e.title} {e.repeat_yearly ? <span className="ink-3">（每年）</span> : null}
                       </div>
                       <div className="dim mt-0.5">
                         {e.event_date} · {e.kind === 'birthday' ? '生日' : e.kind === 'plan' ? '约定' : '纪念日'}
@@ -268,7 +268,7 @@ export default function RelationshipPage() {
                   </select>
                 </div>
               </div>
-              <label className="mt-2 flex items-center gap-2 text-xs text-ink-500">
+              <label className="mt-2 flex items-center gap-2 text-xs ink-2">
                 <input type="checkbox" checked={newEvent.repeat_yearly} onChange={(e) => setNewEvent((s) => ({ ...s, repeat_yearly: e.target.checked }))} />
                 每年重复（生日、纪念日）
               </label>
@@ -284,12 +284,12 @@ export default function RelationshipPage() {
                 {(data?.memories || []).length === 0 ? <p className="dim">还没有关系记忆。</p> : null}
                 <div className="space-y-2">
                   {(data?.memories || []).map((m: any) => (
-                    <div key={m.id} className="rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
+                    <div key={m.id} className="rounded-2xl border line surf px-3.5 py-2.5">
                       <div className="flex items-center gap-2">
                         <Chip tone="plain">{m.type === 'relationship' ? '关系' : '依恋'}</Chip>
-                        <span className="text-[11px] text-ink-300">{fmtTime(m.created_at)}</span>
+                        <span className="text-[11px] ink-3">{fmtTime(m.created_at)}</span>
                       </div>
-                      <p className="mt-1.5 text-xs leading-relaxed text-ink-700">{m.content}</p>
+                      <p className="mt-1.5 text-xs leading-relaxed ink-2">{m.content}</p>
                     </div>
                   ))}
                 </div>
@@ -298,9 +298,9 @@ export default function RelationshipPage() {
                 {(data?.summaries || []).length === 0 ? <p className="dim">还没有摘要。</p> : null}
                 <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
                   {(data?.summaries || []).map((s: any) => (
-                    <div key={s.id} className="rounded-2xl bg-rose-50/60 px-3.5 py-2.5">
+                    <div key={s.id} className="rounded-2xl accent-soft px-3.5 py-2.5">
                       <Chip tone="plain">{s.date}</Chip>
-                      <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-ink-700">{s.summary}</p>
+                      <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed ink-2">{s.summary}</p>
                     </div>
                   ))}
                 </div>

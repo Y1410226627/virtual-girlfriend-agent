@@ -19,6 +19,83 @@ export default function SettingsPage() {
   const [testResults, setTestResults] = useState<Record<number, any>>({});
   // 自定义模式（数值直控）
   const [cv, setCv] = useState<any>(null);
+  // 外观主题：'light' | 'dark'（默认跟随系统，由 layout 的初始化脚本决定）
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  // 桌面通知开关：null = 尚未在客户端读取（SSR 占位）
+  const [notifySupported, setNotifySupported] = useState<boolean | null>(null);
+  const [notifyPerm, setNotifyPerm] = useState<NotificationPermission>('default');
+  const [notifyOn, setNotifyOn] = useState(false);
+  // 语音试听是否进行中
+  const [ttsTesting, setTtsTesting] = useState(false);
+
+  // 客户端读取通知能力 / 权限 / 开关（SSR 安全）
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      setNotifySupported(false);
+      return;
+    }
+    setNotifySupported(true);
+    setNotifyPerm(Notification.permission);
+    try {
+      setNotifyOn(window.localStorage.getItem('notify_enabled') === '1' && Notification.permission === 'granted');
+    } catch {
+      setNotifyOn(false);
+    }
+  }, []);
+
+  // 读取当前实际生效的主题（<html> 上的 dark class 才是真相）
+  useEffect(() => {
+    setTheme(document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+  }, []);
+
+  // 立即切换并持久化；下次打开由 layout 的初始化脚本读取
+  const applyTheme = (t: 'light' | 'dark') => {
+    setTheme(t);
+    try {
+      window.localStorage.setItem('theme', t);
+    } catch {
+      /* ignore */
+    }
+    document.documentElement.classList.toggle('dark', t === 'dark');
+  };
+
+  // 通知开关：开启时申请权限；关闭时只写本地开关
+  const toggleNotify = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      setToast('当前浏览器不支持通知');
+      return;
+    }
+    if (notifyOn) {
+      try {
+        window.localStorage.setItem('notify_enabled', '0');
+      } catch {
+        /* ignore */
+      }
+      setNotifyOn(false);
+      setToast('已关闭桌面通知');
+      return;
+    }
+    let perm: NotificationPermission = Notification.permission;
+    try {
+      perm = await Notification.requestPermission();
+    } catch {
+      /* ignore */
+    }
+    setNotifyPerm(perm);
+    if (perm === 'granted') {
+      try {
+        window.localStorage.setItem('notify_enabled', '1');
+      } catch {
+        /* ignore */
+      }
+      setNotifyOn(true);
+      setToast('已开启：她不看页面时发消息会在后台提醒你');
+    } else if (perm === 'denied') {
+      setToast('浏览器里拒绝了通知权限，需要在浏览器设置里允许');
+    } else {
+      setToast('还没有授予通知权限');
+    }
+  };
 
   const loadCv = async () => {
     try {
@@ -83,6 +160,34 @@ export default function SettingsPage() {
       setToast(`保存失败：${e?.message || e}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 语音试听：调 /api/tts 拿 mp3 直接播（读取的是已保存的配置，所以要先保存再试听）
+  const testTts = async () => {
+    setTtsTesting(true);
+    try {
+      const r = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '嗨，能听到我说话吗？我是你的她呀。' }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setToast(j?.error || '试听失败');
+        return;
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = new Audio(url);
+      a.onended = () => URL.revokeObjectURL(url);
+      a.onerror = () => URL.revokeObjectURL(url);
+      await a.play();
+      setToast('正在试听…（试听用的是已保存的配置）');
+    } catch (e: any) {
+      setToast(`试听失败：${e?.message || e}`);
+    } finally {
+      setTtsTesting(false);
     }
   };
 
@@ -163,12 +268,36 @@ export default function SettingsPage() {
   const eff = data?.effective || {};
   // 自定义模式开关：'1' 和 'true' 都算开启（历史数据可能存成 true）
   const customOn = form.custom_mode === '1' || form.custom_mode === 'true';
+  // 通知状态文案（notifySupported 为 null 表示还在客户端读取中）
+  const notifyStatusText =
+    notifySupported === null
+      ? '读取中…'
+      : !notifySupported
+        ? '浏览器不支持'
+        : notifyOn
+          ? '已开启'
+          : notifyPerm === 'denied'
+            ? '已被浏览器拒绝'
+            : '未开启';
 
   return (
     <div className="pb-10">
       <PageHeader title="设置" desc="模型、身份、主动消息、隐私。所有数据都存在你自己电脑上。" />
 
       <div className="space-y-4 px-5 md:px-8">
+        <Card title="外观">
+          <div className="flex flex-wrap items-center gap-2">
+            <button className={theme === 'light' ? 'btn' : 'btn-ghost'} onClick={() => applyTheme('light')} aria-pressed={theme === 'light'}>
+              浅色
+            </button>
+            <button className={theme === 'dark' ? 'btn' : 'btn-ghost'} onClick={() => applyTheme('dark')} aria-pressed={theme === 'dark'}>
+              深色
+            </button>
+            <Chip tone="plain">当前：{theme === 'dark' ? '深色' : '浅色'}</Chip>
+          </div>
+          <p className="dim mt-3 leading-relaxed">默认跟随系统深浅色；在这里选择后会记住你的偏好，下次打开仍然生效。</p>
+        </Card>
+
         <Card
           title="模型档案（随时切换，立即生效）"
           right={
@@ -194,14 +323,14 @@ export default function SettingsPage() {
                 <div
                   key={p.id}
                   className={`rounded-2xl border px-3.5 py-3 ${
-                    p.is_default ? 'border-rose-300 bg-rose-50/70' : 'border-rose-100/80 bg-white/70'
+                    p.is_default ? 'border-rose-300 accent-soft' : 'line surf'
                   }`}
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-ink-900">{p.label}</span>
+                    <span className="text-sm font-medium ink-1">{p.label}</span>
                     {p.is_default ? <Chip>当前使用</Chip> : null}
                     {h?.cooling ? <Chip tone="plain">冷却中 {h.cooldownLeftSec}s</Chip> : null}
-                    <span className="text-[11px] text-ink-300">
+                    <span className="text-[11px] ink-3">
                       {p.chat_model} · {p.base_url}
                     </span>
                   </div>
@@ -252,7 +381,7 @@ export default function SettingsPage() {
                         {tr.pending ? (
                           '…'
                         ) : tr.ok ? (
-                          <span className="text-rose-600">✅ {tr.ms}ms「{tr.reply}」</span>
+                          <span className="acc">✅ {tr.ms}ms「{tr.reply}」</span>
                         ) : (
                           <span className="text-sky-600">❌ {String(tr.error).slice(0, 60)}</span>
                         )}
@@ -264,8 +393,8 @@ export default function SettingsPage() {
             })}
           </div>
 
-          <div className="mt-4 rounded-2xl border border-rose-100 bg-white/70 p-3.5">
-            <div className="mb-2 text-xs font-medium text-ink-700">{editingId ? '编辑档案' : '新增档案'}</div>
+          <div className="mt-4 rounded-2xl border line surf p-3.5">
+            <div className="mb-2 text-xs font-medium ink-2">{editingId ? '编辑档案' : '新增档案'}</div>
             <div className="grid gap-2.5 md:grid-cols-2">
               <input id="pf_label" aria-label="档案名称" className="input" placeholder="档案名称（如 智谱 GLM-4.7-Flash）" value={pf.label || ''} onChange={(e) => setPf({ ...pf, label: e.target.value })} />
               <input id="pf_base_url" aria-label="接口地址 Base URL" className="input" placeholder="接口地址 Base URL" value={pf.base_url || ''} onChange={(e) => setPf({ ...pf, base_url: e.target.value })} />
@@ -379,7 +508,7 @@ export default function SettingsPage() {
           </div>
 
           {ping ? (
-            <div className="mt-4 space-y-1.5 rounded-2xl bg-rose-50/60 px-4 py-3 text-xs">
+            <div className="mt-4 space-y-1.5 rounded-2xl accent-soft px-4 py-3 text-xs">
               <div>数据库：{ping.database?.ok ? '✅ 正常' : `❌ ${ping.database?.error}`}</div>
               <div>聊天模型：{ping.llm?.ok ? `✅ ${ping.llm.ms}ms · ${ping.llm.reply}` : `❌ ${ping.llm?.error}`}</div>
               <div>向量模型：{ping.embedding?.ok ? `✅ ${ping.embedding.mode} · ${ping.embedding.dim} 维` : `❌ ${ping.embedding?.error}`}</div>
@@ -700,6 +829,141 @@ export default function SettingsPage() {
           </button>
         </Card>
 
+        <Card title="通知" right={<Chip tone="plain">状态：{notifyStatusText}</Chip>}>
+          <p className="dim leading-relaxed">她不看页面时发来消息，用系统通知告诉你（仅在这台设备上）。</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              className={notifyOn ? 'btn' : 'btn-ghost'}
+              onClick={toggleNotify}
+              disabled={notifySupported === false}
+              aria-pressed={notifyOn}
+            >
+              {notifyOn ? '已开启（点击关闭）' : '开启桌面通知'}
+            </button>
+            {notifyPerm === 'denied' ? <Chip tone="plain">权限被拒绝，请在浏览器设置里允许</Chip> : null}
+            {notifySupported === false ? <Chip tone="plain">当前浏览器不支持，此开关不可用</Chip> : null}
+          </div>
+        </Card>
+
+        <Card
+          title="语音（让她说给你听）"
+          right={<Chip tone="plain">{form.tts_enabled === 'true' ? '已开启' : '未开启'}</Chip>}
+        >
+          <p className="dim leading-relaxed">
+            开启后，她的每条回复旁边会出现 🔊 按钮，点一下就用你配置的语音服务把这句话读出来。
+            需要一个兼容 OpenAI <code className="rounded accent-soft px-1">/audio/speech</code> 接口的服务（地址填到 <code className="rounded accent-soft px-1">/v1</code> 这一层即可）。
+            没配置时聊天页不会出现该按钮，也不会报错。
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              className={form.tts_enabled === 'true' ? 'btn' : 'btn-ghost'}
+              aria-pressed={form.tts_enabled === 'true'}
+              onClick={() => set('tts_enabled', form.tts_enabled === 'true' ? 'false' : 'true')}
+            >
+              {form.tts_enabled === 'true' ? '已开启（点击关闭）' : '开启语音'}
+            </button>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div>
+              <label className="label">语音接口地址 Base URL</label>
+              <input
+                className="input"
+                value={form.tts_base_url ?? ''}
+                onChange={(e) => set('tts_base_url', e.target.value)}
+                placeholder="留空则关闭；如 https://api.openai.com/v1"
+              />
+            </div>
+            <div>
+              <label className="label">API Key</label>
+              <input
+                className="input"
+                type="password"
+                value={form.tts_api_key ?? ''}
+                onChange={(e) => set('tts_api_key', e.target.value)}
+                placeholder="留空则不使用"
+              />
+            </div>
+            <div>
+              <label className="label">模型</label>
+              <input className="input" value={form.tts_model ?? ''} onChange={(e) => set('tts_model', e.target.value)} placeholder="默认 tts-1" />
+            </div>
+            <div>
+              <label className="label">音色 voice</label>
+              <input className="input" value={form.tts_voice ?? ''} onChange={(e) => set('tts_voice', e.target.value)} placeholder="默认 alloy" />
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              className="btn"
+              onClick={() => save(['tts_enabled', 'tts_base_url', 'tts_api_key', 'tts_model', 'tts_voice'], '语音设置已保存')}
+              disabled={saving}
+            >
+              保存
+            </button>
+            <button className="btn-ghost" onClick={testTts} disabled={ttsTesting || saving}>
+              {ttsTesting ? '试听中…' : '试听一句'}
+            </button>
+            <span className="dim">试听用的是已保存的配置，改完记得先点保存。</span>
+          </div>
+        </Card>
+
+        <Card
+          title="她的照片（点头像看看她）"
+          right={<Chip tone="plain">{form.img_enabled === 'true' ? '已开启' : '未开启'}</Chip>}
+        >
+          <p className="dim leading-relaxed">
+            开启并配置后，在聊天页点她的头像，会用图片生成服务生成一张她此刻的日常自拍，并按她的活动、地点配一句自然的说明。
+            需要一个兼容 OpenAI <code className="rounded accent-soft px-1">/images/generations</code> 接口的服务。
+            没配置时用内置立绘兜底，不会报错。
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              className={form.img_enabled === 'true' ? 'btn' : 'btn-ghost'}
+              aria-pressed={form.img_enabled === 'true'}
+              onClick={() => set('img_enabled', form.img_enabled === 'true' ? 'false' : 'true')}
+            >
+              {form.img_enabled === 'true' ? '已开启（点击关闭）' : '开启照片'}
+            </button>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div>
+              <label className="label">图片接口地址 Base URL</label>
+              <input
+                className="input"
+                value={form.img_base_url ?? ''}
+                onChange={(e) => set('img_base_url', e.target.value)}
+                placeholder="留空则关闭；如 https://api.openai.com/v1"
+              />
+            </div>
+            <div>
+              <label className="label">API Key</label>
+              <input
+                className="input"
+                type="password"
+                value={form.img_api_key ?? ''}
+                onChange={(e) => set('img_api_key', e.target.value)}
+                placeholder="留空则不使用"
+              />
+            </div>
+            <div>
+              <label className="label">模型</label>
+              <input className="input" value={form.img_model ?? ''} onChange={(e) => set('img_model', e.target.value)} placeholder="默认 gpt-image-1" />
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              className="btn"
+              onClick={() => save(['img_enabled', 'img_base_url', 'img_api_key', 'img_model'], '照片设置已保存')}
+              disabled={saving}
+            >
+              保存
+            </button>
+            <Link href="/" className="btn-ghost">
+              去聊天页点头像看看 →
+            </Link>
+          </div>
+        </Card>
+
         <Card title="关系与记忆的节奏">
           <div className="grid gap-3 md:grid-cols-3">
             <div>
@@ -747,13 +1011,13 @@ export default function SettingsPage() {
             </button>
           </div>
           <p className="dim mt-3 leading-relaxed">
-            聊天记录、记忆、性格参数、依恋数据都存储在本机 <code className="rounded bg-rose-50 px-1">data/girlfriend.db</code> 里，
+            聊天记录、记忆、性格参数、依恋数据都存储在本机 <code className="rounded accent-soft px-1">data/girlfriend.db</code> 里，
             你可以随时查看、编辑、删除或整份导出。删除即彻底删除，不上传任何服务器。
           </p>
         </Card>
 
         <Card title="关于她怎么运转（简单说）">
-          <ul className="space-y-2 text-xs leading-relaxed text-ink-700">
+          <ul className="space-y-2 text-xs leading-relaxed ink-2">
             <li>• <b>关系阶段</b>：初识 → 试探 → 加深 → 融合 → 承诺。阶段越高，她能表达的亲密越多；越级会被拦住。</li>
             <li>• <b>性格</b>：6 个维度从 50 开始。每轮对话只收集"信号"，同方向信号在不同情境下累积够 5 次才 ±1；连续 15 次同向确认后进入半固化（每 30 轮才允许再动 1 点）。</li>
             <li>• <b>依恋</b>：焦虑/回避两轴决定她怎么应对亲密和冲突，每 10 轮评估一次，累积 3 次同向信号才真正偏移。</li>

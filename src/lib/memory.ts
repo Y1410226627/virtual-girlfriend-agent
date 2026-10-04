@@ -1,5 +1,5 @@
 // 记忆系统：向量检索 + 关键词/重要度/新鲜度/阶段相关度评分 + 去重 + 遗忘 + 摘要
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, numSetting, llmConfig } from './db';
+import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, numSetting, llmConfig } from './db';
 import { cosine, nowIso, hoursSince, daysSince, clamp, round1, safeJson, truncate } from './utils';
 import { embed, embedOne } from './llm';
 import type { MemoryRow, MemoryUpdate } from './types';
@@ -121,6 +121,104 @@ export async function addMemory(
   }
 
   return id;
+}
+
+/* ---------------------- 记忆纠正（用户明确指出她记错了） ---------------------- */
+/** 中文按 2-gram 切分的字符集合：无空格文本也能粗略衡量重合度 */
+function charBigrams(s: string): Set<string> {
+  const set = new Set<string>();
+  for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+  return set;
+}
+
+/** 文本兜底相似度：包含匹配直接满分，否则用 2-gram Jaccard 重合度（向量缺失/失败时使用） */
+function correctionTextScore(hint: string, content: string): number {
+  const h = hint.replace(/\s+/g, '');
+  const c = content.replace(/\s+/g, '');
+  if (!h || !c) return 0;
+  if (c.includes(h) || h.includes(c)) return 1;
+  const A = charBigrams(h);
+  const B = charBigrams(c);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const x of A) if (B.has(x)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+
+/**
+ * 记忆纠正：用户明确纠正她记错的事实时调用。
+ * 找到最相近的 active 语义记忆 → 标记 status='superseded' 并把 superseded_by 指向新记忆，
+ * 再插入一条新的正确语义记忆；没命中就只插入新记忆。
+ * 全程在一个事务里完成"查找 + supersede + 插入"，只改状态字段，不删除任何数据。
+ */
+export async function applyMemoryCorrection(
+  oldHint: string,
+  newFact: string,
+  sourceMessageId?: number | null
+): Promise<{ newMemoryId: number | null; supersededId: number | null }> {
+  const hint = String(oldHint || '').trim();
+  const fact = String(newFact || '').trim();
+  if (fact.length < 2) return { newMemoryId: null, supersededId: null };
+
+  // 向量计算放在事务外：embed 是异步的，事务体必须保持同步才能保证原子性
+  let hintVec: number[] = [];
+  if (hint) {
+    try {
+      hintVec = await embedOne(hint);
+    } catch {
+      hintVec = [];
+    }
+  }
+  const factVec = await embedOne(fact);
+
+  return tx(() => {
+    // 1) 在 active 语义记忆里找最相近的旧记忆（向量优先，缺失/失败用文本兜底）
+    const candidates = dbAll<MemoryRow & { vector: string | null }>(
+      `SELECT m.*, e.vector AS vector FROM memories m
+       LEFT JOIN memory_embeddings e ON e.memory_id = m.id
+       WHERE m.user_id = ? AND m.status = 'active' AND m.type = 'semantic'
+       ORDER BY m.id DESC LIMIT 400`,
+      DEFAULT_USER_ID
+    );
+
+    let best: { row: MemoryRow; sim: number } | null = null;
+    for (const row of candidates) {
+      const v = safeJson<number[]>(row.vector, []);
+      const vecSim = hintVec.length && v.length ? Math.max(0, cosine(hintVec, v)) : 0;
+      const textSim = hint ? correctionTextScore(hint, String(row.content || '')) : 0;
+      const sim = Math.max(vecSim, textSim);
+      if (!best || sim > best.sim) best = { row, sim };
+    }
+
+    const hit = !!best && best.sim >= 0.55;
+
+    // 2) 插入新的正确记忆（importance 7~8）
+    const { lastInsertRowid: newId } = dbRun(
+      `INSERT INTO memories (user_id, type, content, importance, emotion, source_message_id, created_at, last_accessed_at, expires_at, status, access_count)
+       VALUES (?, 'semantic', ?, 8, NULL, ?, ?, NULL, NULL, 'active', 0)`,
+      DEFAULT_USER_ID,
+      fact,
+      sourceMessageId ?? null,
+      nowIso()
+    );
+    dbRun(
+      `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
+      newId,
+      embedModelTag(),
+      factVec.length,
+      JSON.stringify(factVec.map((x) => Math.round(x * 10000) / 10000)),
+      nowIso()
+    );
+
+    // 3) 命中旧记忆 → 标记 superseded 并指向新记忆（保留历史，不删除）
+    let supersededId: number | null = null;
+    if (hit && best) {
+      dbRun("UPDATE memories SET status = 'superseded', superseded_by = ? WHERE id = ?", newId, best.row.id);
+      supersededId = best.row.id;
+    }
+
+    return { newMemoryId: newId, supersededId };
+  });
 }
 
 /* ---------------------- 检索评分 ---------------------- */
