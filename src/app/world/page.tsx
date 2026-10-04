@@ -37,6 +37,9 @@ export default function WorldPage() {
   const [newPlan, setNewPlan] = useState('');
   const [newRitual, setNewRitual] = useState('');
   const [newItem, setNewItem] = useState('');
+  // 手动调整她此刻的身体/心理数值
+  const [editStates, setEditStates] = useState(false);
+  const [sv, setSv] = useState<Record<string, any>>({});
 
   const post = async (body: any, msg?: string) => {
     setBusy(true);
@@ -117,7 +120,37 @@ export default function WorldPage() {
           </Card>
 
           <div className="grid gap-4 md:grid-cols-2">
-            <Card title="身体">
+            <Card
+              title="身体"
+              right={
+                <button
+                  className="btn-ghost"
+                  onClick={() => {
+                    setSv(
+                      editStates
+                        ? {}
+                        : {
+                            energy: Math.round(h.energy),
+                            sleep_quality: Math.round(h.sleepQuality),
+                            hunger: Math.round(h.hunger),
+                            exercise: Math.round(h.exercise),
+                            stress: Math.round(p.stress),
+                            loneliness: Math.round(p.loneliness),
+                            missing_user: Math.round(p.missingUser),
+                            security: Math.round(p.security),
+                            self_worth: Math.round(p.selfWorth),
+                            mental_energy: Math.round(p.mentalEnergy),
+                            cycle_day: h.cycleDay,
+                          }
+                    );
+                    setEditStates((v) => !v);
+                  }}
+                  title="直接设定她此刻的身体 / 心理数值"
+                >
+                  {editStates ? '收起调整' : '手动调整'}
+                </button>
+              }
+            >
               <div className="space-y-3">
                 {[
                   ['精力', h.energy, 'rose'],
@@ -147,6 +180,89 @@ export default function WorldPage() {
               </div>
             </Card>
           </div>
+
+          {editStates ? (
+            <Card title="手动调整她此刻的状态（立刻生效）">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                {(
+                  [
+                    ['energy', '精力'],
+                    ['sleep_quality', '睡眠'],
+                    ['hunger', '饥饿'],
+                    ['exercise', '运动'],
+                    ['stress', '压力'],
+                    ['loneliness', '孤独'],
+                    ['missing_user', '想你'],
+                    ['security', '安全感'],
+                    ['self_worth', '自我价值'],
+                    ['mental_energy', '心理能量'],
+                  ] as const
+                ).map(([k, label]) => (
+                  <div key={k}>
+                    <label className="label">{label} 0-100</label>
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={sv[k] ?? 0}
+                      onChange={(e) => setSv((s) => ({ ...s, [k]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+                {h.cycleEnabled ? (
+                  <div>
+                    <label className="label">生理期第几天</label>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      max={60}
+                      value={sv.cycle_day ?? 1}
+                      onChange={(e) => setSv((s) => ({ ...s, cycle_day: e.target.value }))}
+                    />
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  className="btn"
+                  disabled={busy}
+                  onClick={async () => {
+                    const num = (x: any, d = 0) => (isFinite(Number(x)) ? Number(x) : d);
+                    await post(
+                      {
+                        action: 'set_states',
+                        health: {
+                          energy: num(sv.energy),
+                          sleep_quality: num(sv.sleep_quality),
+                          hunger: num(sv.hunger),
+                          exercise: num(sv.exercise),
+                          cycle_day: num(sv.cycle_day, h.cycleDay),
+                        },
+                        psychology: {
+                          stress: num(sv.stress),
+                          loneliness: num(sv.loneliness),
+                          missing_user: num(sv.missing_user),
+                          security: num(sv.security),
+                          self_worth: num(sv.self_worth),
+                          mental_energy: num(sv.mental_energy),
+                        },
+                      },
+                      '数值已按你的设定更新'
+                    );
+                    setEditStates(false);
+                  }}
+                >
+                  应用数值
+                </button>
+                <button className="btn-ghost" onClick={() => setEditStates(false)}>
+                  取消
+                </button>
+                <span className="dim">设定的是"她此刻的状态"，之后仍会随时间和她做的事自然变化；聊天里她会按这个状态表现。</span>
+              </div>
+            </Card>
+          ) : null}
 
           <Card title="测试用（想看她不同状态时的反应）">
             <div className="flex flex-wrap gap-2">

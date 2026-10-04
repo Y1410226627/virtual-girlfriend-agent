@@ -1,6 +1,6 @@
 // 她的世界：健康 / 心理 / 位置 / 活动 / 日常事件 / 档案里逐步揭露的信息 / 共享世界
 import { dbRun, dbAll, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
-import { nowIso, localDateStr, round1 } from '@/lib/utils';
+import { nowIso, localDateStr, round1, clamp } from '@/lib/utils';
 import {
   ensureLife,
   advanceLife,
@@ -27,6 +27,7 @@ import {
   endOngoingEvent,
   setEventExpectedEnd,
   applyEventEffectsAsIf,
+  logLife,
 } from '@/lib/life';
 import { notifyEventEnd } from '@/lib/proactive';
 import { ensureScheduler } from '@/lib/scheduler';
@@ -128,6 +129,41 @@ export async function POST(req: Request) {
     );
     const r = advanceLife();
     return Response.json({ ok: true, hours, steps: r.steps, changes: r.changes.slice(-12) });
+  }
+
+  if (action === 'set_states') {
+    // 手动直控：她此刻的身体 / 心理数值（你自己设定，立刻生效；之后仍会自然变化）
+    const hIn = (body.health && typeof body.health === 'object' ? body.health : {}) as Record<string, any>;
+    const pIn = (body.psychology && typeof body.psychology === 'object' ? body.psychology : {}) as Record<string, any>;
+    const numOr = (x: any, fallback: number) => {
+      const n = Number(x);
+      return isFinite(n) ? n : fallback;
+    };
+    const h = getHealth();
+    const p = getPsychology();
+    dbRun(
+      'UPDATE agent_health SET energy = ?, sleep_quality = ?, hunger = ?, exercise = ?, cycle_day = ?, updated_at = ? WHERE user_id = ?',
+      round1(clamp(numOr(hIn.energy, h.energy), 0, 100)),
+      round1(clamp(numOr(hIn.sleep_quality, h.sleep_quality), 0, 100)),
+      round1(clamp(numOr(hIn.hunger, h.hunger), 0, 100)),
+      round1(clamp(numOr(hIn.exercise, h.exercise), 0, 100)),
+      Math.round(clamp(numOr(hIn.cycle_day, h.cycle_day), 1, 60)),
+      nowIso(),
+      DEFAULT_USER_ID
+    );
+    dbRun(
+      'UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, security = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?',
+      round1(clamp(numOr(pIn.stress, p.stress), 0, 100)),
+      round1(clamp(numOr(pIn.loneliness, p.loneliness), 0, 100)),
+      round1(clamp(numOr(pIn.missing_user, p.missing_user), 0, 100)),
+      round1(clamp(numOr(pIn.security, p.security), 0, 100)),
+      round1(clamp(numOr(pIn.self_worth, p.self_worth), 0, 100)),
+      round1(clamp(numOr(pIn.mental_energy, p.mental_energy), 0, 100)),
+      nowIso(),
+      DEFAULT_USER_ID
+    );
+    logLife('manual', '', '手动调整状态数值', '你在「她的世界」页直接设定了她的身体/心理数值');
+    return Response.json({ ok: true });
   }
 
   if (action === 'set_profile') {

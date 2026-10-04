@@ -81,7 +81,7 @@ export function listDailyEvents(limit = 30, sinceIso?: string) {
     : dbAll<any>('SELECT * FROM agent_daily_events WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
 }
 
-function logLife(field: string, oldV: any, newV: any, reason: string) {
+export function logLife(field: string, oldV: any, newV: any, reason: string) {
   dbRun(
     'INSERT INTO life_state_logs (user_id, field, old_value, new_value, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, field, String(oldV ?? ''), String(newV ?? ''), reason, nowIso()
