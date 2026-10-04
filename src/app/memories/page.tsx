@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApi, PageHeader, Card, Stat, Loading, ErrorBox, Toast, fmtTime, Chip } from '@/components/ui';
 
 const TYPES = [
@@ -11,6 +11,51 @@ const TYPES = [
   { key: 'relationship', label: '关系' },
   { key: 'attachment', label: '依恋' },
 ];
+
+/** 安全解析 meta（脏数据不让页面白屏） */
+function safeParseMeta(raw: any): any {
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 重要度钳制到 0~10 */
+function clampImportance(v: any): number {
+  const n = Number(v);
+  return Math.max(0, Math.min(10, Number.isFinite(n) ? n : 7));
+}
+
+/** 重要度滑杆：拖动时只改本地值，松手/失焦才提交一次 */
+function ImportanceSlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [local, setLocal] = useState(value);
+  const committed = useRef(value);
+  useEffect(() => {
+    setLocal(value);
+    committed.current = value;
+  }, [value]);
+  const commit = () => {
+    if (local !== committed.current) {
+      committed.current = local;
+      onChange(local);
+    }
+  };
+  return (
+    <input
+      type="range"
+      min={0}
+      max={10}
+      value={local}
+      aria-label="重要度"
+      className="h-1 w-20 accent-rose-500"
+      onChange={(e) => setLocal(Number(e.target.value))}
+      onMouseUp={commit}
+      onTouchEnd={commit}
+      onBlur={commit}
+    />
+  );
+}
 
 export default function MemoriesPage() {
   const [type, setType] = useState('');
@@ -24,41 +69,66 @@ export default function MemoriesPage() {
 
   const memories = useMemo(() => data?.memories || [], [data]);
 
-  const act = async (body: any, msg?: string) => {
-    const r = await fetch('/api/memories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    if (msg) setToast(j?.error ? j.error : msg);
-    reload();
+  const act = async (body: any, msg?: string): Promise<boolean> => {
+    try {
+      const r = await fetch('/api/memories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
+      if (msg) setToast(msg);
+      await reload();
+      return true;
+    } catch (e: any) {
+      setToast(e?.message || '操作失败');
+      return false;
+    }
   };
 
   const saveEdit = async (id: number) => {
-    await fetch('/api/memories', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, content: draft }),
-    });
-    setEditing(null);
-    setToast('已保存（会重新计算向量）');
-    reload();
+    try {
+      const r = await fetch('/api/memories', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, content: draft }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `保存失败 ${r.status}`);
+      setEditing(null);
+      setToast('已保存（会重新计算向量）');
+      await reload();
+    } catch (e: any) {
+      setToast(e?.message || '保存失败');
+    }
   };
 
   const remove = async (id: number) => {
-    await fetch(`/api/memories?id=${id}`, { method: 'DELETE' });
-    setToast('已删除');
-    reload();
+    if (!confirm('删除这条记忆？')) return;
+    try {
+      const r = await fetch(`/api/memories?id=${id}`, { method: 'DELETE' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `删除失败 ${r.status}`);
+      setToast('已删除');
+      await reload();
+    } catch (e: any) {
+      setToast(e?.message || '删除失败');
+    }
   };
 
   const changeImportance = async (id: number, importance: number) => {
-    await fetch('/api/memories', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, importance }),
-    });
-    reload();
+    try {
+      const r = await fetch('/api/memories', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, importance }),
+      });
+      if (!r.ok) throw new Error();
+      await reload();
+    } catch {
+      setToast('重要度调整失败，请重试');
+    }
   };
 
   if (loading && !data) return <Loading text="正在打开她的记忆…" />;
@@ -110,7 +180,7 @@ export default function MemoriesPage() {
                   min={0}
                   max={10}
                   value={newMem.importance}
-                  onChange={(e) => setNewMem((s) => ({ ...s, importance: Number(e.target.value) }))}
+                  onChange={(e) => setNewMem((s) => ({ ...s, importance: e.target.value === '' ? s.importance : Number(e.target.value) }))}
                 />
               </div>
             </div>
@@ -127,9 +197,18 @@ export default function MemoriesPage() {
             <button
               className="btn mt-3"
               onClick={async () => {
-                await act({ action: 'create', ...newMem }, '记住了');
-                setNewMem({ type: 'semantic', content: '', importance: 7, emotion: '' });
-                setCreating(false);
+                if (!newMem.content.trim()) {
+                  setToast('内容不能为空');
+                  return;
+                }
+                const ok = await act(
+                  { action: 'create', ...newMem, importance: clampImportance(newMem.importance) },
+                  '记住了'
+                );
+                if (ok) {
+                  setNewMem({ type: 'semantic', content: '', importance: 7, emotion: '' });
+                  setCreating(false);
+                }
               }}
             >
               保存
@@ -199,14 +278,7 @@ export default function MemoriesPage() {
                   >
                     编辑
                   </button>
-                  <input
-                    type="range"
-                    min={0}
-                    max={10}
-                    value={m.importance}
-                    className="h-1 w-20 accent-rose-500"
-                    onChange={(e) => changeImportance(m.id, Number(e.target.value))}
-                  />
+                  <ImportanceSlider value={m.importance} onChange={(v) => changeImportance(m.id, v)} />
                   <button className="btn-ghost !px-2.5 !py-1 text-xs" onClick={() => remove(m.id)}>
                     删除
                   </button>
@@ -227,7 +299,7 @@ export default function MemoriesPage() {
                 <div key={s.id} className="rounded-2xl bg-rose-50/60 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <Chip tone="plain">{s.date}</Chip>
-                    {s.meta ? <span className="text-[11px] text-ink-300">{JSON.parse(s.meta).messages} 条消息</span> : null}
+                    {s.meta ? <span className="text-[11px] text-ink-300">{safeParseMeta(s.meta).messages ?? 0} 条消息</span> : null}
                   </div>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink-700">{s.summary}</p>
                 </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, Chip } from '@/components/ui';
 
@@ -11,6 +11,8 @@ export default function SettingsPage() {
   const [ping, setPing] = useState<any>(null);
   const [pinging, setPinging] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 用户改过表单后，后台 reload 不要覆盖他还没保存的编辑
+  const dirtyRef = useRef(false);
   const [pf, setPf] = useState<any>({ label: '', base_url: '', api_key: '', chat_model: '', analysis_model: '', note: '' });
   const [editingId, setEditingId] = useState<number | null>(null);
   const [testing, setTesting] = useState<number | null>(null);
@@ -44,28 +46,44 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-    if (data?.settings) setForm({ ...data.settings });
+    if (data?.settings && !dirtyRef.current) {
+      const f: Record<string, any> = { ...data.settings };
+      // 名字/共同故事以 personas 为准（settings 里那份是历史镜像，可能恒为空 → 否则"保存"会把名字抹掉）
+      if (data.persona?.agent_name) f.agent_name = data.persona.agent_name;
+      if (data.persona?.self_story) f.agent_story = data.persona.self_story;
+      setForm(f);
+    }
   }, [data]);
 
   useEffect(() => {
     void loadCv();
   }, []);
 
-  const set = (k: string, v: any) => setForm((s) => ({ ...s, [k]: v }));
+  const set = (k: string, v: any) => {
+    dirtyRef.current = true;
+    setForm((s) => ({ ...s, [k]: v }));
+  };
 
   const save = async (keys?: string[], msg = '已保存') => {
     setSaving(true);
     const payload: Record<string, any> = {};
     (keys || Object.keys(form)).forEach((k) => (payload[k] = form[k]));
-    const r = await fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: payload }),
-    });
-    const j = await r.json();
-    setSaving(false);
-    setToast(j?.error ? j.error : msg);
-    reload();
+    try {
+      const r = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: payload }),
+      });
+      if (!r.ok) throw new Error(`保存失败 ${r.status}`);
+      const j = await r.json().catch(() => ({}));
+      setToast(j?.error ? j.error : msg);
+      dirtyRef.current = false;
+      reload();
+    } catch (e: any) {
+      setToast(`保存失败：${e?.message || e}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const runPing = async () => {
@@ -124,7 +142,7 @@ export default function SettingsPage() {
     const r = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'reset', keepSettings }),
+      body: JSON.stringify({ action: 'reset', keepSettings, confirm: 'RESET' }),
     });
     const j = await r.json();
     setToast(j?.message || '已重置');
@@ -367,8 +385,19 @@ export default function SettingsPage() {
                 key={k}
                 className={(form.scene_mode || 'auto') === k ? 'btn' : 'btn-ghost'}
                 onClick={async () => {
+                  // 直接提交目标值：save() 里读的是 setState 之前的旧 form，先 set 再 save 会把旧值存回去
                   set('scene_mode', k);
-                  await save(['scene_mode'], `场景已设为：${label}`);
+                  await fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ settings: { scene_mode: k } }),
+                  })
+                    .then((r) => {
+                      if (!r.ok) throw new Error(`保存失败 ${r.status}`);
+                      setToast(`场景已设为：${label}`);
+                      reload();
+                    })
+                    .catch((e) => setToast(`保存失败：${e?.message || e}`));
                 }}
               >
                 {label}

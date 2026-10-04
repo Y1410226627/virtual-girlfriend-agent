@@ -27,9 +27,10 @@ import {
 import { applyIntimacyDelta, startAftercare } from './intimacy';
 import type { AnalysisResult, AttachmentSignal, MemoryUpdate, PersonalitySignal, RelationshipDelta } from './types';
 
-/** 用户明确表达"喜欢/不喜欢这样的我"的句式（规则兜底，权重 3 倍） */
+/** 用户明确表达"喜欢/不喜欢这样的我"的句式（规则兜底，权重 3 倍）
+ *  收紧：只认指向"她这个人/她的说话方式"的明确反馈，避免"说得好/别那么"这类泛化词一命中就把整轮信号 ×3 */
 const STRONG_FEEDBACK_RE =
-  /(我喜欢你(这样|这样说|这样说话|这样回|这么)|我就喜欢你这样|别这样|不要这样|不要再这样|你好烦|好烦你|我讨厌你(这样|这样说|这么)|我不喜欢(你)?这样|这样很好|这样就很好|说得好|说得对|继续这样|再温柔一点|凶一点|主动一点|别那么)/;
+  /(我喜欢你(这样|这样说|这样说话|这样回|这么)|我就喜欢你这样|别这样|不要这样|不要再这样|你好烦|好烦你|我讨厌你(这样|这样说|这么)|我不喜欢(你)?这样|继续这样|(再|更|要)温柔一点|(再|更|要)主动一点|别那么(凶|冷|敷衍)|你能不能别)/;
 
 export interface AnalyzeOutcome {
   ok: boolean;
@@ -89,7 +90,7 @@ function normalize(raw: any): AnalysisResult {
     mood: typeof rd.mood === 'string' && rd.mood.trim() ? rd.mood.trim().slice(0, 12) : base.relationship_delta.mood,
     emotional_balance_delta: clamp(num(rd.emotional_balance_delta), -5, 5),
     unresolved_tension_delta: clamp(num(rd.unresolved_tension_delta), -20, 20),
-    repair_credit_delta: clamp(num(rd.repair_credit_delta), 0, 10),
+    repair_credit_delta: clamp(num(rd.repair_credit_delta), -10, 10),
   };
 
   const memories: MemoryUpdate[] = Array.isArray(raw.memory_updates)
@@ -110,15 +111,24 @@ function normalize(raw: any): AnalysisResult {
   const signals: PersonalitySignal[] = Array.isArray(raw.personality_signals)
     ? raw.personality_signals
         .filter((s: any) => s && s.dimension)
+        // 方向白名单：模型用文字表达负向（negative/decrease/减少）时原来会被当成 '+'
+        .map((s: any) => {
+          const dRaw = String(s.direction ?? '').trim();
+          let dir: '+' | '-' | null = null;
+          if (/^(\+|pos|up|increase|增加|提升|正向)/i.test(dRaw)) dir = '+';
+          else if (/^(-|neg|down|decrease|减少|降低|负向)/i.test(dRaw)) dir = '-';
+          return { raw: s, dir };
+        })
+        .filter((x: any) => x.dir === '+' || x.dir === '-') // 方向不明就丢弃，别默认加成
         .slice(0, 8)
-        .map((s: any) => ({
-          signal: String(s.signal || '').slice(0, 200),
-          dimension: String(s.dimension),
-          direction: String(s.direction || '+').startsWith('-') ? '-' : '+',
-          strength: clamp(num(s.strength, 0.5), 0, 1),
-          context: String(s.context || '未知情境').slice(0, 120),
-          reasoning: s.reasoning ? String(s.reasoning).slice(0, 300) : undefined,
-          is_direct_feedback: !!s.is_direct_feedback,
+        .map((x: any): PersonalitySignal => ({
+          signal: String(x.raw.signal || '').slice(0, 200),
+          dimension: String(x.raw.dimension),
+          direction: x.dir,
+          strength: clamp(num(x.raw.strength, 0.5), 0, 1),
+          context: String(x.raw.context || '未知情境').slice(0, 120),
+          reasoning: x.raw.reasoning ? String(x.raw.reasoning).slice(0, 300) : undefined,
+          is_direct_feedback: !!x.raw.is_direct_feedback,
         }))
     : [];
 
@@ -147,7 +157,13 @@ function normalize(raw: any): AnalysisResult {
     repair_attempt: !!raw.repair_attempt,
     repair_quality: repairQuality,
     relationship_confirmation: !!raw.relationship_confirmation,
-    next_check_in_minutes: clamp(num(raw.next_check_in_minutes, 120), 0, 360),
+    next_check_in_minutes: clamp(
+      raw.next_check_in_minutes === null || raw.next_check_in_minutes === undefined || raw.next_check_in_minutes === ''
+        ? 120
+        : num(raw.next_check_in_minutes, 120),
+      5,
+      360
+    ),
     next_relationship_talk: !!raw.next_relationship_talk,
     scene: ['online', 'offline'].includes(String(raw.scene)) ? String(raw.scene) : 'keep',
     scene_reason: String(raw.scene_reason || '').slice(0, 200),
@@ -331,30 +347,36 @@ export async function analyzeTurn(params: {
     try {
       const rawAny: any = raw;
       applyLifeDeltas({ health: rawAny.health_delta, psychology: rawAny.psychology_delta });
+      // 字符串字段统一限长（原来这些直读 rawAny，模型偶发超长文本会直接落库并回注 Prompt）
       const lc = rawAny.location_change || {};
-      if (lc.new_location) applyLocationChange(String(lc.new_location), String(lc.reason || ''));
+      if (lc.new_location) applyLocationChange(String(lc.new_location).slice(0, 20), String(lc.reason || '').slice(0, 60));
       const ac = rawAny.activity_change || {};
-      if (ac.new_activity) applyActivityChange(String(ac.new_activity), String(ac.expected_end || ''));
+      if (ac.new_activity) applyActivityChange(String(ac.new_activity).slice(0, 24), String(ac.expected_end || '').slice(0, 20));
       const de = rawAny.daily_event || {};
-      if (de.content) addDailyEvent(String(de.type || '生活'), String(de.content), String(de.impact || ''));
+      if (de.content) addDailyEvent(String(de.type || '生活').slice(0, 12), String(de.content).slice(0, 200), String(de.impact || '').slice(0, 120));
       const sw = rawAny.shared_world_update || {};
-      if (sw.new_plan) addSharedPlan(String(sw.new_plan));
-      if (sw.new_ritual) addSharedRitual(String(sw.new_ritual));
-      if (sw.new_place) addSharedPlace(String(sw.new_place));
-      if (sw.new_item) addSharedItem(String(sw.new_item));
+      if (sw.new_plan) addSharedPlan(String(sw.new_plan).slice(0, 80));
+      if (sw.new_ritual) addSharedRitual(String(sw.new_ritual).slice(0, 80));
+      if (sw.new_place) addSharedPlace(String(sw.new_place).slice(0, 60));
+      if (sw.new_item) addSharedItem(String(sw.new_item).slice(0, 80));
       if (sw.new_memory) {
         await addMemory(
-          { type: 'relationship', content: String(sw.new_memory), importance: 7, emotion: '温暖' },
+          { type: 'relationship', content: String(sw.new_memory).slice(0, 300), importance: 7, emotion: '温暖' },
           params.assistantMessageId ?? null
         );
       }
-      if (Array.isArray(rawAny.profile_reveal)) revealProfileFields(rawAny.profile_reveal.map(String));
-      if (Array.isArray(rawAny.preference_reveal)) revealPreferences(rawAny.preference_reveal.map(String));
+      if (Array.isArray(rawAny.profile_reveal)) {
+        revealProfileFields(rawAny.profile_reveal.filter((x: any) => typeof x === 'string').slice(0, 6).map(String));
+      }
+      if (Array.isArray(rawAny.preference_reveal)) {
+        revealPreferences(rawAny.preference_reveal.filter((x: any) => typeof x === 'string').slice(0, 6).map(String));
+      }
       if (rawAny.cared_for_her) {
         careBoost('care');
         outcome.applied.life = true;
       }
-      applyInteractionEffects({ caredForHer: false });
+      // 传递真实的"被关心"信号（原来恒 false，关怀加成是死代码）；自定义模式跳过（承诺冻结自动改写）
+      if (!custom) applyInteractionEffects({ caredForHer: !!rawAny.cared_for_her });
       // 亲密系统（自定义模式跳过：数值由用户直控）
       if (!custom) {
         const idelta = rawAny.intimacy_delta || {};
@@ -382,7 +404,6 @@ export async function analyzeTurn(params: {
     if (!custom) {
       const lastAttachmentTurn = getCounter('last_attachment_analysis_turn');
       if (shouldRunAttachmentAnalysis(turn, lastAttachmentTurn)) {
-        setCounter('last_attachment_analysis_turn', turn);
         try {
           const attRaw = await chatJson(buildAttachmentAnalysisMessages(transcript(20), turn), {
             maxTokens: 900,
@@ -390,6 +411,8 @@ export async function analyzeTurn(params: {
             thinking: boolSetting('analysis_thinking', false),
           });
           if (attRaw) {
+            // 只有真的分析成功才推进轮次（原来先记账、失败就白白吞掉一次窗口）
+            setCounter('last_attachment_analysis_turn', turn);
             const sig: AttachmentSignal = {
               anxiety_delta: clamp(num(attRaw.suggested_anxiety_delta), -2, 2),
               avoidance_delta: clamp(num(attRaw.suggested_avoidance_delta), -2, 2),

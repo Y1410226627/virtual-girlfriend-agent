@@ -1,6 +1,5 @@
 // 记忆管理：查看 / 编辑 / 删除 / 新增 / 整理
 import {
-  listMemories,
   updateMemory,
   deleteMemory,
   createMemoryManually,
@@ -10,7 +9,8 @@ import {
   forgetSweep,
   listDailySummaries,
 } from '@/lib/memory';
-import { dbRun, DEFAULT_USER_ID } from '@/lib/db';
+import { dbAll, dbRun, DEFAULT_USER_ID } from '@/lib/db';
+import { clamp } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,7 +19,17 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const type = url.searchParams.get('type') || undefined;
   const status = url.searchParams.get('status') || 'active';
-  const memories = listMemories({ type, status, limit: 400 });
+  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 100));
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+  const memories = type
+    ? dbAll(
+        'SELECT * FROM memories WHERE user_id = ? AND status = ? AND type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+        DEFAULT_USER_ID, status, type, limit, offset
+      )
+    : dbAll(
+        'SELECT * FROM memories WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+        DEFAULT_USER_ID, status, limit, offset
+      );
   return Response.json({ memories, stats: memoryStats(), summaries: listDailySummaries(30) });
 }
 
@@ -29,7 +39,9 @@ export async function POST(req: Request) {
   if (action === 'create') {
     const content = String(body.content || '').trim();
     if (!content) return Response.json({ error: '内容不能为空' }, { status: 400 });
-    const id = createMemoryManually(body.type || 'semantic', content, Number(body.importance) || 6, body.emotion);
+    const imp = body.importance !== undefined ? Number(body.importance) : 6;
+    const importance = isFinite(imp) ? clamp(imp, 0, 10) : 6;
+    const id = createMemoryManually(body.type || 'semantic', content, importance, body.emotion);
     await backfillEmbeddings();
     return Response.json({ ok: true, id });
   }

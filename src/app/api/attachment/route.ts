@@ -3,7 +3,7 @@ import { getAttachmentState, listAttachmentLogs, attachmentEvolution, attachment
 import { setAttachmentAxes } from '@/lib/attachment';
 import { dbAll, DEFAULT_USER_ID } from '@/lib/db';
 import { ATTACHMENT_STYLES, attachmentStyleOf } from '@/lib/types';
-import { round1 } from '@/lib/utils';
+import { round1, clamp } from '@/lib/utils';
 import { getPersonalityRows } from '@/lib/personality';
 
 export const runtime = 'nodejs';
@@ -33,10 +33,18 @@ export async function GET() {
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   if (body?.action === 'adjust') {
-    const anxiety = Number(body.anxiety);
-    const avoidance = Number(body.avoidance);
-    if (!isFinite(anxiety) || !isFinite(avoidance)) return Response.json({ error: '参数错误' }, { status: 400 });
-    setAttachmentAxes(anxiety, avoidance, '用户手动调整', String(body.reason || '用户在依恋页手动微调'));
+    const anxiety = body.anxiety;
+    const avoidance = body.avoidance;
+    if (
+      typeof anxiety !== 'number' || typeof avoidance !== 'number' ||
+      !isFinite(anxiety) || !isFinite(avoidance)
+    ) return Response.json({ error: '参数错误' }, { status: 400 });
+    setAttachmentAxes(
+      clamp(anxiety, 0, 100),
+      clamp(avoidance, 0, 100),
+      '用户手动调整',
+      String(body.reason || '用户在依恋页手动微调').slice(0, 120)
+    );
     return Response.json({ ok: true });
   }
   if (body?.action === 'run') {

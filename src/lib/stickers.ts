@@ -28,7 +28,7 @@ export const STICKERS: Sticker[] = [
   { id: 'celebrate', emoji: '🎉', caption: '太好了', meaning: '替他高兴、庆祝', tags: ['开心', '庆祝'] },
 ];
 
-const TOKEN_RE = /\[\[\s*(?:sticker|表情包)\s*[:：]?\s*([a-z_]+)\s*\]\]/gi;
+export const TOKEN_RE = /\[\[\s*(?:sticker|表情包)\s*[:：]?\s*([a-z_]+)\s*\]\]/gi;
 
 export function stickerById(id: string): Sticker | undefined {
   return STICKERS.find((s) => s.id === String(id).toLowerCase());

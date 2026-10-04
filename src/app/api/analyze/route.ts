@@ -40,15 +40,20 @@ export async function POST(req: Request) {
   } catch {
     return Response.json({ error: '无效请求' }, { status: 400 });
   }
-  const { userMessage, assistantMessage, userMessageId, assistantMessageId } = body || {};
+  const userMessage = String(body?.userMessage || '').slice(0, 4000);
+  const assistantMessage = String(body?.assistantMessage || '').slice(0, 4000);
   if (!assistantMessage) return Response.json({ error: '缺少对话内容' }, { status: 400 });
+  const rawUid = body?.userMessageId;
+  const rawAid = body?.assistantMessageId;
+  const userMessageId = rawUid != null && Number.isInteger(Number(rawUid)) ? Number(rawUid) : undefined;
+  const assistantMessageId = rawAid != null && Number.isInteger(Number(rawAid)) ? Number(rawAid) : undefined;
 
   // 关键：入队后立刻返回，分析在后台按顺序执行
   const { pending } = enqueueAnalysis({
-    userMessage: String(userMessage || ''),
-    assistantMessage: String(assistantMessage || ''),
-    userMessageId: userMessageId ?? null,
-    assistantMessageId: assistantMessageId ?? null,
+    userMessage,
+    assistantMessage,
+    userMessageId,
+    assistantMessageId,
   });
 
   return Response.json({ queued: true, pending: pending + (analysisQueueStatus().running ? 1 : 0) });

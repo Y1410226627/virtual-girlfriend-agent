@@ -15,7 +15,10 @@ export function ensureScheduler(): void {
     console.warn('[profiles] seed failed:', e?.message || e);
   }
 
+  let running = false; // 上一次 tick 还没跑完就不再叠一次（tickProactive 里有模型调用，可能超过 5 分钟）
   const run = async (force: boolean) => {
+    if (running) return;
+    running = true;
     try {
       // 她的生活先推进（按流逝时间推导，幂等）
       const { ensureLife, advanceLife, saveWeeklyWorldSnapshot } = await import('./life');
@@ -31,12 +34,24 @@ export function ensureScheduler(): void {
       await tickProactive(force);
     } catch (e: any) {
       console.warn('[proactive] tick failed:', e?.message || e);
+    } finally {
+      running = false;
     }
   };
 
-  // 启动 20 秒后先跑一次（只做跨天摘要之类的例行检查，不发主动消息）
-  setTimeout(() => run(false), 20 * 1000);
+  // 启动 20 秒后先跑一次（推进生活 + 例行检查；主动消息是否发出仍受频率/时段闸门约束）
+  g.__gfTimer1 = setTimeout(() => run(false), 20 * 1000);
   // 之后每 5 分钟检查一次
-  setInterval(() => run(false), 5 * 60 * 1000);
+  g.__gfTimer2 = setInterval(() => run(false), 5 * 60 * 1000);
   console.log('[虚拟女友] 后台定时任务已启动（每 5 分钟检查一次主动消息）');
+}
+
+/** 停止调度（进程退出/测试用） */
+export function stopScheduler(): void {
+  const g = globalThis as any;
+  if (g.__gfTimer1) clearTimeout(g.__gfTimer1);
+  if (g.__gfTimer2) clearInterval(g.__gfTimer2);
+  g.__gfTimer1 = null;
+  g.__gfTimer2 = null;
+  g.__gfSchedulerStarted = false;
 }

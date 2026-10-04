@@ -60,7 +60,16 @@ function stripMarkdown(line: string): string {
 function looksLikeJson(line: string): boolean {
   const t = line.trim();
   if (!t) return false;
-  if (t.startsWith('{') || t.startsWith('[')) return true;
+  if (t.startsWith('{') || t.startsWith('[')) {
+    // 收紧：必须真的是 JSON 结构（原来只要以 [ 开头就算，把"[笑了笑]你回来啦"整行删掉，连台词一起丢）
+    if (!(t.endsWith('}') || t.endsWith(']'))) return false;
+    try {
+      JSON.parse(t);
+      return true;
+    } catch {
+      return /"(memory_updates|relationship_delta|personality_signals|attachment_signals|reasoning)"\s*:/.test(t);
+    }
+  }
   if (/"(memory_updates|relationship_delta|personality_signals|attachment_signals|reasoning)"\s*:/.test(t)) return true;
   if (/^(JSON|json)\s*[:：]/.test(t)) return true;
   return false;
@@ -100,7 +109,7 @@ const ACTION_SLEPT_RE = /(陷入梦乡|沉入梦乡|进入梦乡|沉沉睡去|�
 
 /** 如果她在动作里已经睡过去了：把该动作之后的台词删掉（睡着的人不会说话） */
 function trimTalkAfterSleepOnset(text: string): { text: string; note?: string } {
-  const re = /[（(]([^）)]{1,160})[）)]/g;
+  const re = /[（(]([^）)\n]{1,160})[）)]/g;
   let lastOnsetEnd = -1;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
@@ -123,7 +132,7 @@ function filterActions(
 ): { text: string; notes: string[] } {
   const notes: string[] = [];
   const recent = (ctx.recentActions || []).map((a) => String(a).replace(/\s/g, ''));
-  let out = text.replace(/（([^）)]{1,120})）/g, (full, inner: string) => {
+  let out = text.replace(/（([^）)\n]{1,120})）/g, (full, inner: string) => {
     const s = String(inner).trim();
     // 原地换一个贴合语境的动作（而不是删掉后在结尾另补，避免"结尾突然多一句"的观感）
     const swap = (kind: string) => {
@@ -145,7 +154,9 @@ function filterActions(
       return swap('去掉机械动作');
     }
     const flat = s.replace(/\s/g, '');
-    if (flat.length >= 4 && recent.some((r) => r.slice(0, 6) === flat.slice(0, 6))) {
+    // 4-5 字的动作原来永远比不出重复（slice(0,6) 定长前缀对短串恒不等）→ 用双方较短长度作比较长度
+    const k1 = Math.min(flat.length, 6);
+    if (flat.length >= 4 && recent.some((r) => r.slice(0, Math.min(r.length, k1)) === flat.slice(0, k1))) {
       return swap('复读动作');
     }
     return full;
@@ -181,9 +192,9 @@ function cleanSentences(text: string, userName: string): { text: string; notes: 
       notes.push(`删掉AI腔: ${truncate(raw.trim(), 24)}`);
       continue;
     }
-    // 替用户说话：出现"用户名："之后的内容整段截掉
-    if (userName && cur.includes(`${userName}：`)) {
-      cur = cur.split(`${userName}：`)[0];
+    // 替用户说话：出现"用户名："之后的内容整段截掉（半角冒号同样要拦）
+    if (userName && new RegExp(`${userName}[：:]`).test(cur)) {
+      cur = cur.split(new RegExp(`${userName}[：:]`))[0];
       notes.push('截掉替用户发言');
       if (!cur.trim()) continue;
     }
@@ -269,7 +280,7 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
       notes.push(`删掉AI腔: ${truncate(cur, 24)}`);
       continue;
     }
-    if (ctx.userName && cur.startsWith(`${ctx.userName}：`)) {
+    if (ctx.userName && new RegExp(`^\\s*${ctx.userName}[：:]`).test(cur)) {
       notes.push('截掉替用户发言');
       cutForImpersonation = true;
       continue;
@@ -312,7 +323,7 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
   // 本段已有的动作（含将被剔除的）：补/换动作时不与它们重复
   const usedLocal: string[] = [
     ...(ctx.recentActions || []),
-    ...[...text.matchAll(/（([^）)]{1,120})）/g)].map((m) => String(m[1]).trim()),
+    ...[...text.matchAll(/（([^）)\n]{1,120})）/g)].map((m) => String(m[1]).trim()),
   ];
   const pickFitting = (avoidTag?: ActionTag): string | null => {
     const picked = pickAction({
@@ -373,10 +384,10 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
   text = text.replace(/^[，,、。；;]+/, '').trim();
 
   let fallback = false;
-  if (text.replace(/[（(][^）)]*[）)]/g, '').trim().length < 2) {
+  if (text.replace(/[（(][^）)\n]*[）)]/g, '').trim().length < 1) {
     const fb = fallbackReply(ctx);
     // 只剩动作时：动作太短/疑似占位（如"（无）"）就不保留，直接换成兜底台词
-    const actionOnly = text.trim().replace(/[（(]([^）)]*)[）)]/g, '$1').replace(/\s/g, '');
+    const actionOnly = text.trim().replace(/[（(]([^）)\n]*)[）)]/g, '$1').replace(/\s/g, '');
     if (text.trim() && actionOnly.length >= 2) {
       if (ACTION_SLEPT_RE.test(text)) {
         // 动作里她已经睡过去了：不能再补台词（睡着的人不会说话）
@@ -395,7 +406,7 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
 
   // 神态/动作兜底：保证"看得见她"（发了表情包就不再硬塞动作）
   let addedAction = false;
-  const hasAction = /[（(][^）)]{1,120}[）)]/.test(text) || stickerPresent;
+  const hasAction = /[（(][^）)\n]{1,120}[）)]/.test(text) || stickerPresent;
   if (!hasAction && !stickerPresent) {
     const lastAction = (ctx.recentActions || [])[0];
     const avoidTag: ActionTag | undefined = lastAction ? tagOfAction(lastAction) || undefined : undefined;

@@ -94,7 +94,8 @@ export async function GET() {
             ? { id: evt.id, activity: evt.activity, eventType: evt.event_type, startedAt: evt.started_at, expectedEnd: evt.expected_end_at, mode: evt.duration_mode }
             : null,
         };
-      } catch {
+      } catch (e) {
+        console.warn('[state] life 快照失败', e);
         return null;
       }
     })(),
@@ -111,7 +112,8 @@ export async function GET() {
           levelSet: lv.level,
           inAftercare: inAftercare(),
         };
-      } catch {
+      } catch (e) {
+        console.warn('[state] intimacy 快照失败', e);
         return null;
       }
     })(),

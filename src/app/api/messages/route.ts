@@ -1,19 +1,16 @@
 // 消息列表 / 清空聊天
-import { listMessages, markAssistantMessagesRead, messageCount } from '@/lib/engine';
+import { listMessages, messageCount } from '@/lib/engine';
 import { dbRun, DEFAULT_USER_ID } from '@/lib/db';
-import { ensureScheduler } from '@/lib/scheduler';
 import { deleteMessageById } from '@/lib/messageActions';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
-  ensureScheduler();
   const url = new URL(req.url);
   const afterId = Number(url.searchParams.get('afterId') || 0);
-  const limit = Number(url.searchParams.get('limit') || 60);
+  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 60));
   const rows = listMessages({ afterId: afterId || undefined, limit });
-  markAssistantMessagesRead();
   return Response.json({ messages: rows, total: messageCount() });
 }
 

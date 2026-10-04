@@ -21,14 +21,36 @@ export interface ConflictRow {
   resolved_at: string | null;
 }
 
+/** 冲突状态机：唯一的判定入口（none <15 / tense 15~80 / cold_war >80），可逆 */
+function recomputeConflictState(tension: number): string {
+  if (tension < 15) return 'none';
+  if (tension > 80) return 'cold_war';
+  return 'tense';
+}
+
+/** 批量关闭未解决的冲突（修复时全部结清；自然淡出时标记 faded） */
+function closeOpenConflicts(status: 'repaired' | 'faded', tensionAfter: number, quality?: string): number {
+  const r = dbRun(
+    `UPDATE conflict_logs SET status = ?, resolved_at = ?, tension_after = ?, repair_quality = COALESCE(?, repair_quality)
+     WHERE user_id = ? AND status = 'open'`,
+    status,
+    nowIso(),
+    round1(tensionAfter),
+    quality ?? null,
+    DEFAULT_USER_ID
+  );
+  return Number(r.changes || 0);
+}
+
 /** 冲突发生时：张力上升 + 记录冲突（未修复则持续挂起） */
 export function registerConflict(type: ConflictType, description: string): void {
   const s = getRelationshipState();
   const tensionDelta = type === 'boundary' ? 15 : type === 'major' ? 12 : type === 'minor' ? 6 : 0;
   if (tensionDelta === 0 && type === 'none') return;
 
+  const tensionBefore = s.unresolved_tension; // 记录"发生前"的张力（原来记的是增量之后的值）
   s.unresolved_tension = clamp(s.unresolved_tension + tensionDelta, 0, 100);
-  s.conflict_state = s.unresolved_tension > 80 ? 'cold_war' : 'tense';
+  s.conflict_state = recomputeConflictState(s.unresolved_tension);
   s.last_conflict_at = nowIso();
   if (s.unresolved_tension > 50) s.mood = '生气';
   else s.mood = '委屈';
@@ -40,7 +62,7 @@ export function registerConflict(type: ConflictType, description: string): void 
     DEFAULT_USER_ID,
     type,
     description,
-    round1(s.unresolved_tension),
+    round1(tensionBefore),
     nowIso()
   );
 
@@ -55,11 +77,12 @@ export function registerRepair(quality: RepairQuality, description: string): voi
   const before = s.unresolved_tension;
 
   const dropRatio = quality === 'sincere' ? 0.8 : quality === 'sweet' ? 0.65 : quality === 'avoidant' ? 0.5 : 0.3;
-  const creditGain = quality === 'sincere' ? 10 : quality === 'sweet' ? 7 : quality === 'avoidant' ? 5 : 2;
+  // 修复信用不是"参与就有奖"：勉强修复（none）不给分，回避型只给一点点
+  const creditGain = quality === 'sincere' ? 10 : quality === 'sweet' ? 7 : quality === 'avoidant' ? 3 : 0;
 
   s.unresolved_tension = clamp(s.unresolved_tension * (1 - dropRatio), 0, 100);
   s.repair_credit = clamp(s.repair_credit + creditGain, 0, 100);
-  if (s.unresolved_tension < 15) s.conflict_state = 'none';
+  s.conflict_state = recomputeConflictState(s.unresolved_tension);
   s.mood = '和好';
   saveRelationshipState(s);
 
@@ -72,19 +95,10 @@ export function registerRepair(quality: RepairQuality, description: string): voi
     description
   );
 
-  // 关闭最近的 open 冲突
-  const open = dbGet<ConflictRow>(
-    "SELECT * FROM conflict_logs WHERE user_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1",
-    DEFAULT_USER_ID
-  );
-  if (open) {
-    dbRun(
-      "UPDATE conflict_logs SET status = 'repaired', resolved_at = ?, tension_after = ?, repair_quality = ? WHERE id = ?",
-      nowIso(),
-      round1(s.unresolved_tension),
-      quality,
-      open.id
-    );
+  // 一次修复结清全部未解决的冲突（原来只关最近一条，旧的会一直挂着）
+  const closed = closeOpenConflicts('repaired', s.unresolved_tension, quality);
+  if (closed > 1) {
+    logRelationship('repair', `一并结清 ${closed} 条未解决冲突`, null, closed, description);
   }
 }
 
@@ -100,13 +114,16 @@ export function openConflictCount(): number {
   return Number(r?.c || 0);
 }
 
-/** 事情过去了但一直没处理：张力自然衰减（很慢） */
+/** 事情过去了但一直没处理：张力自然衰减（很慢）；淡出到安全区就关闭挂账的冲突 */
 export function fadeTension(delta = -1): void {
   const s = getRelationshipState();
   if (s.unresolved_tension <= 0) return;
   s.unresolved_tension = clamp(s.unresolved_tension + delta, 0, 100);
-  if (s.unresolved_tension < 15 && s.conflict_state !== 'none') s.conflict_state = 'none';
+  s.conflict_state = recomputeConflictState(s.unresolved_tension);
   saveRelationshipState(s);
+  if (s.unresolved_tension < 15) {
+    closeOpenConflicts('faded', s.unresolved_tension);
+  }
 }
 
 /**

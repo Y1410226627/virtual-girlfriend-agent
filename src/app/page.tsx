@@ -28,7 +28,7 @@ export default function ChatPage() {
   const [onboard, setOnboard] = useState(false);
   const [nameDraft, setNameDraft] = useState({ user_name: '', agent_name: '' });
   const [delTarget, setDelTarget] = useState<Msg | null>(null);
-  const [delCascade, setDelCascade] = useState(true);
+  const [delCascade, setDelCascade] = useState(false); // 默认不连带撤销记忆/数值（要撤销需自己勾）
   const [deleting, setDeleting] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
   // 当前事件控制（她开始睡觉/吃饭/洗澡这类事情时，由你决定它什么时候结束）
@@ -55,9 +55,11 @@ export default function ChatPage() {
     };
   }, []);
 
-  const scrollToBottom = useCallback((smooth = false) => {
+  const scrollToBottom = useCallback((smooth = false, force = false) => {
     const el = listRef.current;
     if (!el) return;
+    // 用户正在上滑看历史时不要把他拽回底部（除非是"我自己刚发了一条"这种必须跟随的情况）
+    if (!force && el.scrollHeight - el.scrollTop - el.clientHeight > 80) return;
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
   }, []);
 
@@ -66,7 +68,9 @@ export default function ChatPage() {
       const r = await fetch('/api/state', { cache: 'no-store' });
       const j = await r.json();
       setState(j);
-      if (!j?.settings?.user_name) setOnboard(true);
+      // 没有昵称就提示补名字；但用户主动关掉之后就不再复活（原来 15s 轮询会把它弹回来）
+      const dismissed = typeof window !== 'undefined' && window.localStorage.getItem('onboardDismissed') === '1';
+      if (!j?.settings?.user_name && !dismissed) setOnboard(true);
     } catch {
       /* ignore */
     }
@@ -128,21 +132,34 @@ export default function ChatPage() {
   }, [state?.life?.ongoingEvent?.id]);
 
   const saveOnboard = async () => {
-    await fetch('/api/relationship', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'set_user', user_name: nameDraft.user_name }),
-    });
-    if (nameDraft.agent_name.trim()) {
-      await fetch('/api/relationship', {
+    const name = String(nameDraft.user_name || '').trim();
+    if (!name) {
+      setToast('先告诉我该怎么称呼你吧');
+      return;
+    }
+    try {
+      const r1 = await fetch('/api/relationship', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'set_persona', agent_name: nameDraft.agent_name }),
+        body: JSON.stringify({ action: 'set_user', user_name: name }),
       });
+      if (!r1.ok) throw new Error(`保存失败 ${r1.status}`);
+      if (nameDraft.agent_name.trim()) {
+        const r2 = await fetch('/api/relationship', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'set_persona', agent_name: nameDraft.agent_name.trim() }),
+        });
+        if (!r2.ok) throw new Error(`保存失败 ${r2.status}`);
+      }
+      window.localStorage.setItem('onboardDismissed', '1');
+      setOnboard(false);
+      loadState();
+      setToast('记住啦');
+    } catch (e: any) {
+      // 保存失败不要假装成功（否则轮询又把引导弹回来，用户以为卡住了）
+      setToast(`没能保存：${e?.message || e}`);
     }
-    setOnboard(false);
-    loadState();
-    setToast('记住啦');
   };
 
   const setSceneMode = async (mode: 'auto' | 'online' | 'offline') => {
@@ -239,7 +256,7 @@ export default function ChatPage() {
 
   const send = async (override?: string) => {
     const text = (override ?? input).trim();
-    if (!text || sending) return;
+    if (!text || sendingRef.current) return; // 用 ref 判定，避免慢设备/输入法下连发两条
     setInput('');
     setSending(true);
     sendingRef.current = true;
@@ -251,7 +268,7 @@ export default function ChatPage() {
       ...prev,
       { id: tempId, role: 'user', content: text, created_at: new Date().toISOString() },
     ]);
-    setTimeout(() => scrollToBottom(true), 30);
+    setTimeout(() => scrollToBottom(true, true), 30);
 
     // 真人打字感：稍微延迟一下再发请求
     await new Promise((r) => setTimeout(r, 250 + Math.random() * 500));
@@ -305,9 +322,23 @@ export default function ChatPage() {
             }
             scrollToBottom();
           } else if (evt.type === 'final') {
-            // 人味层可能在生成后补了神态动作 / 做了清洗，用最终版本替换
-            assistantText = evt.text;
-            setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: evt.text } : m)));
+            // 人味层可能在生成后补了神态动作 / 做了清洗：能接上的就增量追加，避免整段重排跳变
+            const fin = String(evt.text || '');
+            const prevText = assistantText;
+            assistantText = fin;
+            if (!started) {
+              started = true;
+              setTyping(false);
+              setMessages((prev) => [
+                ...prev,
+                { id: streamId, role: 'assistant', content: fin, created_at: new Date().toISOString(), streaming: true },
+              ]);
+            } else if (fin.startsWith(prevText)) {
+              const add = fin.slice(prevText.length);
+              setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: m.content + add } : m)));
+            } else {
+              setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: fin } : m)));
+            }
           } else if (evt.type === 'done') {
             ids = evt;
             setMessages((prev) =>
@@ -324,9 +355,16 @@ export default function ChatPage() {
 
       if (!assistantText) throw new Error('她这次没说话，再试一次吧');
 
+      // 没收到 done（连接被中断 / 服务端异常）：也要收敛——复位流式状态，并用服务端数据兜底拿真实 id
+      // （否则光标常闪，且 15s 轮询会把同一条落库消息当成新消息再追加一次，出现重复气泡）
+      if (!ids) {
+        await loadMessages().catch(() => null);
+      }
+
       // 关键：回复一结束就解锁输入框，归档记忆 / 调整性格全部丢到后台
       setSending(false);
       sendingRef.current = false;
+      setTyping(false);
 
       // 后台分析（记忆/关系/性格信号/依恋信号）——入队即返回，完全不阻塞你打字
       setRecalling(true);
@@ -385,9 +423,12 @@ export default function ChatPage() {
       setToast(`发送失败：${e?.message || e}`);
       // 连自己那条临时消息一起撤掉（服务端失败时也会删掉落库的那条，刷新不会"复活"）
       setMessages((prev) => prev.filter((m) => m.id !== streamId && m.id !== tempId));
+      // 把刚打的字还回去（除非用户已经在输入框里写了新内容）
+      setInput((cur) => (cur.trim() ? cur : text));
     } finally {
       setSending(false);
       sendingRef.current = false;
+      setTyping(false);
     }
   };
 
@@ -677,7 +718,7 @@ export default function ChatPage() {
                 <button
                   onClick={() => {
                     setDelTarget(m);
-                    setDelCascade(true);
+                    setDelCascade(false);
                   }}
                   title="删除这条消息"
                   className="shrink-0 rounded-full border border-rose-100 bg-white/80 px-2 py-0.5 text-[11px] text-ink-300 opacity-50 transition hover:bg-rose-50 hover:text-rose-500 md:opacity-0 md:group-hover:opacity-100"
@@ -706,7 +747,7 @@ export default function ChatPage() {
                 <button
                   onClick={() => {
                     setDelTarget(m);
-                    setDelCascade(true);
+                    setDelCascade(false);
                   }}
                   title="删除这条消息"
                   className="shrink-0 rounded-full border border-rose-100 bg-white/80 px-2 py-0.5 text-[11px] text-ink-300 opacity-50 transition hover:bg-rose-50 hover:text-rose-500 md:opacity-0 md:group-hover:opacity-100"
@@ -769,14 +810,21 @@ export default function ChatPage() {
             rows={1}
             placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              // 多行长文本自适应高度（最多 ~5 行）
+              const el = e.target;
+              el.style.height = 'auto';
+              el.style.height = `${Math.min(Math.max(el.scrollHeight, 46), 128)}px`;
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              // 中文/日文输入法组字中按 Enter 是"上屏候选词"，绝不能当发送（否则会发出半句话）
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 send();
               }
             }}
-            disabled={sending}
+            readOnly={sending}
           />
           <button className="btn h-[46px] px-5" onClick={() => send()} disabled={sending || !input.trim()}>
             {sending ? '…' : '发送'}

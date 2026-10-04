@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApi, PageHeader, Card, Stat, Loading, ErrorBox, Toast, fmtTime, Chip, Bar } from '@/components/ui';
 
 const TABS = [
@@ -14,13 +14,30 @@ const emoMap: Record<string, string> = {
   开心: '😊', 平静: '🙂', 低落: '😔', 烦躁: '😤', 想他: '🥺', 难受: '🤒', 疲惫: '😪', '': '🙂',
 };
 
+const ATTACHMENT_LABELS: Record<string, string> = {
+  secure: '安全型', anxious: '焦虑型', avoidant: '回避型', fearful: '混乱型',
+};
+
+/** 时间线来源字段 → 展示前缀 */
+const TIMELINE_PREFIX: Record<string, string> = {
+  illness: '身体：', activity: '活动：', event: '事件：', manual: '手动：',
+};
+
+function timelineText(l: any): string {
+  if (l?.field === 'daily_event') return String(l.new_value ?? '');
+  if (l?.field === 'profile_reveal') return `揭开：${l.old_value || l.new_value || ''}`;
+  const prefix = TIMELINE_PREFIX[l?.field];
+  return prefix ? `${prefix}${l.new_value ?? ''}` : String(l?.new_value ?? '');
+}
+
 function weeklySnapshotSummary(raw: string): string {
   try {
     const state = JSON.parse(raw);
     const stage = ['初识', '试探', '加深', '融合', '承诺'][Number(state.relationship?.stage) || 0] || '初识';
     const energy = Math.round(Number(state.health?.energy) || 0);
     const place = state.location?.current_location || '位置未知';
-    const attachment = state.attachment?.style || '未记录';
+    const style = state.attachment?.style;
+    const attachment = style ? (ATTACHMENT_LABELS[style] || style) : '未记录';
     return `${stage}期 · 精力 ${energy} · ${place} · ${attachment}依恋`;
   } catch {
     return '状态快照';
@@ -40,23 +57,36 @@ export default function WorldPage() {
   // 手动调整她此刻的身体/心理数值
   const [editStates, setEditStates] = useState(false);
   const [sv, setSv] = useState<Record<string, any>>({});
+  const [showAllEvents, setShowAllEvents] = useState(false);
 
   const post = async (body: any, msg?: string) => {
     setBusy(true);
-    const r = await fetch('/api/life', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    setBusy(false);
-    if (msg) setToast(j?.error ? j.error : msg);
-    reload();
-    return j;
+    try {
+      const r = await fetch('/api/life', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
+      if (msg) setToast(msg);
+      await reload();
+      return j;
+    } catch (e: any) {
+      setToast(e?.message || '操作失败');
+      return null;
+    } finally {
+      setBusy(false);
+    }
   };
 
+  // 已有数据时只在顶部轻提示，不整页替换
+  useEffect(() => {
+    if (error && data) setToast(error);
+  }, [error, data]);
+
   if (loading && !data) return <Loading text="正在看她的生活…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   const h = data.health;
   const p = data.psychology;
@@ -101,7 +131,7 @@ export default function WorldPage() {
                 <div className="text-base font-medium text-ink-900">{act.name}</div>
                 <div className="dim mt-0.5">
                   📍 {loc.name}
-                  {act.expectedEnd ? ` · 大约到 ${fmtTime(act.expectedEnd).slice(-5)} 结束` : ''}
+                  {act.expectedEnd ? ` · 大约到 ${fmtTime(act.expectedEnd)} 结束` : ''}
                 </div>
               </div>
               <Chip>{p.baseEmotion}</Chip>
@@ -291,11 +321,9 @@ export default function WorldPage() {
               <div className="space-y-2">
                 {data.timeline.map((l: any, i: number) => (
                   <div key={i} className="flex items-start gap-3 rounded-2xl border border-rose-100/70 bg-white/70 px-3.5 py-2.5">
-                    <span className="mt-0.5 w-12 shrink-0 text-[11px] text-ink-300">{fmtTime(l.created_at).slice(-5)}</span>
+                    <span className="mt-0.5 shrink-0 whitespace-nowrap text-[11px] text-ink-300">{fmtTime(l.created_at)}</span>
                     <div className="min-w-0">
-                      <div className="text-xs text-ink-900">
-                        {l.field === 'daily_event' ? l.new_value : l.field === 'illness' ? `身体：${l.new_value}` : l.new_value}
-                      </div>
+                      <div className="text-xs text-ink-900">{timelineText(l)}</div>
                       {l.reason ? <div className="dim mt-0.5">{l.reason}</div> : null}
                     </div>
                   </div>
@@ -309,7 +337,7 @@ export default function WorldPage() {
           <Card title="生活日记（她自己经历的小事）">
             {data.events?.length ? (
               <div className="space-y-2">
-                {data.events.slice(0, 20).map((e: any) => (
+                {(showAllEvents ? data.events : data.events.slice(0, 20)).map((e: any) => (
                   <div key={e.id} className="rounded-2xl bg-rose-50/60 px-3.5 py-2.5">
                     <div className="flex items-center gap-2">
                       <Chip tone="plain">{e.event_type}</Chip>
@@ -318,6 +346,11 @@ export default function WorldPage() {
                     <div className="mt-1 text-xs leading-relaxed text-ink-700">{e.content}</div>
                   </div>
                 ))}
+                {data.events.length > 20 ? (
+                  <button className="btn-ghost w-full !py-1.5 text-xs" onClick={() => setShowAllEvents((v) => !v)}>
+                    {showAllEvents ? '收起' : `展开全部（共 ${data.events.length} 条）`}
+                  </button>
+                ) : null}
               </div>
             ) : (
               <p className="dim">还没有什么特别的事发生。</p>

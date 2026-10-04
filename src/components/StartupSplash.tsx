@@ -11,9 +11,10 @@ export default function StartupSplash() {
   const [line, setLine] = useState(0);
 
   useEffect(() => {
+    if (leaving) return; // 动画结束后停止空转
     const cyc = setInterval(() => setLine((v) => (v + 1) % LINES.length), 1600);
     return () => clearInterval(cyc);
-  }, []);
+  }, [leaving]);
 
   useEffect(() => {
     if (!leaving) return;
@@ -27,14 +28,21 @@ export default function StartupSplash() {
     <div
       className={`splash ${leaving ? 'splash-leave' : ''}`}
       onClick={() => setLeaving(true)}
-      aria-hidden
+      tabIndex={0}
+      role="button"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
+          e.preventDefault();
+          setLeaving(true);
+        }
+      }}
     >
-      <div className="splash-aurora">
+      <div className="splash-aurora" aria-hidden>
         <span className="splash-glow splash-glow-a" />
         <span className="splash-glow splash-glow-b" />
         <span className="splash-glow splash-glow-c" />
       </div>
-      <div className="splash-petals">
+      <div className="splash-petals" aria-hidden>
         {Array.from({ length: 14 }).map((_, i) => (
           <span
             key={i}
@@ -49,7 +57,7 @@ export default function StartupSplash() {
           />
         ))}
       </div>
-      <div className="splash-sparkles">
+      <div className="splash-sparkles" aria-hidden>
         {Array.from({ length: 12 }).map((_, i) => (
           <span
             key={i}
@@ -64,7 +72,7 @@ export default function StartupSplash() {
         ))}
       </div>
       <div className="splash-stage">
-        <div className="splash-photo">
+        <div className="splash-photo" aria-hidden>
           <span className="splash-halo" />
           <img src="/splash-girl.jpg" alt="" draggable={false} />
         </div>

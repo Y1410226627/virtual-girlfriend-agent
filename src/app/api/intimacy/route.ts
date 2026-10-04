@@ -1,5 +1,5 @@
 // 亲密系统：状态 / 内容分级 / 偏好 / 事后关怀
-import { dbRun, DEFAULT_USER_ID } from '@/lib/db';
+import { dbRun, tx, DEFAULT_USER_ID } from '@/lib/db';
 import { nowIso, round1 } from '@/lib/utils';
 import {
   getIntimacy,
@@ -42,43 +42,54 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const action = String(body?.action || '');
-  ensureLife();
+  try {
+    const body = await req.json().catch(() => ({}));
+    const action = String(body?.action || '');
+    ensureLife();
 
-  if (action === 'set_level') {
-    setLevel(Number(body.level));
-    return Response.json({ ok: true, level: getLevel() });
+    if (action === 'set_level') {
+      const level = Number(body.level);
+      if (!Number.isInteger(level) || level < 0 || level > 3) return Response.json({ error: '参数错误' }, { status: 400 });
+      // 写表 + setSetting + log 用同一事务包住，避免半写入
+      tx(() => setLevel(level));
+      return Response.json({ ok: true, level: getLevel() });
+    }
+
+    if (action === 'reveal_preference') {
+      revealPreferences([String(body.type || '')]);
+      return Response.json({ ok: true, preferences: listPreferences(true) });
+    }
+
+    if (action === 'add_preference') {
+      const type = String(body.type || 'custom').slice(0, 24);
+      const content = String(body.content || '').trim();
+      if (!content) return Response.json({ error: '内容不能为空' }, { status: 400 });
+      dbRun(
+        'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, created_at) VALUES (?, ?, ?, ?, ?)',
+        DEFAULT_USER_ID, type, content.slice(0, 120), body.revealed ? 'revealed' : 'hidden', nowIso()
+      );
+      return Response.json({ ok: true, preferences: listPreferences(true) });
+    }
+
+    if (action === 'delete_preference') {
+      const id = Number(body.id);
+      if (!Number.isInteger(id) || id <= 0) return Response.json({ error: '参数错误' }, { status: 400 });
+      const r = dbRun('DELETE FROM intimacy_preferences WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+      return Response.json({ ok: r.changes > 0, preferences: listPreferences(true) });
+    }
+
+    if (action === 'log_aftercare_response') {
+      const id = Number(body.id);
+      if (!Number.isInteger(id) || id <= 0) return Response.json({ error: '参数错误' }, { status: 400 });
+      const r = dbRun(
+        'UPDATE intimacy_aftercare SET user_response = ? WHERE id = ? AND user_id = ?',
+        String(body.response || '').slice(0, 120), id, DEFAULT_USER_ID
+      );
+      return Response.json({ ok: r.changes > 0 });
+    }
+
+    return Response.json({ error: '未知操作' }, { status: 400 });
+  } catch (e: any) {
+    return Response.json({ error: e?.message || String(e) }, { status: 500 });
   }
-
-  if (action === 'reveal_preference') {
-    revealPreferences([String(body.type || '')]);
-    return Response.json({ ok: true, preferences: listPreferences(true) });
-  }
-
-  if (action === 'add_preference') {
-    const type = String(body.type || 'custom').slice(0, 24);
-    const content = String(body.content || '').trim();
-    if (!content) return Response.json({ error: '内容不能为空' }, { status: 400 });
-    dbRun(
-      'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, created_at) VALUES (?, ?, ?, ?, ?)',
-      DEFAULT_USER_ID, type, content.slice(0, 120), body.revealed ? 'revealed' : 'hidden', nowIso()
-    );
-    return Response.json({ ok: true, preferences: listPreferences(true) });
-  }
-
-  if (action === 'delete_preference') {
-    dbRun('DELETE FROM intimacy_preferences WHERE id = ? AND user_id = ?', Number(body.id), DEFAULT_USER_ID);
-    return Response.json({ ok: true, preferences: listPreferences(true) });
-  }
-
-  if (action === 'log_aftercare_response') {
-    dbRun(
-      'UPDATE intimacy_aftercare SET user_response = ? WHERE id = ? AND user_id = ?',
-      String(body.response || '').slice(0, 120), Number(body.id), DEFAULT_USER_ID
-    );
-    return Response.json({ ok: true });
-  }
-
-  return Response.json({ error: '未知操作' }, { status: 400 });
 }

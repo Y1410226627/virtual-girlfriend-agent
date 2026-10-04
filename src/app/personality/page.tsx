@@ -1,10 +1,51 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, fmtTime, Chip, Bar } from '@/components/ui';
 import { RadarChart, LineChart } from '@/components/charts';
+import { STAGES } from '@/lib/stages';
 
 const COLORS = ['#F65C8A', '#FF8F6B', '#C084FC', '#38BDF8', '#34D399', '#FBBF24'];
+
+/** 安全解析 JSON（脏数据兜底为空对象） */
+function safeParse(raw: any): Record<string, any> {
+  try {
+    const v = raw ? JSON.parse(raw) : {};
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 维度滑杆：拖动只改本地值，松手/失焦才提交一次 */
+function SliderRow({ value, label, onCommit }: { value: number; label: string; onCommit: (v: number) => void }) {
+  const [local, setLocal] = useState(value);
+  const committed = useRef(value);
+  useEffect(() => {
+    setLocal(value);
+    committed.current = value;
+  }, [value]);
+  const commit = () => {
+    if (local !== committed.current) {
+      committed.current = local;
+      onCommit(local);
+    }
+  };
+  return (
+    <input
+      type="range"
+      min={0}
+      max={100}
+      value={local}
+      aria-label={label}
+      className="w-full accent-rose-500"
+      onChange={(e) => setLocal(Number(e.target.value))}
+      onMouseUp={commit}
+      onPointerUp={commit}
+      onBlur={commit}
+    />
+  );
+}
 
 export default function PersonalityPage() {
   const { data, loading, error, reload } = useApi<any>('/api/personality');
@@ -14,15 +55,35 @@ export default function PersonalityPage() {
 
   const post = async (body: any, msg?: string) => {
     setSaving(true);
-    const r = await fetch('/api/personality', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    setSaving(false);
-    if (msg) setToast(j?.error ? j.error : msg);
-    reload();
+    try {
+      const r = await fetch('/api/personality', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
+      if (msg) setToast(msg);
+      await reload();
+    } catch (e: any) {
+      setToast(e?.message || '操作失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const adjust = async (key: string, value: number) => {
+    try {
+      const r = await fetch('/api/personality', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'adjust', dimension: key, value }),
+      });
+      if (!r.ok) throw new Error();
+      await reload();
+    } catch {
+      setToast('调整失败，请重试');
+    }
   };
 
   if (loading && !data) return <Loading text="正在读她的性格…" />;
@@ -120,23 +181,7 @@ export default function PersonalityPage() {
                   </div>
                 </div>
                 <div className="mt-2.5">
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={s.value}
-                    className="w-full accent-rose-500"
-                    onChange={async (e) => {
-                      const v = Number(e.target.value);
-                      await fetch('/api/personality', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: 'adjust', dimension: s.key, value: v }),
-                      });
-                    }}
-                    onMouseUp={reload}
-                    onTouchEnd={reload}
-                  />
+                  <SliderRow value={s.value} label={s.label} onCommit={(v) => adjust(s.key, v)} />
                 </div>
                 {s.solidified ? (
                   <button className="btn-ghost mt-2 !py-1 text-xs" onClick={() => post({ action: 'unsolidify', dimension: s.key }, '已解除固化')}>
@@ -186,7 +231,7 @@ export default function PersonalityPage() {
                   <Chip tone="plain">
                     {l.layer === 'confirm' ? '确认层' : l.layer === 'solidify' ? '固化层' : l.layer === 'manual' ? '手动' : '回滚'}
                   </Chip>
-                  {l.stage_at_time !== null ? <Chip tone="plain">当时阶段：{[ '初识', '试探', '加深', '融合', '承诺' ][l.stage_at_time]}</Chip> : null}
+                  {l.stage_at_time !== null ? <Chip tone="plain">当时阶段：{STAGES[l.stage_at_time]?.name ?? String(l.stage_at_time)}</Chip> : null}
                 </div>
                 {l.signal_context ? <div className="dim mt-1.5 leading-relaxed">信号情境：{l.signal_context}</div> : null}
                 {l.reasoning ? <div className="dim mt-1 leading-relaxed">{l.reasoning}</div> : null}
@@ -203,7 +248,7 @@ export default function PersonalityPage() {
                 <div>
                   <div className="text-xs font-medium text-ink-900">{s.week}</div>
                   <div className="dim mt-0.5">
-                    {Object.entries(JSON.parse(s.values_json))
+                    {Object.entries(safeParse(s.values_json))
                       .map(([k, v]) => `${state.find((x: any) => x.key === k)?.label || k} ${v}`)
                       .join(' · ')}
                   </div>

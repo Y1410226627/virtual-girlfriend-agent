@@ -59,17 +59,26 @@ export async function addMemory(
     if (!best || sim > best.sim) best = { row, sim };
   }
 
-  if (best && best.sim > 0.92) {
-    // 合并：保留更重要的版本（内容被更新时同步重算向量，避免向量与内容脱节）
-    if (importance > Number(best.row.importance)) {
-      dbRun(
-        'UPDATE memories SET importance = ?, content = ?, emotion = COALESCE(?, emotion), last_accessed_at = ? WHERE id = ?',
-        importance,
-        content,
-        update.emotion || null,
-        nowIso(),
-        best.row.id
-      );
+  const isFactType = type === 'semantic' || type === 'relationship';
+  const contentChanged = !!best && String(best.row.content || '').trim() !== content;
+
+  // 极高相似 + （非事实类，或事实类但说法一致）→ 原地合并
+  // 事实类的新说法不在这里吞掉：走插入 + 把旧值标 superseded，保留历史版本
+  if (best && best.sim > 0.92 && !(isFactType && contentChanged)) {
+    const newImportance = Math.max(Number(best.row.importance) || 0, importance);
+    dbRun(
+      `UPDATE memories SET importance = ?, content = ?, emotion = COALESCE(?, emotion),
+         source_message_id = COALESCE(?, source_message_id), last_accessed_at = ?, access_count = access_count + 1
+       WHERE id = ?`,
+      newImportance,
+      content,
+      update.emotion || null,
+      sourceMessageId ?? null,
+      nowIso(),
+      best.row.id
+    );
+    if (contentChanged) {
+      // 内容变了向量必须重算，否则检索会和内容脱节
       dbRun(
         `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
         best.row.id,
@@ -107,7 +116,7 @@ export async function addMemory(
   );
 
   // 同一属性被新值覆盖 → 旧记录标记 superseded（保留历史）
-  if (best && best.sim > 0.85 && (type === 'semantic' || type === 'relationship')) {
+  if (best && best.sim > 0.85 && isFactType) {
     dbRun("UPDATE memories SET status = 'superseded', superseded_by = ? WHERE id = ?", id, best.row.id);
   }
 
@@ -129,9 +138,16 @@ export async function retrieveMemories(query: string, topK?: number): Promise<Me
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
      WHERE m.user_id = ? AND m.status = 'active'
        AND (m.expires_at IS NULL OR m.expires_at > ?)
-     ORDER BY m.id DESC LIMIT 800`,
+       AND (
+         m.id IN (SELECT id FROM memories WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 600)
+         OR m.importance >= 7
+         OR (m.last_accessed_at IS NOT NULL AND m.last_accessed_at > ?)
+       )
+     ORDER BY m.id DESC LIMIT 1500`,
     DEFAULT_USER_ID,
-    nowIso()
+    nowIso(),
+    DEFAULT_USER_ID,
+    new Date(Date.now() - 30 * 86400000).toISOString()
   );
 
   const scored = rows.map((row) => {
@@ -139,7 +155,8 @@ export async function retrieveMemories(query: string, topK?: number): Promise<Me
     const vecSim = v.length ? Math.max(0, cosine(qVec, v)) : 0;
     const importance = Number(row.importance) / 10;
 
-    const ageDays = daysSince(row.created_at);
+    // 新鲜度以"最后一次被想起"为准（被回忆的记忆会续命，不再只看出生日期）
+    const ageDays = daysSince(row.last_accessed_at || row.created_at);
     const halfLife = Number(row.importance) >= 8 ? 100000 : 14; // 重要事实不衰减
     const recency = Math.exp(-ageDays / halfLife);
 
@@ -153,11 +170,20 @@ export async function retrieveMemories(query: string, topK?: number): Promise<Me
   });
 
   scored.sort((a, b) => b.score - a.score);
-  const picked = scored.filter((s) => s.vecSim > 0.05 || Number(s.row.importance) >= 8).slice(0, k).map((s) => s.row);
+  const maxSim = scored.length ? Math.max(...scored.map((s) => s.vecSim)) : 0;
+  // 入选门槛：绝对相关 / 相对最高分 / 高重要度（原来 vecSim>0.05 几乎等于"随便选"，噪声挤占名额）
+  const picked = scored
+    .filter((s) => {
+      if (Number(s.row.importance) >= 8) return true;
+      if (s.vecSim >= 0.3) return true;
+      return maxSim >= 0.3 && s.vecSim >= 0.55 * maxSim && s.vecSim >= 0.18;
+    })
+    .slice(0, k)
+    .map((s) => s.row);
   const fallback = picked.length ? picked : scored.slice(0, Math.min(2, k)).map((s) => s.row);
 
-  // 更新访问时间
-  for (const m of fallback) {
+  // 只有真正命中的记忆才算"被想起"（兜底返回的不计入，避免 access_count 被污染）
+  for (const m of picked) {
     dbRun(
       'UPDATE memories SET last_accessed_at = ?, access_count = access_count + 1 WHERE id = ?',
       nowIso(),
@@ -185,7 +211,7 @@ export function memoriesByType(types: string[], limit = 6): MemoryRow[] {
  */
 export function stableFacts(limit = 12): MemoryRow[] {
   return dbAll<MemoryRow>(
-    `SELECT * FROM memories WHERE user_id = ? AND status = 'active' AND type = 'semantic' AND importance >= 6
+    `SELECT * FROM memories WHERE user_id = ? AND status = 'active' AND type = 'semantic' AND importance >= 5
      ORDER BY importance DESC, id DESC LIMIT ?`,
     DEFAULT_USER_ID,
     limit
@@ -284,7 +310,8 @@ export async function backfillEmbeddings(batch = 50): Promise<number> {
   const rows = dbAll<any>(
     `SELECT m.id, m.content FROM memories m
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE m.user_id = ? AND (e.memory_id IS NULL OR e.model IS NULL OR e.model != ?)
+     WHERE m.user_id = ? AND m.status = 'active'
+       AND (e.memory_id IS NULL OR e.model IS NULL OR e.model != ?)
      ORDER BY m.id DESC LIMIT ?`,
     DEFAULT_USER_ID,
     tag,
@@ -292,17 +319,22 @@ export async function backfillEmbeddings(batch = 50): Promise<number> {
   );
   if (!rows.length) return 0;
   const vecs = await embed(rows.map((r) => r.content));
+  let ok = 0;
   rows.forEach((r, i) => {
+    const v = vecs[i];
+    // 逐条校验：部分失败时长度不足会让 vecs[i].length 直接抛 TypeError 中断整批
+    if (!Array.isArray(v) || !v.length) return;
     dbRun(
       `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
       r.id,
       tag,
-      vecs[i].length,
-      JSON.stringify(vecs[i].map((x) => Math.round(x * 10000) / 10000)),
+      v.length,
+      JSON.stringify(v.map((x) => Math.round(x * 10000) / 10000)),
       nowIso()
     );
+    ok++;
   });
-  return rows.length;
+  return ok;
 }
 
 /** 单条记忆内容被编辑后：同步重算它的向量 */

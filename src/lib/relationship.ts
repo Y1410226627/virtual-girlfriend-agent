@@ -75,14 +75,14 @@ export function applyRelationshipDelta(d: Partial<RelationshipDelta>, reason: st
   const oldIntimacy = s.intimacy;
   const oldTrust = s.trust;
   const oldTension = s.unresolved_tension;
-  const oldBalance = s.emotional_balance;
   const oldRepair = s.repair_credit;
 
   // 亲密度受阶段上限约束：未跃迁前不能越过阶段天花板
   s.intimacy = clamp(s.intimacy + (Number(d.intimacy) || 0), stage.min, stage.max);
   s.trust = clamp(s.trust + (Number(d.trust) || 0), 0, 100);
   if (d.mood) s.mood = String(d.mood).slice(0, 12);
-  s.emotional_balance = clamp(s.emotional_balance + (Number(d.emotional_balance_delta) || 0), -100, 100);
+  // 情感余额不在这里改：余额的唯一记账点是 addBankEntry（写流水时一并改余额），
+  // 否则会和分析里的显式记账（addBankEntry）重复计算成 2 倍。
   s.unresolved_tension = clamp(
     s.unresolved_tension + (Number(d.unresolved_tension_delta) || 0),
     0,
@@ -103,15 +103,6 @@ export function applyRelationshipDelta(d: Partial<RelationshipDelta>, reason: st
   }
   if (round1(oldTrust) !== round1(s.trust)) {
     logRelationship('trust', `信任 ${round1(oldTrust)} → ${round1(s.trust)}`, oldTrust, s.trust, reason);
-  }
-  if (round1(oldBalance) !== round1(s.emotional_balance)) {
-    logRelationship(
-      'bank',
-      `情感余额 ${round1(oldBalance)} → ${round1(s.emotional_balance)}`,
-      oldBalance,
-      s.emotional_balance,
-      reason
-    );
   }
   if (round1(oldTension) !== round1(s.unresolved_tension)) {
     logRelationship(
@@ -139,15 +130,17 @@ export function checkStageTransition(relationshipConfirmation = false, reason = 
   const s = getRelationshipState();
   const stage = stageOf(s.stage);
   const now = nowIso();
+  // 已达顶后的滞回容差：一次小的负向互动不该把"跃迁等待期"清零（否则关系永远攒不满、卡死）
+  const CAP_EPS = 2;
 
-  // 1) 是否到达天花板
+  // 1) 是否到达天花板（带滞回：跌到 max-2 以下才算真的掉下来）
   if (s.intimacy >= stage.max - 0.01) {
     if (!s.stage_cap_since) {
       s.stage_cap_since = now;
       saveRelationshipState(s);
       logRelationship('milestone', `亲密度达到${stage.name}期上限，开始计算阶段跃迁等待期`, null, null, reason);
     }
-  } else if (s.stage_cap_since) {
+  } else if (s.stage_cap_since && s.intimacy < stage.max - CAP_EPS) {
     s.stage_cap_since = null;
     saveRelationshipState(s);
   }
@@ -157,7 +150,7 @@ export function checkStageTransition(relationshipConfirmation = false, reason = 
   const cur = getRelationshipState();
   if (
     cur.stage_cap_since &&
-    cur.intimacy >= stageOf(cur.stage).max - 0.01 &&
+    cur.intimacy >= stageOf(cur.stage).max - CAP_EPS &&
     daysSince(cur.stage_cap_since) >= dwellDays &&
     cur.stage < STAGES.length - 1 &&
     !cur.pending_stage_confirm
@@ -173,9 +166,16 @@ export function checkStageTransition(relationshipConfirmation = false, reason = 
     );
   }
 
-  // 3) 关系确认 → 升阶
+  // 3) 关系确认 → 升阶（升阶前复核：亲密度仍在线、且没有冷战/高张力这类没解决的事）
   const latest = getRelationshipState();
-  if (relationshipConfirmation && latest.pending_stage_confirm && latest.stage < STAGES.length - 1) {
+  const upgradeBlocked = latest.unresolved_tension >= 70 || latest.conflict_state === 'cold_war';
+  if (
+    relationshipConfirmation &&
+    latest.pending_stage_confirm &&
+    latest.stage < STAGES.length - 1 &&
+    latest.intimacy >= stageOf(latest.stage).max - CAP_EPS &&
+    !upgradeBlocked
+  ) {
     const oldStage = latest.stage;
     latest.stage = oldStage + 1;
     latest.stage_entered_at = now;
@@ -196,23 +196,28 @@ export function checkStageTransition(relationshipConfirmation = false, reason = 
     return getRelationshipState();
   }
 
-  // 4) 回退：亲密度跌破下限超过 10，或张力爆表进入危机
+  // 4) 回退：用不会被钳制的量判定
+  //    （原判据 intimacy < min-10 是死代码：applyRelationshipDelta 已把亲密度钳在 [min,max]，永远不成立）
   const st = getRelationshipState();
-  const def = stageOf(st.stage);
-  if (st.stage > 0 && st.intimacy < def.min - 10) {
+  const crisis = st.unresolved_tension >= 85 && st.conflict_state === 'cold_war';
+  const drained = st.emotional_balance <= -60 && st.trust < 30;
+  const settledLongEnough = !st.stage_entered_at || daysSince(st.stage_entered_at) >= 1;
+  if (st.stage > 0 && (crisis || drained) && settledLongEnough) {
     const oldStage = st.stage;
     st.stage = oldStage - 1;
     st.stage_entered_at = now;
     st.stage_cap_since = null;
     st.pending_stage_confirm = 0;
     st.mood = '低落';
+    // 回退后亲密度同步落到新阶段的合法区间（不能留着上一阶段的高值）
+    st.intimacy = clamp(st.intimacy, STAGES[st.stage].min, STAGES[st.stage].max);
     saveRelationshipState(st);
     logRelationship(
       'stage_down',
       `关系回退：${STAGES[oldStage].name} → ${STAGES[st.stage].name}`,
       oldStage,
       st.stage,
-      reason || '长期负向互动且未修复'
+      reason || (crisis ? '未解决的冷战持续' : '情感账户长期透支')
     );
   }
   return getRelationshipState();

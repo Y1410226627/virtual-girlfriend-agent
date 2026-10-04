@@ -15,17 +15,26 @@ export default function AttachmentPage() {
   const { data, loading, error, reload } = useApi<any>('/api/attachment');
   const [toast, setToast] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ anxiety: number; avoidance: number } | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const post = async (body: any, msg?: string) => {
-    const r = await fetch('/api/attachment', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    if (msg) setToast(j?.error ? j.error : msg);
-    setDraft(null);
-    reload();
+    setBusy(true);
+    try {
+      const r = await fetch('/api/attachment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
+      if (msg) setToast(msg);
+      await reload(); // 先刷新拿回新值，再清 draft，避免仪表数字闪烁
+      setDraft(null);
+    } catch (e: any) {
+      setToast(e?.message || '操作失败');
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (loading && !data) return <Loading text="正在读她的依恋状态…" />;
@@ -47,9 +56,9 @@ export default function AttachmentPage() {
 
       <div className="grid gap-4 px-5 md:grid-cols-3 md:px-8">
         <Card title="当前依恋轴">
-          <div className="flex items-center justify-around">
-            <Gauge value={anxiety} label="焦虑轴" color="#F65C8A" />
-            <Gauge value={avoidance} label="回避轴" color="#FF8F6B" />
+          <div className="flex flex-wrap items-center justify-around gap-2">
+            <Gauge value={anxiety} label="焦虑轴" color="#F65C8A" size={130} />
+            <Gauge value={avoidance} label="回避轴" color="#FF8F6B" size={130} />
           </div>
           <div className="mt-2 text-center">
             <Chip>当前倾向：{st.styleLabel}</Chip>
@@ -102,10 +111,10 @@ export default function AttachmentPage() {
               />
             </div>
             <div className="flex gap-2">
-              <button className="btn" disabled={!draft} onClick={() => post({ action: 'adjust', ...draft }, '已调整（会记入依恋日志）')}>
+              <button className="btn" disabled={!draft || busy} onClick={() => post({ action: 'adjust', ...draft }, '已调整（会记入依恋日志）')}>
                 保存
               </button>
-              <button className="btn-ghost" disabled={!draft} onClick={() => setDraft(null)}>
+              <button className="btn-ghost" disabled={!draft || busy} onClick={() => setDraft(null)}>
                 撤销
               </button>
             </div>
@@ -140,7 +149,7 @@ export default function AttachmentPage() {
                   <span className="font-medium text-ink-900">
                     焦虑 {l.old_anxiety} → {l.new_anxiety} · 回避 {l.old_avoidance} → {l.new_avoidance}
                   </span>
-                  <span className="text-ink-300">{fmtTime(l.created_at)}</span>
+                  <span className="text-ink-500">{fmtTime(l.created_at)}</span>
                 </div>
                 <div className="mt-1 flex items-center gap-2">
                   <Chip tone="plain">{l.trigger}</Chip>

@@ -72,30 +72,23 @@ function todayEvent(): any | null {
   return null;
 }
 
-/** 最后一次用户消息之后是否有她的主动消息没被回应 */
+/** 最后一次用户消息之后是否有她的"主动搭话"没被回应（"她的事结束了"这类例行提醒不算） */
 function unansweredProactiveCount(): number {
-  const lastProactive = dbGet<any>(
-    'SELECT id FROM messages WHERE user_id = ? AND is_proactive = 1 ORDER BY id DESC LIMIT 1',
-    DEFAULT_USER_ID
-  );
-  if (!lastProactive) return 0;
-  const after = dbGet<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND id > ? AND role = 'user'",
-    DEFAULT_USER_ID,
-    lastProactive.id
-  );
-  if (Number(after?.c || 0) > 0) return 0;
-  // 连续未回应的主动消息数
-  const recentProactive = dbAll<any>(
-    'SELECT id FROM messages WHERE user_id = ? AND is_proactive = 1 ORDER BY id DESC LIMIT 3',
+  const rows = dbAll<any>(
+    "SELECT message_id FROM proactive_messages WHERE user_id = ? AND kind != 'event_end' ORDER BY id DESC LIMIT 3",
     DEFAULT_USER_ID
   );
   let count = 0;
-  for (const p of recentProactive) {
+  for (const p of rows) {
+    const mid = Number(p.message_id || 0);
+    if (!mid) {
+      count++;
+      continue;
+    }
     const replied = dbGet<{ c: number }>(
       "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND id > ? AND role = 'user'",
       DEFAULT_USER_ID,
-      p.id
+      mid
     );
     if (Number(replied?.c || 0) > 0) break;
     count++;
@@ -149,8 +142,10 @@ export async function tickProactive(force = false): Promise<TickResult> {
     );
     const minsSinceMsg = lastAnyMsg ? (Date.now() - new Date(lastAnyMsg.created_at).getTime()) / 60000 : 99999;
     const notifyRetryAfter = getCounter('event_notify_retry_after');
-    if (lateMinutes > eventLateWindowMinutes(expired) || minsSinceMsg <= 3) {
-      // 太久以前到期了 / 用户刚好在旁边：静默结束，不补提醒
+    // 只有"他会在意"的事才值得一条结束提醒；看剧/游戏/家务/护肤这类日常不打扰（安静地结束掉）
+    const REPORTABLE = new Set(['sleep', 'shower', 'meal', 'commute', 'focus']);
+    if (lateMinutes > eventLateWindowMinutes(expired) || minsSinceMsg <= 3 || !REPORTABLE.has(expired.event_type)) {
+      // 太久以前到期了 / 用户刚好在旁边 / 日常小事：静默结束，不补提醒
       settleExpiredEvent(expired, false);
     } else if (notifyRetryAfter <= Date.now()) {
       const sent = await notifyEventEnd(expired, false);
@@ -179,9 +174,13 @@ export async function tickProactive(force = false): Promise<TickResult> {
   );
   const hours = hoursSince(lastMsg?.created_at || rel.last_interaction_at);
 
-  // 她正处在某件事里（睡觉/洗澡/上课/出门…）：期间她不会另外主动发消息
+  // 她正处在"真的腾不出手"的事里（睡觉/上课/洗澡/通勤/在外面）：期间不另外主动发消息。
+  // 轻活动（看剧/游戏/家务/散步…）不阻止她想起你。
   const runningEvent = getActiveEvent();
-  if (!force && runningEvent) return skip(`她正在${runningEvent.activity}，先不打扰`);
+  const BUSY_TYPES = new Set(['sleep', 'focus', 'shower', 'commute', 'out']);
+  if (!force && runningEvent && BUSY_TYPES.has(runningEvent.event_type)) {
+    return skip(`她正在${runningEvent.activity}，先不打扰`);
+  }
 
   const act = getActivity();
   const psy = getPsychology();
@@ -189,15 +188,20 @@ export async function tickProactive(force = false): Promise<TickResult> {
     return skip(`她正在${act.current_activity}`);
   }
 
-  // 你们正在线下相处（人在旁边），她不会给你发消息
-  if (!force && (rel.scene || 'online') === 'offline' && hours < 12) {
+  // 你们正在线下相处（人在旁边），她不会给你发消息（按"进入线下场景的时间"算，而不是距上条消息多久）
+  const offlineHours = rel.scene_updated_at ? hoursSince(rel.scene_updated_at) : 999;
+  if (!force && (rel.scene || 'online') === 'offline' && offlineHours < 12) {
     return skip('你们正在一起（线下相处），她不需要给你发消息');
   }
 
   const event = todayEvent();
   const needHours = event ? 3 : 6;
+  // 从来没聊过：她不会先开口（这个判断要放在 needHours 之前，原来藏在死分支里永远走不到）
+  if (!force && !rel.last_interaction_at) {
+    return skip('你们还没聊过，等她先被搭话');
+  }
   if (!force && hours < needHours) {
-    return skip(hours > 900 ? '你们还没聊过，等她先被搭话' : `上次聊天才 ${Math.round(hours)} 小时前，不用急着找`);
+    return skip(`上次聊天才 ${Math.round(hours)} 小时前，不用急着找`);
   }
 
   // 频率控制
@@ -213,13 +217,13 @@ export async function tickProactive(force = false): Promise<TickResult> {
   const unanswered = unansweredProactiveCount();
   if (!force && unanswered >= 2) return skip('她已经主动过、你没回，她在等你先说话');
 
-  // 决定消息类型
+  // 决定消息类型（特殊日子优先于早安/晚安：仪式不该把当天的事件挤掉）
   let kind: ProactiveKind = 'greeting';
   const ritualSlot = ritualSlotNow();
   if (rel.pending_stage_confirm) kind = 'stage_confirm';
+  else if (event) kind = 'event';
   else if (!force && ritualSlot) kind = 'ritual';
   else if (rel.pending_relationship_talk || rel.unresolved_tension > 50) kind = 'relationship_talk';
-  else if (event) kind = 'event';
   else if (psy.missing_user > 70 || psy.loneliness > 65) kind = 'miss';
   else if (Math.random() < 0.45) kind = 'memory';
 
@@ -290,6 +294,9 @@ export async function notifyEventEnd(evt: OngoingEventRow, interrupted = false):
     recentActions: recentActionPhrases(6),
     eventActivity: evt.activity,
     eventInterrupted: interrupted,
+    // 提醒生成时事件可能还没落定（到期路径先通知后结算）→ 忽略"她正在这件事当中"的注入，
+    // 否则 system 里会同时出现"你正在睡觉不要宣布结束"和"你刚结束了睡觉，去告诉他"
+    ignoreOngoingEvent: true,
   });
   let content = '';
   try {

@@ -1,6 +1,6 @@
 // 情感银行账户系统（基于 Gottman 关系研究）
 // 每段互动都是一次情感存款或情感取款：情感余额 / 修复信用 / 未解决张力
-import { dbRun, dbGet, dbAll, DEFAULT_USER_ID } from './db';
+import { dbRun, dbGet, dbAll, tx, DEFAULT_USER_ID } from './db';
 import { clamp, nowIso, round1 } from './utils';
 import { getRelationshipState, saveRelationshipState, logRelationship } from './relationship';
 
@@ -16,6 +16,10 @@ export interface BankEntry {
   created_at: string;
 }
 
+/**
+ * 唯一的余额记账点：改余额 + 写流水，两步一个事务（账实一致）。
+ * 注意：relationship.applyRelationshipDelta 不再改余额，避免同一笔 delta 被记两次。
+ */
 export function addBankEntry(
   delta: number,
   behavior: string,
@@ -23,21 +27,27 @@ export function addBankEntry(
   messageId?: number | null
 ): number {
   const s = getRelationshipState();
-  const newBalance = clamp(s.emotional_balance + delta, -100, 100);
+  const before = s.emotional_balance;
+  const newBalance = clamp(before + delta, -100, 100);
   s.emotional_balance = newBalance;
-  saveRelationshipState(s);
-  dbRun(
-    `INSERT INTO emotional_bank (user_id, message_id, delta, kind, behavior, reason, balance_after, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    DEFAULT_USER_ID,
-    messageId ?? null,
-    round1(delta),
-    delta >= 0 ? 'deposit' : 'withdrawal',
-    behavior,
-    reason,
-    round1(newBalance),
-    nowIso()
-  );
+  tx(() => {
+    saveRelationshipState(s);
+    dbRun(
+      `INSERT INTO emotional_bank (user_id, message_id, delta, kind, behavior, reason, balance_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      DEFAULT_USER_ID,
+      messageId ?? null,
+      round1(delta),
+      delta >= 0 ? 'deposit' : 'withdrawal',
+      behavior,
+      reason,
+      round1(newBalance),
+      nowIso()
+    );
+  });
+  if (round1(before) !== round1(newBalance)) {
+    logRelationship('bank', `情感余额 ${round1(before)} → ${round1(newBalance)}`, before, newBalance, reason);
+  }
   return newBalance;
 }
 

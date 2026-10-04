@@ -1,7 +1,7 @@
 // 关系页：状态 / 阶段 / 昵称 / 纪念日 / 事件 / 关系日志 / 冲突
 import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
 import { detectScene } from '@/lib/scene';
-import { getRelationshipState, saveRelationshipState, logRelationship, getPersona, setPersonaField, setUserName } from '@/lib/relationship';
+import { getRelationshipState, saveRelationshipState, logRelationship, getPersona, setPersonaField, setUserName, checkStageTransition } from '@/lib/relationship';
 import { listConflicts } from '@/lib/conflict';
 import { stageOf, stageListForUi } from '@/lib/stages';
 import { listBankEntries, bankStats } from '@/lib/emotionalBank';
@@ -87,10 +87,13 @@ export async function POST(req: Request) {
   }
 
   if (action === 'request_stage_talk') {
-    const s = getRelationshipState();
-    s.pending_stage_confirm = 1;
-    saveRelationshipState(s);
-    logRelationship('milestone', '用户希望推进关系确认对话', null, null, '用户在关系页触发');
+    // 复用阶段跃迁前置（达顶 + 等待期满足）才会真正置位；不满足则不改库
+    const before = getRelationshipState().pending_stage_confirm;
+    const s = checkStageTransition(false, 'user_request');
+    if (!s.pending_stage_confirm) {
+      return Response.json({ ok: true, message: '还没到可以谈这个的阶段' });
+    }
+    if (!before) logRelationship('milestone', '用户希望推进关系确认对话', null, null, '用户在关系页触发');
     return Response.json({ ok: true, hint: '下次聊天时，她会找机会和你谈一谈你们的关系' });
   }
 
@@ -130,30 +133,38 @@ export async function POST(req: Request) {
   }
 
   if (action === 'add_event') {
-    const title = String(body.title || '').trim();
+    const title = String(body.title || '').trim().slice(0, 60);
     const date = String(body.event_date || '').trim();
     if (!title || !date) return Response.json({ error: '标题和日期不能为空' }, { status: 400 });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return Response.json({ error: '日期格式应为 YYYY-MM-DD' }, { status: 400 });
+    const KIND_WHITELIST = ['anniversary', 'birthday', 'plan'];
+    const kind = KIND_WHITELIST.includes(String(body.kind)) ? String(body.kind) : 'custom';
+    const description = body.description ? String(body.description).slice(0, 200) : null;
     dbRun(
       'INSERT INTO events (user_id, title, event_date, repeat_yearly, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       DEFAULT_USER_ID,
       title,
       date,
       body.repeat_yearly ? 1 : 0,
-      body.kind || 'anniversary',
-      body.description ? String(body.description) : null,
+      kind,
+      description,
       nowIso()
     );
     return Response.json({ ok: true });
   }
 
   if (action === 'delete_event') {
-    dbRun('DELETE FROM events WHERE id = ? AND user_id = ?', Number(body.id), DEFAULT_USER_ID);
-    return Response.json({ ok: true });
+    const id = Number(body.id);
+    if (!Number.isInteger(id) || id <= 0) return Response.json({ error: '参数错误' }, { status: 400 });
+    const r = dbRun('DELETE FROM events WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+    return Response.json({ ok: r.changes > 0 });
   }
 
   if (action === 'set_stage') {
     // 调试/体验用：手动设置阶段（会重置阶段计时）
-    const stage = Math.max(0, Math.min(4, Number(body.stage)));
+    const stageNum = Number(body.stage);
+    if (!Number.isFinite(stageNum)) return Response.json({ error: '参数错误' }, { status: 400 });
+    const stage = Math.max(0, Math.min(4, stageNum));
     const s = getRelationshipState();
     const old = s.stage;
     s.stage = stage;

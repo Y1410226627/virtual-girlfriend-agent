@@ -449,24 +449,52 @@ export async function chatJson<T = any>(messages: ChatMessage[], opts: ChatOptio
 /* 思考标签相关常量：用字符码拼出来，避免源码里的标签字面量被任何"清洗"环节吃掉 */
 const TAG_LT = String.fromCharCode(60);
 const TAG_GT = String.fromCharCode(62);
-const THINK_OPENERS = [`${TAG_LT}thinking${TAG_GT}`, ` ${TAG_LT}redacted_thinking${TAG_GT}`];
-const THINK_CLOSERS = [`${TAG_LT}/thinking${TAG_GT}`, ` ${TAG_LT}/redacted_thinking${TAG_GT}`];
+const THINK_OPENERS = [
+  `${TAG_LT}thinking${TAG_GT}`,
+  `${TAG_LT}think${TAG_GT}`,
+  `${TAG_LT}redacted_thinking${TAG_GT}`,
+];
+const THINK_CLOSERS = [
+  `${TAG_LT}/thinking${TAG_GT}`,
+  `${TAG_LT}/think${TAG_GT}`,
+  `${TAG_LT}/redacted_thinking${TAG_GT}`,
+];
 const THINK_BLOCK_RE = new RegExp(
   `${TAG_LT}think(?:ing)?(?:\\s[^${TAG_GT}]*)?${TAG_GT}[\\s\\S]*?${TAG_LT}/think(?:ing)?\\s*${TAG_GT}`,
   'gi'
 );
 const REDACTED_BLOCK_RE = new RegExp(
-  ` ${TAG_LT}redacted_thinking${TAG_GT}[\\s\\S]*?${TAG_LT}/redacted_thinking\\s*${TAG_GT}`,
+  `${TAG_LT}redacted_thinking${TAG_GT}[\\s\\S]*?${TAG_LT}/redacted_thinking\\s*${TAG_GT}`,
   'gi'
 );
 const THINK_TAG_ONLY_RE = new RegExp(`${TAG_LT}/?think(?:ing)?(?:\\s[^${TAG_GT}]*)?${TAG_GT}`, 'gi');
+const MAX_TAG_LEN = Math.max(...THINK_OPENERS.map((t) => t.length), ...THINK_CLOSERS.map((t) => t.length));
+
+export interface ThinkDeltaState {
+  inThink: boolean;
+  /** 可能是标签前缀、被切在 chunk 边界的尾巴（暂不展示，等下一片拼上再判定） */
+  pending?: string;
+  /** 已丢弃的思考内容长度：异常长（标签一直不闭合）时强制复位，避免"她整段失声" */
+  thoughtLen?: number;
+}
+
+/** 尾巴是否可能是某个标签的前缀（如 "<"、"<thin"、"</redacted_"） */
+function partialTagTail(rest: string): string | null {
+  const lastLt = rest.lastIndexOf(TAG_LT);
+  if (lastLt < 0) return null;
+  const tail = rest.slice(lastLt);
+  if (tail.length >= MAX_TAG_LEN) return null;
+  const all = [...THINK_OPENERS, ...THINK_CLOSERS];
+  return all.some((t) => t.startsWith(tail)) ? tail : null;
+}
 
 /**
  * 流式增量的"思考标签"过滤：跨 chunk 维护状态。
  * 返回应当展示给用户的文本（思考中的内容全部丢弃）。
  */
-export function filterThinkDelta(state: { inThink: boolean }, piece: string): string {
-  let rest = String(piece || '');
+export function filterThinkDelta(state: ThinkDeltaState, piece: string): string {
+  let rest = (state.pending || '') + String(piece || '');
+  state.pending = '';
   let out = '';
   while (rest) {
     if (state.inThink) {
@@ -479,9 +507,22 @@ export function filterThinkDelta(state: { inThink: boolean }, piece: string): st
           len = c.length;
         }
       }
-      if (idx < 0) return out; // 还没闭合：这一段都是思考内容
+      if (idx < 0) {
+        // 还没闭合：整段是思考内容。但尾巴可能是闭合标签的前缀，先缓存
+        const tail = partialTagTail(rest);
+        const drop = tail ? rest.length - tail.length : rest.length;
+        state.thoughtLen = (state.thoughtLen || 0) + drop;
+        if (tail) state.pending = tail;
+        if ((state.thoughtLen || 0) > 8000) {
+          // 标签明显坏了（一直不闭合）：强制复位，宁可漏一点也不要整段失声
+          state.inThink = false;
+          state.thoughtLen = 0;
+        }
+        return out;
+      }
       rest = rest.slice(idx + len);
       state.inThink = false;
+      state.thoughtLen = 0;
       continue;
     }
     let idx = -1;
@@ -489,14 +530,19 @@ export function filterThinkDelta(state: { inThink: boolean }, piece: string): st
     for (const o of THINK_OPENERS) {
       const i = rest.indexOf(o);
       if (i < 0) continue;
-      // 带空格的 redacted 标签只在片段开头才认，避免误伤正常英文里的 thinking
-      if (o.charCodeAt(0) === 32 && rest.slice(0, i).trim() !== '') continue;
       if (idx < 0 || i < idx) {
         idx = i;
         len = o.length;
       }
     }
-    if (idx < 0) return out + rest;
+    if (idx < 0) {
+      const tail = partialTagTail(rest);
+      if (tail) {
+        state.pending = tail;
+        return out + rest.slice(0, rest.length - tail.length);
+      }
+      return out + rest;
+    }
     out += rest.slice(0, idx);
     rest = rest.slice(idx + len);
     state.inThink = true;
@@ -505,7 +551,7 @@ export function filterThinkDelta(state: { inThink: boolean }, piece: string): st
 }
 
 export function cleanContent(text: string): string {
-  let t = String(text || '');
+  let t = String(text || '').trim();
   // 思考标签（thinking 与 redacted 两种变体）整段去掉，残留标签本身也清掉
   t = t.replace(THINK_BLOCK_RE, '');
   t = t.replace(REDACTED_BLOCK_RE, '');

@@ -595,6 +595,19 @@ CREATE TABLE IF NOT EXISTS ongoing_events (
 CREATE INDEX IF NOT EXISTS idx_ongoing_events_user ON ongoing_events(user_id, ended_at);
 `,
   },
+  {
+    version: 10,
+    name: 'add_missing_indices',
+    sql: `
+-- 高频过滤/排序缺索引：补上（只加索引，不动数据）
+CREATE INDEX IF NOT EXISTS idx_conflict_logs_user_status ON conflict_logs(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_relationship_logs_user_time ON relationship_logs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_personality_logs_user_time ON personality_logs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attachment_logs_user_time ON attachment_logs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_proactive ON messages(user_id, is_proactive);
+CREATE INDEX IF NOT EXISTS idx_memories_source_msg ON memories(source_message_id);
+`,
+  },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -636,7 +649,17 @@ function migrate(db: DatabaseSync) {
     if (applied.has(m.version)) continue;
     db.exec('BEGIN');
     try {
-      db.exec(m.sql);
+      // 迁移容错：对 "ALTER TABLE x DROP COLUMN y" 先查列是否存在，不存在就跳过
+      // （SQLite 不支持 DROP COLUMN IF EXISTS；历史分叉/手工改库导致列缺失时，原来会直接崩在启动阶段）
+      const cols = new Map<string, Set<string>>();
+      const guarded = m.sql.replace(/ALTER TABLE\s+(\w+)\s+DROP COLUMN\s+(\w+)\s*;/gi, (stmt, table, col) => {
+        if (!cols.has(table)) {
+          const rows = db.prepare(`PRAGMA table_info(${table})`).all() as AnyRow[];
+          cols.set(table, new Set(rows.map((r) => String(r.name))));
+        }
+        return cols.get(table)!.has(col) ? stmt : `-- skipped (column ${table}.${col} not present)`;
+      });
+      db.exec(guarded);
       db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
         m.version,
         m.name,
@@ -684,7 +707,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   embedding_model: '',
   embedding_base_url: '',
   embedding_api_key: '',
-  analysis_thinking: 'false',
+  // 注意：analysis_thinking 不在这里播种（否则 llmConfig 的"未设置→读环境变量"永远走不到）
 };
 
 function seed(db: DatabaseSync) {
@@ -947,7 +970,16 @@ export function wipeAllData(keepSettings = true): void {
     for (const t of ['agent_profile', 'agent_health', 'agent_psychology', 'agent_location', 'agent_activity', 'shared_world', 'intimacy_state', 'intimacy_content_level']) {
       db.exec(`DELETE FROM ${t};`);
     }
-    if (!keepSettings) db.exec('DELETE FROM settings;');
+    if (!keepSettings) {
+      db.exec('DELETE FROM settings;');
+    } else {
+      // personas 已清空，settings 里那份"镜像名字/故事"也要同步清掉，避免双源分叉
+      db.exec("DELETE FROM settings WHERE key IN ('agent_name', 'agent_story');");
+      // 重置"已播种"标记：清空数据后，她应该回到出厂偏好（否则会零偏好且不再播种）
+      db.exec("DELETE FROM settings WHERE key = 'prefs_seeded';");
+    }
+    // seed 放进同一个事务：中途失败就整体回滚，不会出现"库已清空但只重建了一半"
+    seed(db);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
@@ -956,5 +988,4 @@ export function wipeAllData(keepSettings = true): void {
   if (keepSettings) {
     setSetting('intimacy_level', '0');
   }
-  seed(db);
 }

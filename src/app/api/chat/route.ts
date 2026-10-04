@@ -16,6 +16,7 @@ export async function POST(req: Request) {
   }
   const content = String(body?.content || '').trim();
   if (!content) return Response.json({ error: '消息不能为空' }, { status: 400 });
+  if (content.length > 4000) return Response.json({ error: '消息太长了（最多 4000 字）' }, { status: 400 });
 
   let prepared;
   try {
@@ -27,6 +28,9 @@ export async function POST(req: Request) {
   const encoder = new TextEncoder();
   let full = '';
   let assistantSaved = false;
+  let assistantMessageId: number | null = null;
+  const ac = new AbortController();
+  req.signal?.addEventListener?.('abort', () => ac.abort());
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -45,7 +49,7 @@ export async function POST(req: Request) {
             full += t;
             send({ type: 'delta', text: t });
           },
-          { maxTokens: 1200, temperature: 0.9, thinking: false }
+          { maxTokens: 1200, temperature: 0.9, thinking: false, signal: ac.signal }
         );
 
         // 兜底一：模型什么都没产出（换成笨模型时常见）→ 追加一次更明确的指令重试
@@ -68,7 +72,7 @@ export async function POST(req: Request) {
 
         // 兜底二：人味层（清洗 AI 腔 / 控制长度 / 补神态动作 / 空回复用兜底台词）
         const h = humanizeReply(full, prepared.humanize);
-        const assistantMessageId = saveAssistantMessage(h.text);
+        assistantMessageId = saveAssistantMessage(h.text);
         assistantSaved = true;
         // 规则兜底：她话里明确说了"我睡了/我去洗澡/我去吃饭…" → 立刻登记可控事件
         // （不再只等后台分析模型汇报"活动变化"，那种方式会漏）
@@ -94,9 +98,13 @@ export async function POST(req: Request) {
           }
         }
         send({ type: 'error', message: e?.message || String(e) });
+        send({ type: 'done', assistantMessageId, userMessageId: prepared.userMessageId, fullText: full });
       } finally {
         controller.close();
       }
+    },
+    cancel() {
+      ac.abort();
     },
   });
 

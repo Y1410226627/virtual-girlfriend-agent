@@ -3,7 +3,7 @@
 import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, getCounter, setCounter, bumpCounter, numSetting, tx, customModeOn } from './db';
 import { clamp, nowIso, round1, localDateStr } from './utils';
 import { stageOf } from './stages';
-import { getRelationshipState } from './relationship';
+import { getRelationshipState, logRelationship } from './relationship';
 import { attachmentStyleOf, DIMENSIONS, DIMENSION_ALIASES, type DimensionKey, type PersonalitySignal } from './types';
 
 export const DIMENSION_KEYS: DimensionKey[] = DIMENSIONS.map((d) => d.key) as DimensionKey[];
@@ -92,6 +92,8 @@ export interface SignalProgress {
   thresholdCount: number;
   thresholdContexts: number;
   ready: boolean;
+  /** 冷却中还要等几轮才能真正调整（0 = 不冷却） */
+  cooldownTurns: number;
 }
 
 function confirmThresholds() {
@@ -103,8 +105,14 @@ function confirmThresholds() {
 /** 展示累积层的当前进度（前端"性格页"用） */
 export function signalProgress(): SignalProgress[] {
   const th = confirmThresholds();
+  const turn = getCounter('turn_count');
+  const stage = stageOf(getRelationshipState().stage);
+  const rows0 = getPersonalityRows();
   const out: SignalProgress[] = [];
   for (const dim of DIMENSION_KEYS) {
+    const row = rows0.find((r) => r.dimension === dim);
+    const rateTurns = row?.solidified ? 30 : stage.changeRateTurns;
+    const cooldownTurns = row ? Math.max(0, rateTurns - (turn - Number(row.last_adjusted_turn || 0))) : 0;
     for (const direction of ['+', '-'] as const) {
       const rows = dbAll<any>(
         `SELECT strength, weight, context FROM personality_signals
@@ -116,6 +124,7 @@ export function signalProgress(): SignalProgress[] {
       const weighted = rows.reduce((s, r) => s + Number(r.weight || 1), 0);
       const contexts = new Set(rows.map((r) => String(r.context || ''))).size;
       const avg = rows.length ? rows.reduce((s, r) => s + Number(r.strength || 0), 0) / rows.length : 0;
+      const meetThreshold = weighted >= th.count && contexts >= th.contexts && avg >= th.minStrength;
       out.push({
         dimension: dim,
         label: dimensionLabel(dim),
@@ -125,7 +134,9 @@ export function signalProgress(): SignalProgress[] {
         avgStrength: round1(avg * 100) / 100,
         thresholdCount: th.count,
         thresholdContexts: th.contexts,
-        ready: weighted >= th.count && contexts >= th.contexts && avg > th.minStrength,
+        // 阈值 + 冷却都过了才算"下一轮会调整"（原来看不到冷却，前端会误报）
+        ready: meetThreshold && cooldownTurns <= 0,
+        cooldownTurns,
       });
     }
   }
@@ -153,6 +164,23 @@ export function runConfirmLayer(messageId?: number | null): void {
     const rateTurns = row.solidified ? 30 : stage.changeRateTurns;
     if (turn - Number(row.last_adjusted_turn || 0) < rateTurns) continue; // 变化速率限制
 
+    // 固化不是"长死"：反向信号攒到 1.5 倍阈值时自动解除固化，让长期陪伴下性格还能回退
+    if (row.solidified) {
+      const oppDir = Number(row.value) >= 50 ? '-' : '+';
+      const oppRows = dbAll<any>(
+        `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0`,
+        DEFAULT_USER_ID,
+        dim,
+        oppDir
+      );
+      const oppW = oppRows.reduce((s, r) => s + Number(r.weight || 1), 0);
+      const oppCtx = new Set(oppRows.map((r) => String(r.context || ''))).size;
+      if (oppW >= th.count * 1.5 && oppCtx >= th.contexts) {
+        unsolidify(dim);
+        logRelationship('milestone', `「${dimensionLabel(dim)}」的反向信号持续累积，解除半固化`, null, dim, '性格自动回归');
+      }
+    }
+
     const pos = dbAll<any>(
       `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
       DEFAULT_USER_ID,
@@ -172,14 +200,34 @@ export function runConfirmLayer(messageId?: number | null): void {
     const p = stat(pos);
     const n = stat(neg);
 
-    const pass = (x: typeof p) => x.weighted >= th.count && x.contexts >= th.contexts && x.avg > th.minStrength;
+    const pass = (x: typeof p) => x.weighted >= th.count && x.contexts >= th.contexts && x.avg >= th.minStrength;
 
-    // 混合信号不触发调整：清掉少数派，多数派继续累积
+    // 混合信号：清掉净强度较弱的一侧，然后继续按多数派判定
+    // （原实现消解后直接 continue，多数派达标也不调整；两侧相等时两边都不清 → 永久死锁）
     if (p.weighted > 0 && n.weighted > 0) {
-      if (p.weighted > n.weighted) consumeSignals(dim, '-');
-      else if (n.weighted > p.weighted) consumeSignals(dim, '+');
-      else continue;
-      continue;
+      const pPower = p.weighted * p.avg;
+      const nPower = n.weighted * n.avg;
+      if (pPower >= nPower) consumeSignals(dim, '-');
+      else consumeSignals(dim, '+');
+      // 消解后重新取信号再判定
+      pos.length = 0;
+      pos.push(
+        ...dbAll<any>(
+          `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
+          DEFAULT_USER_ID,
+          dim
+        )
+      );
+      neg.length = 0;
+      neg.push(
+        ...dbAll<any>(
+          `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '-' AND consumed = 0`,
+          DEFAULT_USER_ID,
+          dim
+        )
+      );
+      Object.assign(p, stat(pos));
+      Object.assign(n, stat(neg));
     }
 
     const direction: '+' | '-' | null = pass(p) && p.weighted > 0 ? '+' : pass(n) && n.weighted > 0 ? '-' : null;
@@ -228,7 +276,7 @@ export function runConfirmLayer(messageId?: number | null): void {
         currentAttachmentStyle(),
         nowIso()
       );
-      consumeSignalsTx(dim, direction);
+      consumeSignals(dim, direction);
     });
 
     bumpSolidifyStreak(dim, direction);
@@ -237,15 +285,6 @@ export function runConfirmLayer(messageId?: number | null): void {
 }
 
 function consumeSignals(dim: string, direction: string) {
-  dbRun(
-    'UPDATE personality_signals SET consumed = 1 WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0',
-    DEFAULT_USER_ID,
-    dim,
-    direction
-  );
-}
-
-function consumeSignalsTx(dim: string, direction: string) {
   dbRun(
     'UPDATE personality_signals SET consumed = 1 WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0',
     DEFAULT_USER_ID,

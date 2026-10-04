@@ -11,13 +11,14 @@ export function getAttachmentState(): AttachmentState {
   return a;
 }
 
-export function setAttachmentAxes(anxiety: number, avoidance: number, trigger: string, reasoning: string): void {
+/** 写入依恋轴；返回是否真的发生了写入（数值没变时返回 false，调用方据此决定是否消费信号） */
+export function setAttachmentAxes(anxiety: number, avoidance: number, trigger: string, reasoning: string): boolean {
   const cur = getAttachmentState();
   const oldA = Number(cur.anxiety);
   const oldV = Number(cur.avoidance);
   const newA = clamp(anxiety, 0, 100);
   const newV = clamp(avoidance, 0, 100);
-  if (round1(newA) === round1(oldA) && round1(newV) === round1(oldV)) return;
+  if (round1(newA) === round1(oldA) && round1(newV) === round1(oldV)) return false;
   const style = attachmentStyleOf(newA, newV);
   dbRun(
     'UPDATE attachment_state SET anxiety = ?, avoidance = ?, style = ?, updated_at = ? WHERE user_id = ?',
@@ -42,6 +43,7 @@ export function setAttachmentAxes(anxiety: number, avoidance: number, trigger: s
   if (cur.style !== style) {
     logRelationship('milestone', `依恋倾向转变：${ATTACHMENT_STYLES[cur.style] || cur.style} → ${ATTACHMENT_STYLES[style] || style}`, cur.style, style, reasoning);
   }
+  return true;
 }
 
 /** 记录一次依恋偏移信号（来自每 10 轮的 LLM 分析） */
@@ -76,6 +78,8 @@ export function runAttachmentLayer(): void {
   let anxiety = Number(cur.anxiety);
   let avoidance = Number(cur.avoidance);
   const reasons: string[] = [];
+  // 只有"真的写入了新数值"才消费这些信号（原来先标记 applied 再写，写不动时信号被静默吞掉）
+  const gatedConsume: Array<Array<{ id: number }>> = [];
 
   for (const axis of ['anxiety', 'avoidance'] as const) {
     const rows = dbAll<any>(
@@ -87,11 +91,23 @@ export function runAttachmentLayer(): void {
     const pos = rows.filter((r) => r.direction === '+');
     const neg = rows.filter((r) => r.direction === '-');
 
-    // 反向信号互相抵消：清掉矛盾的那一组
+    // 反向信号：按累计净偏移抵消（不是按条数），净差方向作为一条新信号保留继续累积
     if (pos.length && neg.length) {
-      const minority = pos.length >= neg.length ? neg : pos;
-      for (const r of minority) {
-        dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
+      const posSum = pos.reduce((s, r) => s + Math.abs(Number(r.delta) || 0), 0);
+      const negSum = neg.reduce((s, r) => s + Math.abs(Number(r.delta) || 0), 0);
+      const net = posSum - negSum;
+      for (const r of [...pos, ...neg]) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
+      if (Math.abs(net) >= 0.5) {
+        dbRun(
+          `INSERT INTO attachment_signals (user_id, axis, direction, delta, reasoning, user_cues, message_id, created_at)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
+          DEFAULT_USER_ID,
+          axis,
+          net > 0 ? '+' : '-',
+          round1(clamp(net, -2, 2)),
+          '正反信号按累计净偏移抵消后的净差',
+          nowIso()
+        );
       }
       continue;
     }
@@ -107,11 +123,14 @@ export function runAttachmentLayer(): void {
         .map((r) => round1(Number(r.delta)))
         .join('/')}）→ 平均偏移 ${round1(shift)}。${group[group.length - 1].reasoning || ''}`
     );
-    for (const r of group) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
+    gatedConsume.push(group);
   }
 
   if (reasons.length) {
-    setAttachmentAxes(anxiety, avoidance, '累积 3 次同向依恋信号', reasons.join(' '));
+    const wrote = setAttachmentAxes(anxiety, avoidance, '累积 3 次同向依恋信号', reasons.join(' '));
+    if (wrote) {
+      for (const g of gatedConsume) for (const r of g) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
+    }
   }
 }
 

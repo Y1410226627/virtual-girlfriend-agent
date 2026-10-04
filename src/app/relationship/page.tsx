@@ -1,8 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApi, PageHeader, Card, Stat, Loading, ErrorBox, Toast, fmtTime, fmtDate, Chip, Bar } from '@/components/ui';
 import { StageLadder } from '@/components/charts';
+
+/** 会写回表单的 action，成功后允许服务器值回填 */
+const FORM_ACTIONS = ['set_nickname', 'set_anniversary', 'set_persona', 'set_user'];
 
 export default function RelationshipPage() {
   const { data, loading, error, reload } = useApi<any>('/api/relationship');
@@ -10,9 +13,11 @@ export default function RelationshipPage() {
   const [edits, setEdits] = useState<any>({});
   const [newEvent, setNewEvent] = useState({ title: '', event_date: '', kind: 'anniversary', repeat_yearly: true });
   const [tab, setTab] = useState<'bank' | 'conflicts' | 'logs' | 'events' | 'memories'>('bank');
+  // 用户改过表单后，后台 reload 不要覆盖他还没保存的编辑（同 settings 页 dirtyRef 模式）
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
-    if (data && !Object.keys(edits).length) {
+    if (data && !dirtyRef.current) {
       setEdits({
         nickname: data.relationship?.nickname || '',
         anniversary: data.relationship?.anniversary || '',
@@ -26,15 +31,26 @@ export default function RelationshipPage() {
     }
   }, [data]);
 
+  const setEdit = (k: string, v: any) => {
+    dirtyRef.current = true;
+    setEdits((s: any) => ({ ...s, [k]: v }));
+  };
+
   const post = async (body: any, msg?: string) => {
-    const r = await fetch('/api/relationship', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    setToast(j?.error ? j.error : msg || '已保存');
-    reload();
+    try {
+      const r = await fetch('/api/relationship', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
+      if (FORM_ACTIONS.includes(body?.action)) dirtyRef.current = false;
+      setToast(msg || '已保存');
+      await reload();
+    } catch (e: any) {
+      setToast(e?.message || '操作失败');
+    }
   };
 
   if (loading && !data) return <Loading text="正在读你们的关系…" />;
@@ -104,6 +120,7 @@ export default function RelationshipPage() {
             <span className="dim">手动设置阶段（体验不同阶段语气用）</span>
             <select
               className="input !w-auto !py-1.5 text-xs"
+              aria-label="关系阶段"
               value={rel.stage}
               onChange={(e) => post({ action: 'set_stage', stage: Number(e.target.value) }, '阶段已手动调整')}
             >
@@ -298,14 +315,14 @@ export default function RelationshipPage() {
           <div className="space-y-3">
             <div>
               <label className="label">你叫她什么 / 她叫你什么</label>
-              <input className="input" value={edits.nickname || ''} onChange={(e) => setEdits((s: any) => ({ ...s, nickname: e.target.value }))} placeholder="比如：小满 / 笨蛋" />
+              <input className="input" value={edits.nickname || ''} onChange={(e) => setEdit('nickname', e.target.value)} placeholder="比如：小满 / 笨蛋" />
               <button className="btn mt-2" onClick={() => post({ action: 'set_nickname', nickname: edits.nickname }, '已更新昵称')}>
                 保存昵称
               </button>
             </div>
             <div>
               <label className="label">重要日子（在一起的日子）</label>
-              <input className="input" type="date" value={edits.anniversary || ''} onChange={(e) => setEdits((s: any) => ({ ...s, anniversary: e.target.value }))} />
+              <input className="input" type="date" value={edits.anniversary || ''} onChange={(e) => setEdit('anniversary', e.target.value)} />
               <button className="btn mt-2" onClick={() => post({ action: 'set_anniversary', anniversary: edits.anniversary }, '已记录')}>
                 保存日期
               </button>
@@ -318,20 +335,20 @@ export default function RelationshipPage() {
             <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <label className="label">她的名字</label>
-                <input className="input" value={edits.agent_name || ''} onChange={(e) => setEdits((s: any) => ({ ...s, agent_name: e.target.value }))} />
+                <input className="input" value={edits.agent_name || ''} onChange={(e) => setEdit('agent_name', e.target.value)} />
               </div>
               <div>
                 <label className="label">年龄（可不填）</label>
-                <input className="input" value={edits.age || ''} onChange={(e) => setEdits((s: any) => ({ ...s, age: e.target.value }))} />
+                <input className="input" value={edits.age || ''} onChange={(e) => setEdit('age', e.target.value)} />
               </div>
             </div>
             <div>
               <label className="label">她的生活设定（学业/工作/兴趣，会让她更像真人）</label>
-              <input className="input" value={edits.occupation || ''} onChange={(e) => setEdits((s: any) => ({ ...s, occupation: e.target.value }))} placeholder="比如：在读研究生，喜欢摄影和猫" />
+              <input className="input" value={edits.occupation || ''} onChange={(e) => setEdit('occupation', e.target.value)} placeholder="比如：在读研究生，喜欢摄影和猫" />
             </div>
             <div>
               <label className="label">你们的共同故事（会写进她的自我认知）</label>
-              <textarea className="textarea" rows={3} value={edits.self_story || ''} onChange={(e) => setEdits((s: any) => ({ ...s, self_story: e.target.value }))} />
+              <textarea className="textarea" rows={3} value={edits.self_story || ''} onChange={(e) => setEdit('self_story', e.target.value)} />
             </div>
             <button className="btn" onClick={() => post({ action: 'set_persona', ...edits }, '已保存她的身份')}>
               保存
@@ -343,7 +360,7 @@ export default function RelationshipPage() {
           <div className="grid gap-3 md:grid-cols-3">
             <div>
               <label className="label">你的称呼</label>
-              <input className="input" value={edits.user_name || ''} onChange={(e) => setEdits((s: any) => ({ ...s, user_name: e.target.value }))} />
+              <input className="input" value={edits.user_name || ''} onChange={(e) => setEdit('user_name', e.target.value)} />
             </div>
             <div className="md:col-span-2">
               <label className="label">关于你（她会在聊天中参考这一段）</label>
@@ -352,7 +369,7 @@ export default function RelationshipPage() {
                 rows={2}
                 placeholder="比如：在读文学专业，最近在准备考试，喜欢咖啡、讨厌香菜，不太会主动表达情绪"
                 value={edits.user_profile || ''}
-                onChange={(e) => setEdits((s: any) => ({ ...s, user_profile: e.target.value }))}
+                onChange={(e) => setEdit('user_profile', e.target.value)}
               />
             </div>
           </div>

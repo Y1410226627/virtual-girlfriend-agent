@@ -19,16 +19,23 @@ export default function IntimacyPage() {
 
   const post = async (body: any, msg?: string) => {
     setBusy(true);
-    const r = await fetch('/api/intimacy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    setBusy(false);
-    if (msg) setToast(j?.error ? j.error : msg);
-    reload();
-    return j;
+    try {
+      const r = await fetch('/api/intimacy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
+      if (msg) setToast(msg);
+      await reload();
+      return j;
+    } catch (e: any) {
+      setToast(e?.message || '操作失败');
+      return null;
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (loading && !data) return <Loading text="正在读亲密状态…" />;
@@ -68,6 +75,7 @@ export default function IntimacyPage() {
               <button
                 key={l.v}
                 disabled={busy}
+                aria-pressed={lv.level === l.v}
                 onClick={() => post({ action: 'set_level', level: l.v }, `已设为「${l.label}」`)}
                 className={`w-full rounded-2xl border px-3.5 py-2.5 text-left transition ${
                   lv.level === l.v ? 'border-rose-300 bg-rose-50/70' : 'border-rose-100/80 bg-white/70 hover:bg-rose-50/40'
@@ -103,7 +111,7 @@ export default function IntimacyPage() {
                 <div className="flex shrink-0 flex-col gap-1">
                   <button
                     className="btn-ghost !py-1 text-xs"
-                    disabled={busy}
+                    disabled={busy || p.revealed}
                     onClick={() => post({ action: 'reveal_preference', type: p.type }, '已设为"说过"')}
                   >
                     {p.revealed ? '已说过' : '设为已说'}
@@ -111,7 +119,9 @@ export default function IntimacyPage() {
                   <button
                     className="btn-ghost !py-1 text-xs"
                     disabled={busy}
-                    onClick={() => post({ action: 'delete_preference', id: p.id }, '已删除')}
+                    onClick={() => {
+                      if (confirm('删除这条偏好？')) post({ action: 'delete_preference', id: p.id }, '已删除');
+                    }}
                   >
                     删除
                   </button>

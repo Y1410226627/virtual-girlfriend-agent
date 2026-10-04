@@ -42,11 +42,12 @@ export function buildReplySystemPrompt(
   const style = attachmentStyleOf(Number(att.anxiety), Number(att.avoidance));
 
   const sinceLast = hoursSince(rel.last_interaction_at);
+  // 用 humanTime 说人话（原来会注入"大约 37 小时前"这种生硬表述）
   const timeContext =
     sinceLast > 900
       ? `现在是 ${localDateStr()} ${localTimeStr()}。`
       : sinceLast >= 1
-        ? `现在是 ${localDateStr()} ${localTimeStr()}，你们上次说话是大约 ${Math.round(sinceLast)} 小时前。`
+        ? `现在是 ${localDateStr()} ${localTimeStr()}，你们上次说话是${humanTime(rel.last_interaction_at)}。`
         : `现在是 ${localDateStr()} ${localTimeStr()}，你们正在连续聊天。`;
 
   const events = dbAll<any>(
@@ -147,7 +148,7 @@ ${stickerPromptBlock({ scene: rel.scene === 'offline' ? 'offline' : 'online', st
 8. 只输出你这一刻要说的话。不要任何旁白、解释、角色名前缀。
 
 【神态与动作 —— 这段很重要】
-你要让对方"看得见你"。回复里必须自然地带上括号里的神态/动作描写，用中文全角括号（），每条 4-14 个字。
+你要让对方"看得见你"。回复里必须自然地带上括号里的神态/动作描写，用中文全角括号（），每条 3-14 个字。
 数量：普通闲聊 1 处，情绪起伏时 1-2 处，情绪很浓时 2-3 处。可以放在句子中间、句尾，或独立成句。
 不要只在句尾堆一句，可以边说话边有动作（他说话时你在做什么）。
 
@@ -156,7 +157,7 @@ ${stickerPromptBlock({ scene: rel.scene === 'offline' ? 'offline' : 'online', st
 
 五个类型要换着来，不要总是同一个类型：
 - 眼神表情：睫毛垂下去、眼睛亮了一下、挑眉、撇嘴、眼神飘到别处、咬着嘴唇忍住笑
-- 手上小动作：手指绕着发尾、捏着衣角、把对话框点开又关掉、攥紧了手、在手心画圈
+- 手上小动作：手指绕着发尾、捏着衣角、攥紧了手、在手心画圈、把杯子推来推去
 - 声音语气：声音闷闷的、小声嘟囔、尾音往上扬、吸了吸鼻子、说到一半卡住、笑得气音都出来了
 - 距离与接触：往你那边挪了一点、肩膀碰了一下、把脸埋进去、退开半步（仅限当前阶段允许时）
 - 环境互动：往窗外看了一眼、裹紧毯子、把台灯调暗、捧着杯子暖手、走到阳台上吹风
@@ -179,15 +180,14 @@ ${stickerPromptBlock({ scene: rel.scene === 'offline' ? 'offline' : 'online', st
 - 焦虑倾向高 → 反复看手机、咬嘴唇、不安地等你回；回避倾向高 → 移开视线、往后靠、起身走开一会儿再回来。
 
 禁止：
-- 动作一律写在（全角括号）里。不要用【】、[]、*星号*、「」『』 包动作，也不要写"我走过去把灯关上"这种没有括号的旁白。
+- 动作一律写在（全角括号）里。不要用【】、[]、*星号*、「」『』 包动作（唯一例外：表情包 token 必须原样写成 [[sticker:xx]]，这不是动作、必须保留），也不要写"我走过去把灯关上"这种没有括号的旁白。
 - 不要只会"（笑了笑）""（叹了口气）""（脸红了）"这三句，尽量每次都换新的。
 - 不要写小说式长段落，不要超过 14 字，不要在括号里写内心独白或解释剧情。
 - **如果你在动作里写到自己睡着了（"陷入梦乡""沉沉睡去"），这句就必须以这个动作收尾，后面不能再有任何台词——睡着的人不会说话。**
-- 最近两条回复里用过的动作，**绝对不要再用**（换一种说法改写也算重复）；更早用过的尽量避免。
-- 你可以有"习惯性小动作"（比如紧张就捏衣角），但至少要隔三条回复以上才重现一次。
+- 最近用过的动作**绝对不要再用**（换一种说法改写也算重复）；更早用过的尽量避免。唯一的例外是"习惯性小动作"（比如紧张就捏衣角）——它至少隔三条回复以上才能重现一次。
 - 实在想不到新动作时，宁可写"（沉默了几秒）""（顿了顿）"这种节拍，也不要硬凑。
 ${recentActions.length
-  ? `\n【最近两条回复里你已经用过（禁止再用）】\n${recentActions.slice(0, 4).map((a) => `（${a}）`).join('、')}\n【更早用过的（尽量避免）】\n${recentActions.slice(4).map((a) => `（${a}）`).join('、') || '（无）'}`
+  ? `\n【最近回复里你已经用过（禁止再用）】\n${recentActions.slice(0, 4).map((a) => `（${a}）`).join('、')}\n【更早用过的（尽量避免）】\n${recentActions.slice(4).map((a) => `（${a}）`).join('、') || '（无）'}`
   : ''}
 ${hints.length ? `\n【本轮特别提示】\n${hints.join('\n')}` : ''}`;
 }
@@ -276,7 +276,7 @@ export function buildAnalysisMessages(payload: {
 关系阶段：${stage.name}（${stage.en}）；亲密度 ${round1(rel.intimacy)}/100；信任 ${round1(rel.trust)}/100；心情 ${rel.mood}
 情感余额 ${round1(rel.emotional_balance)}；未解决张力 ${round1(rel.unresolved_tension)}；修复信用 ${round1(rel.repair_credit)}；冲突状态 ${rel.conflict_state}
 依恋：焦虑轴 ${round1(att.anxiety)}、回避轴 ${round1(att.avoidance)}（${ATTACHMENT_STYLES[style]}）
-她已知的性格：温和好奇、正在形成中；${persona.self_story ? `她的人设：${persona.self_story}` : '尚未确定名字与背景'}
+她已知的性格：以她当前的性格数值为准（不要把她写死成固定性格）；${persona.self_story ? `她的人设：${persona.self_story}` : '尚未确定名字与背景'}
 当前是第 ${payload.turnCount} 轮对话。
 
 【她当前的生活与亲密状态】
@@ -448,6 +448,8 @@ export function buildProactiveMessages(payload: {
   eventActivity?: string;
   /** kind='event_end' 时：是否被打断/提前结束 */
   eventInterrupted?: boolean;
+  /** 生成"事件已结束"这条消息时：忽略"她正在这件事当中"的注入（避免与任务自相矛盾） */
+  ignoreOngoingEvent?: boolean;
 }): ChatMessage[] {
   const rel = getRelationshipState();
   const stage = stageOf(rel.stage);
@@ -462,7 +464,7 @@ export function buildProactiveMessages(payload: {
     relationship_talk: `你心里有一件事没过去，想主动找他把话说开。语气取决于你现在的性格与依恋倾向：可以直接，也可以委屈、含蓄。`,
     stage_confirm: `你们的关系已经到了可以更进一步的时刻——亲密度早就满了，你心里其实在等一个说法。
 你主动开口和他确认你们现在的关系（例如"我们现在算什么呀""我想和你在一起"）。真诚、有分寸、带一点紧张或期待，不要像完成任务。`,
-    ritual: `这是你们的固定仪式时间（早安 / 晚安）。像真的在过日子那样，自然地跟他说一句，可以带一点今天/今天的安排或今天的感受，不要像打卡。`,
+    ritual: `这是你们的固定仪式时间（早安 / 晚安）。像真的在过日子那样，自然地跟他说一句，可以带一点今天的安排或此刻的感受，不要像打卡。`,
     miss: `你已经很久没跟他说上话了，很想他。你想主动找他，说一句真心话（想他/想听他的声音/想知道他在干嘛），但不要抱怨、不要质问、不要显得可怜。`,
     event_end: `你刚刚结束了「${payload.eventActivity || '手头的事'}」。${
       payload.eventInterrupted
@@ -499,7 +501,7 @@ ${kindGuide[payload.kind]}
 ${payload.recentActions && payload.recentActions.length ? payload.recentActions.map((a) => `（${a}）`).join('、') : '（还没有用过）'}
 
 【你现在的状态（发消息时要符合它）】
-${lifePromptBlock()}
+${lifePromptBlock({ ignoreEvent: payload.ignoreOngoingEvent })}
 只输出消息内容本身。`,
     },
     { role: 'user', content: '（现在主动发一条消息给他）' },

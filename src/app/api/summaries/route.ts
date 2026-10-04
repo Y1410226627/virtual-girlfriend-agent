@@ -6,10 +6,18 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  return Response.json({ summaries: listDailySummaries(60) });
+  try {
+    return Response.json({ summaries: listDailySummaries(60) });
+  } catch (e: any) {
+    return Response.json({ error: String(e?.message || e) }, { status: 500 });
+  }
 }
 
 export async function POST() {
-  const summary = await maybeGenerateDailySummary(true);
-  return Response.json({ ok: true, summary, summaries: listDailySummaries(60) });
+  try {
+    const summary = await maybeGenerateDailySummary(true);
+    return Response.json({ ok: true, summary, summaries: listDailySummaries(60) });
+  } catch (e: any) {
+    return Response.json({ error: String(e?.message || e) }, { status: 500 });
+  }
 }

@@ -1,5 +1,5 @@
 // 设置：模型档案（随时切换 + 自动备用链）/ 主动频率 / 场景 / 隐私
-import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient } from '@/lib/db';
+import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient, customModeOn } from '@/lib/db';
 import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState, logRelationship } from '@/lib/relationship';
 import { clamp } from '@/lib/utils';
 import { STAGES } from '@/lib/stages';
@@ -51,6 +51,14 @@ const EDITABLE = new Set([
   'analysis_thinking',
 ]);
 
+// 对外返回的模型档案一律打码，避免明文 Key 泄露
+const maskedProfiles = () =>
+  listProfiles().map((p) => ({
+    ...p,
+    api_key: maskSecret(p.api_key),
+    embedding_api_key: maskSecret(p.embedding_api_key),
+  }));
+
 export async function GET() {
   seedProfilesIfEmpty();
   const settings = getAllSettings();
@@ -86,11 +94,34 @@ export async function PUT(req: Request) {
   const body = await req.json().catch(() => ({}));
   const incoming = body?.settings && typeof body.settings === 'object' ? body.settings : body;
   const changed: string[] = [];
+  const RANGE: Record<string, [number, number]> = {
+    context_size: [2, 60],
+    memory_top_k: [3, 30],
+    stage_dwell_days: [0, 30],
+    personality_openness: [0, 2],
+  };
   for (const [k, v] of Object.entries(incoming || {})) {
     if (!EDITABLE.has(k)) continue;
     // 前端回传的掩码值不算修改（避免把"••••1234"当成新 Key 存进去）
     if (SECRET_SETTING_KEYS.includes(k) && looksLikeMask(v)) continue;
-    setSetting(k, typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v ?? ''));
+    let value: string;
+    if (k in RANGE) {
+      // 数值型键：越界钳制，非数字跳过
+      const n = Number(v);
+      if (!isFinite(n)) continue;
+      value = String(clamp(n, RANGE[k][0], RANGE[k][1]));
+    } else if (k === 'quiet_start' || k === 'quiet_end') {
+      const s = String(v ?? '');
+      if (!/^\d{1,2}:\d{2}$/.test(s)) continue;
+      value = s;
+    } else if (k === 'llm_base_url') {
+      const s = String(v ?? '').trim();
+      if (!/^https?:\/\//.test(s)) continue;
+      value = s;
+    } else {
+      value = typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v ?? '');
+    }
+    setSetting(k, value);
     changed.push(k);
   }
   if ('agent_name' in (incoming || {})) setPersonaField('agent_name', String(incoming.agent_name || ''));
@@ -118,7 +149,7 @@ export async function POST(req: Request) {
     return Response.json({
       ok,
       message: ok ? `已切换到「${activeProfile()?.label}」，立即生效` : '档案不存在',
-      profiles: listProfiles(),
+      profiles: maskedProfiles(),
       effective: {
         baseUrl: llmConfig().baseUrl,
         model: llmConfig().model,
@@ -145,23 +176,23 @@ export async function POST(req: Request) {
       embedding_model: body.embedding_model !== undefined ? String(body.embedding_model) : undefined,
       note: body.note !== undefined ? String(body.note) : undefined,
     });
-    return Response.json({ ok: true, id, profiles: listProfiles() });
+    return Response.json({ ok: true, id, profiles: maskedProfiles() });
   }
 
   if (action === 'save_current') {
     const label = String(body.label || '').trim() || `当前配置 ${new Date().toLocaleDateString('zh-CN')}`;
     const id = saveCurrentAsProfile(label, body.note ? String(body.note) : undefined);
-    return Response.json({ ok: true, id, profiles: listProfiles() });
+    return Response.json({ ok: true, id, profiles: maskedProfiles() });
   }
 
   if (action === 'delete_profile') {
     const ok = deleteProfile(Number(body.id));
-    return Response.json({ ok, profiles: listProfiles(), activeProfile: activeProfile()?.label || null });
+    return Response.json({ ok, profiles: maskedProfiles(), activeProfile: activeProfile()?.label || null });
   }
 
   if (action === 'move_profile') {
     moveProfile(Number(body.id), Number(body.dir) < 0 ? -1 : 1);
-    return Response.json({ ok: true, profiles: listProfiles() });
+    return Response.json({ ok: true, profiles: maskedProfiles() });
   }
 
   if (action === 'test_profile') {
@@ -191,6 +222,8 @@ export async function POST(req: Request) {
   }
 
   if (action === 'custom_values') {
+    // 只有开启自定义模式才允许数值直控
+    if (!customModeOn()) return Response.json({ error: '先打开自定义模式' }, { status: 400 });
     // 自定义模式：数值直控（全部钳制到合法范围；不改动任何开关与配置）
     const v = (body.values && typeof body.values === 'object' ? body.values : {}) as Record<string, any>;
     const numOr = (x: any, d: number) => {
@@ -213,6 +246,8 @@ export async function POST(req: Request) {
         rel.pending_stage_confirm = 0;
         rel.pending_relationship_talk = 0;
       }
+      // 阶段与亲密度区间保持一致：把亲密度钳制到目标阶段 [min,max]
+      rel.intimacy = clamp(Number(rel.intimacy), STAGES[st].min, STAGES[st].max);
     }
     saveRelationshipState(rel);
 
@@ -250,6 +285,7 @@ export async function POST(req: Request) {
   }
 
   if (action === 'reset') {
+    if (body.confirm !== 'RESET') return Response.json({ error: '缺少确认（confirm=RESET）' }, { status: 400 });
     const keepSettings = body.keepSettings !== false;
     wipeAllData(keepSettings);
     return Response.json({ ok: true, message: keepSettings ? '已清空记忆、性格、依恋、关系与聊天记录（设置保留）' : '已恢复初始状态（包含设置）' });

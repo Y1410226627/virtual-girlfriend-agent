@@ -50,9 +50,10 @@ export async function GET() {
   const loc = getLocation();
   const act = getActivity();
   const seed = getProfileSeed();
-  const today = localDateStr();
+  // 本地零点（避免拼 UTC 零点在东八区丢掉当天 00:00-08:00 的日志）
+  const localMidnight = new Date(new Date().setHours(0, 0, 0, 0)).toISOString();
 
-  const timeline = listLifeLogs(60, `${today}T00:00:00.000Z`)
+  const timeline = listLifeLogs(60, localMidnight)
     .concat(listLifeLogs(60, new Date(Date.now() - 12 * 3600000).toISOString()).filter((l) => l.field === 'daily_event'))
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
     .slice(0, 40);
@@ -220,8 +221,10 @@ export async function POST(req: Request) {
   }
 
   if (action === 'set_cycle') {
-    dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE user_id = ?', body.enabled ? 1 : 0, Number(body.day) || 1, DEFAULT_USER_ID);
-    setSetting('cycle_enabled', body.enabled ? 'true' : 'false');
+    const day = Math.round(clamp(Number(body.day) || 1, 1, 60));
+    const enabled = body.enabled === true || body.enabled === 'true';
+    dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE user_id = ?', enabled ? 1 : 0, day, DEFAULT_USER_ID);
+    setSetting('cycle_enabled', enabled ? 'true' : 'false');
     return Response.json({ ok: true });
   }
 

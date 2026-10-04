@@ -1,26 +1,31 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /* ---------------------- 数据请求 hook ---------------------- */
 export function useApi<T = any>(url: string | null) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!url);
+  // 请求序号：旧响应不得覆盖新响应
+  const reqIdRef = useRef(0);
 
   const reload = useCallback(async () => {
     if (!url) return;
+    const reqId = ++reqIdRef.current;
     try {
       setLoading(true);
       const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || `请求失败 ${r.status}`);
+      if (reqId !== reqIdRef.current) return;
       setData(j);
       setError(null);
     } catch (e: any) {
+      if (reqId !== reqIdRef.current) return;
       setError(e?.message || String(e));
     } finally {
-      setLoading(false);
+      if (reqId === reqIdRef.current) setLoading(false);
     }
   }, [url]);
 
@@ -96,7 +101,7 @@ export function Loading({ text = '加载中…' }: { text?: string }) {
 
 export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
-    <div className="mx-5 my-3 rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 md:mx-8">
+    <div role="alert" className="mx-5 my-3 rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 md:mx-8">
       <div className="font-medium">出错了</div>
       <div className="mt-1 break-all text-xs leading-relaxed">{message}</div>
       {onRetry ? (
@@ -110,13 +115,16 @@ export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () =
 
 /* ---------------------- 轻提示 ---------------------- */
 export function Toast({ text, onClose }: { text: string; onClose: () => void }) {
+  // 固化回调身份，父组件每次渲染都不会重置计时器
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
-    const t = setTimeout(onClose, 3200);
+    const t = setTimeout(() => onCloseRef.current(), 3200);
     return () => clearTimeout(t);
-  }, [text, onClose]);
+  }, [text]);
   return (
     <div className="fixed left-1/2 top-5 z-50 -translate-x-1/2 animate-fade-up">
-      <div className="rounded-full bg-ink-900/85 px-4 py-2 text-xs text-white shadow-lg backdrop-blur">{text}</div>
+      <div role="status" aria-live="polite" className="rounded-full bg-ink-900/85 px-4 py-2 text-xs text-white shadow-lg backdrop-blur">{text}</div>
     </div>
   );
 }
@@ -136,6 +144,7 @@ export function fmtTime(iso?: string | null) {
 export function fmtDate(iso?: string | null) {
   if (!iso) return '';
   const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '';
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 

@@ -15,6 +15,7 @@ import {
 import { getRelationshipState } from '@/lib/relationship';
 import { getAttachmentState } from '@/lib/attachment';
 import { DIMENSIONS } from '@/lib/types';
+import { tx } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,13 +52,17 @@ export async function POST(req: Request) {
 
   if (action === 'adjust') {
     const dim = String(body.dimension || '');
-    const value = Number(body.value);
-    if (!dim || !isFinite(value)) return Response.json({ error: '参数错误' }, { status: 400 });
+    const value = body.value;
+    if (!DIMENSIONS.some((d) => d.key === dim) || typeof value !== 'number' || !isFinite(value)) {
+      return Response.json({ error: '参数错误' }, { status: 400 });
+    }
     manualAdjust(dim, value, body.reason ? String(body.reason) : '用户在性格页手动微调');
     return Response.json({ ok: true, dimension: dim, label: dimensionLabel(dim), value });
   }
   if (action === 'unsolidify') {
-    unsolidify(String(body.dimension || ''));
+    const dim = String(body.dimension || '');
+    if (!DIMENSIONS.some((d) => d.key === dim)) return Response.json({ error: '参数错误' }, { status: 400 });
+    unsolidify(dim);
     return Response.json({ ok: true });
   }
   if (action === 'snapshot') {
@@ -65,7 +70,10 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, snapshots: listSnapshots(20) });
   }
   if (action === 'rollback') {
-    const ok = rollbackToSnapshot(Number(body.snapshotId));
+    const snapshotId = Number(body.snapshotId);
+    if (!Number.isInteger(snapshotId)) return Response.json({ error: '参数错误' }, { status: 400 });
+    // 回滚内部逐维度调 manualAdjust，用事务包住避免半写入
+    const ok = tx(() => rollbackToSnapshot(snapshotId));
     return Response.json({ ok });
   }
   return Response.json({ error: '未知操作' }, { status: 400 });

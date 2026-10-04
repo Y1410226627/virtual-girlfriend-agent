@@ -1,6 +1,6 @@
 // 世界模拟与生活系统：她有自己的作息、身体、心理、位置、活动与日常事件
 // 设计要点：连续性优先（一切由"流逝了多少时间"推导，不随机跳变）、独立生活、逐步揭露、状态影响对话
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, boolSetting, numSetting, getCounter } from './db';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting, boolSetting, numSetting, getCounter } from './db';
 import { clamp, nowIso, localHour, localDateStr, localTimeStr, round1, safeJson, hoursSince } from './utils';
 import { getRelationshipState, getPersona } from './relationship';
 import { attachmentStyle, getAttachmentState } from './attachment';
@@ -23,8 +23,12 @@ export function ensureLife(): void {
   );
   dbRun('INSERT OR IGNORE INTO intimacy_state (user_id, updated_at) VALUES (?, ?)', DEFAULT_USER_ID, now);
   dbRun('INSERT OR IGNORE INTO intimacy_content_level (user_id, level, updated_at) VALUES (?, 0, ?)', DEFAULT_USER_ID, now);
-  if (!dbGet('SELECT id FROM intimacy_preferences WHERE user_id = ? LIMIT 1', DEFAULT_USER_ID)) {
-    seedPreferences();
+  // 只在"从未播种过"时种一次：用户删掉自己的偏好后，重启不该被种回来
+  if (getSetting('prefs_seeded') !== '1') {
+    setSetting('prefs_seeded', '1');
+    if (!dbGet('SELECT id FROM intimacy_preferences WHERE user_id = ? LIMIT 1', DEFAULT_USER_ID)) {
+      seedPreferences();
+    }
   }
 }
 
@@ -45,16 +49,36 @@ export interface LocationRow { current_location: string; location_type: string; 
 export interface ActivityRow { current_activity: string; activity_type: string; started_at: string | null; expected_end_at: string | null; updated_at: string }
 
 export function getHealth(): HealthRow {
-  return dbGet<HealthRow>('SELECT * FROM agent_health WHERE user_id = ?', DEFAULT_USER_ID)!;
+  let row = dbGet<HealthRow>('SELECT * FROM agent_health WHERE user_id = ?', DEFAULT_USER_ID);
+  if (!row) {
+    ensureLife();
+    row = dbGet<HealthRow>('SELECT * FROM agent_health WHERE user_id = ?', DEFAULT_USER_ID);
+  }
+  return row!;
 }
 export function getPsychology(): PsychRow {
-  return dbGet<PsychRow>('SELECT * FROM agent_psychology WHERE user_id = ?', DEFAULT_USER_ID)!;
+  let row = dbGet<PsychRow>('SELECT * FROM agent_psychology WHERE user_id = ?', DEFAULT_USER_ID);
+  if (!row) {
+    ensureLife();
+    row = dbGet<PsychRow>('SELECT * FROM agent_psychology WHERE user_id = ?', DEFAULT_USER_ID);
+  }
+  return row!;
 }
 export function getLocation(): LocationRow {
-  return dbGet<LocationRow>('SELECT * FROM agent_location WHERE user_id = ?', DEFAULT_USER_ID)!;
+  let row = dbGet<LocationRow>('SELECT * FROM agent_location WHERE user_id = ?', DEFAULT_USER_ID);
+  if (!row) {
+    ensureLife();
+    row = dbGet<LocationRow>('SELECT * FROM agent_location WHERE user_id = ?', DEFAULT_USER_ID);
+  }
+  return row!;
 }
 export function getActivity(): ActivityRow {
-  return dbGet<ActivityRow>('SELECT * FROM agent_activity WHERE user_id = ?', DEFAULT_USER_ID)!;
+  let row = dbGet<ActivityRow>('SELECT * FROM agent_activity WHERE user_id = ?', DEFAULT_USER_ID);
+  if (!row) {
+    ensureLife();
+    row = dbGet<ActivityRow>('SELECT * FROM agent_activity WHERE user_id = ?', DEFAULT_USER_ID);
+  }
+  return row!;
 }
 export function getProfileSeed(): Record<string, any> {
   const row = dbGet<any>('SELECT * FROM agent_profile WHERE user_id = ?', DEFAULT_USER_ID);
@@ -245,19 +269,24 @@ export function advanceLife(): { steps: number; changes: string[] } {
   if (elapsedH < 0.25) return { steps: 0, changes: [] };
 
   const stepH = 0.5;
-  const maxSteps = 96; // 最多往回推 48 小时，避免长时间未开机时的巨量循环
+  const maxSteps = 96; // 单次最多模拟 48 小时；超出的余量只推进到已模拟处，下次继续（不再被吞掉）
   const steps = Math.min(maxSteps, Math.floor(elapsedH / stepH));
+  // 历史回放从"上次更新的那一刻"往后一步步推，而不是从 now 往回推：
+  // 这样离线 5 天时会先补最早的那 48 小时，且 updated_at 只推进已模拟的部分，剩下的留给下次
+  const simStart = lastAt;
   const indep = Number(personalityMap().independence ?? 50);
   const att = attachmentStyle();
   const rel = getRelationshipState();
+  const lastChatAt = rel.last_interaction_at ? new Date(rel.last_interaction_at).getTime() : NaN;
   let cycleDate = localDateStr(new Date(lastAt));
   // 可控事件进行中：作息表不覆盖她正在做的事（她说了"去睡了"，就一直睡到事件结束）
   const activeEvent = getActiveEvent();
   const activeEventStart = activeEvent ? new Date(activeEvent.started_at).getTime() : 0;
   const activeEventActType = activeEvent ? activityTypeOfEvent(activeEvent.event_type) : '';
 
-  for (let i = steps; i >= 1; i--) {
-    const d = new Date(now - i * stepH * 3600000);
+  for (let k = 0; k < steps; k++) {
+    const d = new Date(simStart + k * stepH * 3600000);
+    const stepEnd = new Date(simStart + (k + 1) * stepH * 3600000);
     const hour = d.getHours() + d.getMinutes() / 60;
     let block = blockAt(d);
     const health = getHealth();
@@ -278,7 +307,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
 
     // 1) 位置 / 活动跟随作息（可控事件进行中不覆盖，事件行才是这段时间的真相）
     if (!eventStep && (block.location !== loc.current_location || block.activity !== act.current_activity)) {
-      const endAt = new Date(now - (i - 1) * stepH * 3600000);
+      const endAt = stepEnd;
       dbRun(
         'UPDATE agent_location SET current_location = ?, location_type = ?, arrived_at = ?, expected_leave_at = ?, updated_at = ? WHERE user_id = ?',
         block.location, block.locationType, d.toISOString(), endAt.toISOString(), nowIso(), DEFAULT_USER_ID
@@ -296,7 +325,16 @@ export function advanceLife(): { steps: number; changes: string[] } {
     let hunger = health.hunger;
     let sleepQ = health.sleep_quality;
     let exercise = health.exercise;
-    if (block.activityType === 'sleep') {
+    // 可控事件进行中：只按事件影响走（与"立即结束按等效时长结算"是同一套数值，避免两条路径差一倍）
+    const eventEffect = eventStep && activeEvent ? EVENT_DRIFT[activeEvent.event_type] || EVENT_DRIFT.other : null;
+    if (eventEffect) {
+      energy = clamp(energy + (eventEffect.energy || 0), 0, 100);
+      hunger = clamp(hunger + (eventEffect.hunger || 0), 0, 100);
+      sleepQ = clamp(sleepQ + (eventEffect.sleepQ || 0), 0, 100);
+      if (activeEvent!.event_type === 'meal') {
+        dbRun('UPDATE agent_health SET last_meal_at = ? WHERE user_id = ?', d.toISOString(), DEFAULT_USER_ID);
+      }
+    } else if (block.activityType === 'sleep') {
       energy = clamp(energy + 9, 0, 100);
       hunger = clamp(hunger - 2.5, 0, 100);
       if (hour >= 6 && hour <= 9) sleepQ = clamp(sleepQ + (rel.unresolved_tension > 40 ? 2 : 5), 0, 100);
@@ -304,40 +342,34 @@ export function advanceLife(): { steps: number; changes: string[] } {
       energy = clamp(energy - (block.activityType === 'class' || block.activityType === 'study' ? 3.4 : 2.2), 0, 100);
       hunger = clamp(hunger - (block.activityType === 'class' ? 7 : 5), 0, 100);
       if (block.activityType === 'shower' || block.activityType === 'bed') sleepQ = clamp(sleepQ + 1.2, 0, 100);
+      if (block.activityType === 'meal') {
+        hunger = clamp(hunger + 34, 0, 100);
+        energy = clamp(energy + 5, 0, 100);
+        dbRun('UPDATE agent_health SET last_meal_at = ? WHERE user_id = ?', d.toISOString(), DEFAULT_USER_ID);
+      }
     }
-    if (block.activityType === 'meal') {
-      hunger = clamp(hunger + 34, 0, 100);
-      energy = clamp(energy + 5, 0, 100);
-      dbRun('UPDATE agent_health SET last_meal_at = ? WHERE user_id = ?', d.toISOString(), DEFAULT_USER_ID);
-    }
-    // 可控事件进行中：按事件类型追加真实影响（睡觉大幅回精力、吃饭回饥饿、洗澡放松、忙起来消耗…）
-    const eventEffect = eventStep && activeEvent ? EVENT_DRIFT[activeEvent.event_type] || EVENT_DRIFT.other : null;
-    if (eventEffect) {
-      energy = clamp(energy + (eventEffect.energy || 0), 0, 100);
-      hunger = clamp(hunger + (eventEffect.hunger || 0), 0, 100);
-      sleepQ = clamp(sleepQ + (eventEffect.sleepQ || 0), 0, 100);
-    }
-    // 生病：随时间恢复
+    // 生病：随时间恢复（历史步如果早于发病时间，不按"满严重度"扣）
     let illness = health.illness;
     let severity = health.illness_severity;
     if (illness !== 'none') {
-      const started = health.illness_start ? new Date(health.illness_start).getTime() : now;
+      const startedMs = health.illness_start ? new Date(health.illness_start).getTime() : NaN;
       const durH = (health.illness_duration_days || 2) * 24;
-      const passedH = (d.getTime() - started) / 3600000;
-      severity = clamp(40 * (1 - passedH / durH), 0, 100);
-      energy = clamp(energy - severity / 12, 0, 100);
-      if (passedH >= durH) {
-        illness = 'none';
-        severity = 0;
-        sleepQ = clamp(sleepQ - 8, 0, 100);
-        logLife('illness', health.illness, '恢复', '病程结束');
-        changes.push('病好了');
+      const passedH = isFinite(startedMs) ? (d.getTime() - startedMs) / 3600000 : durH * 0.5;
+      if (passedH >= -0.01) {
+        severity = clamp(40 * (1 - passedH / durH), 0, 100);
+        energy = clamp(energy - severity / 12, 0, 100);
+        if (passedH >= durH) {
+          illness = 'none';
+          severity = 0;
+          sleepQ = clamp(sleepQ - 8, 0, 100);
+          logLife('illness', health.illness, '恢复', '病程结束');
+          changes.push('病好了');
+        }
       }
     }
-    // 吃饭后 slight mood 恢复
     dbRun(
       `UPDATE agent_health SET energy = ?, hunger = ?, sleep_quality = ?, exercise = ?, illness = ?, illness_severity = ?, updated_at = ? WHERE user_id = ?`,
-      round1(energy), round1(hunger), round1(sleepQ), round1(exercise), illness, round1(severity), nowIso(), DEFAULT_USER_ID
+      round1(energy), round1(hunger), round1(sleepQ), round1(exercise), illness, round1(severity), stepEnd.toISOString(), DEFAULT_USER_ID
     );
 
     // 3) 生理周期（每天推进 1 天）
@@ -350,18 +382,22 @@ export function advanceLife(): { steps: number; changes: string[] } {
     }
 
     // 4) 心理漂移
-    const hoursSinceChat = hoursSince(rel.last_interaction_at);
+    // 与"此刻聊了多久"解耦：按这一步自己的时刻算（原来整段历史回放都用同一个"距今多久"，把过去的孤独全算错）
+    const hoursSinceChat = isFinite(lastChatAt) ? Math.max(0, (d.getTime() - lastChatAt) / 3600000) : 999;
     let stress = psy.stress;
     let lon = psy.loneliness;
     let miss = psy.missing_user;
     let security = psy.security;
     let me = psy.mental_energy;
     const workLoad = block.activityType === 'class' || block.activityType === 'study' ? 3 : block.activityType === 'out' ? 1 : -1.5;
-    stress = clamp(stress + workLoad * (stepH / 2) + (illness !== 'none' ? 1.2 : 0), 0, 100);
-    if (block.activityType === 'sleep' || block.activityType === 'rest') me = clamp(me + 6, 0, 100);
-    else if (block.activityType === 'out' || block.activityType === 'leisure') me = clamp(me + 2, 0, 100);
-    else me = clamp(me - (att === 'avoidant' ? 2.6 : 2), 0, 100);
-    // 事件的心理影响（叠加在上面）
+    // 事件步：基础作息漂移不叠加（数值只按事件影响走，和等效时长结算保持一致）
+    stress = clamp(stress + (eventEffect ? 0 : workLoad * (stepH / 2)) + (illness !== 'none' ? 1.2 : 0), 0, 100);
+    if (!eventEffect) {
+      if (block.activityType === 'sleep' || block.activityType === 'rest') me = clamp(me + 6, 0, 100);
+      else if (block.activityType === 'out' || block.activityType === 'leisure') me = clamp(me + 2, 0, 100);
+      else me = clamp(me - (att === 'avoidant' ? 2.6 : 2), 0, 100);
+    }
+    // 事件的心理影响
     if (eventEffect) {
       if (eventEffect.me) me = clamp(me + eventEffect.me, 0, 100);
       if (eventEffect.stress) stress = clamp(stress + eventEffect.stress, 0, 100);
@@ -388,7 +424,14 @@ export function advanceLife(): { steps: number; changes: string[] } {
     else if (energy < 30) emotion = '疲惫';
     dbRun(
       `UPDATE agent_psychology SET base_emotion = ?, stress = ?, loneliness = ?, missing_user = ?, security = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?`,
-      emotion, round1(stress), round1(lon), round1(miss), round1(security), round1(me), nowIso(), DEFAULT_USER_ID
+      emotion,
+      round1(stress),
+      round1(lon),
+      round1(miss),
+      round1(security),
+      round1(me),
+      stepEnd.toISOString(),
+      DEFAULT_USER_ID
     );
 
     // 5) 随机日常事件
@@ -465,9 +508,11 @@ export interface OngoingEventRow {
 export function eventTypeOf(activity: string): string {
   const a = String(activity || '');
   if (/睡|午休|小憩|打盹|眯一会|躺下休息/.test(a)) return 'sleep';
+  // 注意顺序：做饭/洗碗/买菜 必须在 meal 之前判断，否则"做饭"会被当成"吃了一顿"
+  if (/收拾|打扫|洗衣服|做饭|家务|整理|晾|洗碗|买菜|清理/.test(a)) return 'chore';
   if (/吃|饭|餐|外卖|夜宵/.test(a)) return 'meal';
   if (/洗澡|洗漱|冲澡|洗头|泡澡/.test(a)) return 'shower';
-  if (/运动|跑步|健身|瑜伽|游泳|打球|跳绳|锻炼|拉伸|练/.test(a)) return 'sport';
+  if (/运动|跑步|健身|瑜伽|游泳|打球|跳绳|锻炼|拉伸/.test(a)) return 'sport';
   if (/游戏|开黑|排位|下棋|打牌/.test(a)) return 'game';
   if (/聊天|视频|通话|打电话|聚会|串门|下午茶|约会/.test(a)) return 'social';
   if (/化妆|护肤|面膜|泡脚|敷|美甲|梳洗|洗脸|吹头发/.test(a)) return 'care';
@@ -524,7 +569,7 @@ const EVENT_DRIFT: Record<
   { energy?: number; hunger?: number; sleepQ?: number; me?: number; stress?: number; loneliness?: number }
 > = {
   sleep: { energy: 12, hunger: -1, sleepQ: 3, me: 8, stress: -2, loneliness: -1 },
-  meal: { energy: 3, me: 3, loneliness: -2 },
+  meal: { energy: 3, hunger: 40, me: 3, loneliness: -2 },
   shower: { energy: 3, sleepQ: 2, me: 2, stress: -2 },
   focus: { energy: -1, me: -5, stress: 1.5, loneliness: 1 },
   out: { energy: -1, hunger: -2, me: -1.5, stress: 0.5, loneliness: -2 },
@@ -671,10 +716,16 @@ export function endOngoingEvent(reason: string, opts: { keepActivity?: boolean }
 export function registerOngoingEvent(activity: string, opts: { expectedEndText?: string } = {}): OngoingEventRow | null {
   if (!boolSetting('life_enabled', true)) return null;
   const act = String(activity || '').trim();
-  if (!act || act.length > 24 || /^刚/.test(act)) return null; // "刚睡醒/刚下课"这类已经结束的状态不是事件
+  if (!act || act.length > 24) return null;
+  const active = getActiveEvent();
+  // "刚到家/刚睡醒"这类是"已经结束"的状态：不是新事件，但要先把旧事件结束掉
+  // （否则会出现"正在做：刚到家"与"你正在「出门」当中"同时注入的矛盾状态）
+  if (/^刚/.test(act)) {
+    if (active) endOngoingEvent('superseded', { keepActivity: true });
+    return null;
+  }
   const now = new Date();
   const eventType = eventTypeOf(act);
-  const active = getActiveEvent();
   if (active) {
     // 同一个事件正在进行（"睡觉" 与 "睡觉/休息" 这种包含关系也算同一个）→ 不重复注册
     const sameAct =
@@ -757,7 +808,8 @@ const EVENT_INTENT_RULES: Array<{ activity: string; re: RegExp }> = [
   { activity: '遛个弯', re: /(我去遛狗|我去遛弯|我去散步|我下楼走走|我去转转|我去走一走|我出去透透气)/ },
   { activity: '做家务', re: /(我去收拾|我去打扫|我去洗衣服|我去做饭|我收拾一下|我去洗碗|我去买菜|我去晾衣服|我收拾收拾|我去整理)/ },
   { activity: '护肤', re: /(我(先)?去(敷|护肤|泡脚|洗脸|化个妆|吹头发)|我敷个面膜|我先敷|我去收拾一下自己|我洗把脸)/ },
-  { activity: '看剧', re: /(我去看剧|我去看电影|我去追剧|我看会剧|我去看个电影|我刷会剧|我去看会书)/ },
+  { activity: '看剧', re: /(我去看剧|我去看电影|我去追剧|我看会剧|我去看个电影|我刷会剧)/ },
+  { activity: '看书', re: /(我去看会书|我看会书|我去看书|我看本书|我去读会书)/ },
 ];
 
 /**
@@ -840,7 +892,7 @@ export function applyActivityChange(newActivity: string, expectedEnd: string): v
 
 export function addDailyEvent(type: string, content: string, impact: string): void {
   const c = String(content || '').trim();
-  if (c.length < 3) return;
+  if (c.length < 2) return; // "感冒/失眠/加班/搬家"这类两字小事也值得记下来
   dbRun(
     'INSERT INTO agent_daily_events (user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, String(type || '生活').slice(0, 12), c.slice(0, 200), JSON.stringify({ note: String(impact || '').slice(0, 120) }), nowIso()
@@ -853,10 +905,11 @@ export function addDailyEvent(type: string, content: string, impact: string): vo
 /* ------------------------------------------------------------------ */
 export function applyInteractionEffects(opts: { caredForHer?: boolean }): void {
   const psy = getPsychology();
+  // 聊过天会把孤独/想念往下压一点（温和底噪），真正的下降靠"被关心"的加成
   dbRun(
     'UPDATE agent_psychology SET loneliness = ?, missing_user = ?, updated_at = ? WHERE user_id = ?',
-    round1(clamp(psy.loneliness - 5, 0, 100)),
-    round1(clamp(psy.missing_user - 7, 0, 100)),
+    round1(clamp(psy.loneliness - 2, 0, 100)),
+    round1(clamp(psy.missing_user - 3, 0, 100)),
     nowIso(), DEFAULT_USER_ID
   );
   if (opts.caredForHer) {
@@ -893,7 +946,7 @@ export function whatHappenedSince(hours = 12): string[] {
 /* ------------------------------------------------------------------ */
 /* 注入 Prompt                                                         */
 /* ------------------------------------------------------------------ */
-export function lifePromptBlock(): string {
+export function lifePromptBlock(opts: { ignoreEvent?: boolean } = {}): string {
   const h = getHealth();
   const p = getPsychology();
   const loc = getLocation();
@@ -945,7 +998,7 @@ export function lifePromptBlock(): string {
   if (stage <= 1) rules.push(`- 你们还不算熟：少说自己的私事和身体状态，点到为止。`);
 
   const evtLines: string[] = [];
-  if (evt) {
+  if (evt && !opts.ignoreEvent) {
     const startHm = endHm(evt.started_at);
     const end = endHm(evt.expected_end_at);
     evtLines.push(`【正在进行的事件（重要）】`);
@@ -962,6 +1015,8 @@ export function lifePromptBlock(): string {
 /** 个人信息：按关系阶段逐步揭露 */
 const FIELD_STAGE: Record<string, number> = {
   nickname: 0, age: 0, city: 0, hobbies: 0,
+  // 名字与生日：用户填了就该能说出来（原来没登记 → 永远"未揭露"，成了死数据）
+  name: 1, birthday: 2,
   hometown: 1, education: 1, job: 1, habits: 1, catchphrases: 1,
   family: 2, dreams: 2,
   fears: 3,
@@ -1103,16 +1158,18 @@ export function listPreferences(includeHidden = false) {
 
 export function revealPreferences(types: string[]): void {
   if (!types || !types.length) return;
+  const stage = getRelationshipState().stage;
   for (const t of types) {
-    const preference = dbGet<any>(
-      'SELECT reveal_stage FROM intimacy_preferences WHERE user_id = ? AND preference_type = ? LIMIT 1',
-      DEFAULT_USER_ID, t
+    // 逐行按各自的门槛判定（原来按类型取第一行的 reveal_stage 批量改，同类型多行时门槛判定错位）
+    const rows = dbAll<any>(
+      "SELECT id, reveal_stage FROM intimacy_preferences WHERE user_id = ? AND preference_type = ? AND reveal_status != 'revealed'",
+      DEFAULT_USER_ID,
+      t
     );
-    if (!preference || getRelationshipState().stage < Number(preference.reveal_stage || 0)) continue;
-    dbRun(
-      "UPDATE intimacy_preferences SET reveal_status = 'revealed' WHERE user_id = ? AND preference_type = ? AND reveal_status != 'revealed'",
-      DEFAULT_USER_ID, t
-    );
+    for (const p of rows) {
+      if (stage < Number(p.reveal_stage || 0)) continue;
+      dbRun("UPDATE intimacy_preferences SET reveal_status = 'revealed' WHERE id = ?", p.id);
+    }
   }
 }
 
@@ -1124,7 +1181,8 @@ export function preferencePromptBlock(): string {
   const hidden = prefs.filter((p) => p.reveal_status !== 'revealed' && rel.stage >= Number(p.reveal_stage || 0));
   const lines: string[] = [];
   if (revealed.length) lines.push(`你已经告诉过他的偏好：${revealed.map((p) => p.content).join('；')}`);
-  if (hidden.length && rel.stage >= 2) {
+  if (hidden.length) {
+    // 门槛统一按各自的 reveal_stage（原来又硬编码了 stage>=2，口径不一致）
     lines.push(`还没说过的偏好（关系够深时可以自然透露、或他问起时说一点）：${hidden.map((p) => p.content).join('；')}`);
   }
   return lines.length ? `【你的偏好】\n${lines.join('\n')}` : '';

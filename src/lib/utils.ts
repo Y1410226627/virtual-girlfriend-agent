@@ -2,7 +2,7 @@
 
 export function clamp(v: number, min: number, max: number): number {
   const n = Number(v);
-  if (!isFinite(n)) return min;
+  if (Number.isNaN(n)) return min; // NaN → min；±Infinity 交给下面的 Math.min/max 收敛到边界
   return Math.min(max, Math.max(min, n));
 }
 
@@ -34,7 +34,8 @@ export function localHour(d: Date = new Date()): number {
 
 export function hoursSince(iso: string | null | undefined): number {
   if (!iso) return 999;
-  return (Date.now() - new Date(iso).getTime()) / 3600000;
+  const h = (Date.now() - new Date(iso).getTime()) / 3600000;
+  return isFinite(h) ? h : 999; // 非 ISO 脏数据不能让上层拿到 NaN
 }
 
 export function daysSince(iso: string | null | undefined): number {
