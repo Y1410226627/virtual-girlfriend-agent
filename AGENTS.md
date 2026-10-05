@@ -52,7 +52,7 @@
 ## 5. 部署流程（本机工作区 → 桌面运行目录 → GitHub 副本）
 1. 本工作区改好并 `npm run verify` 全绿。
 2. 同步到桌面运行目录 `D:\桌面\虚拟女友`（robocopy，排除 `node_modules/.next/data/.git`，排除 `.env.local*`、`*.bak-*`、`*.tsbuildinfo`），在桌面目录 `npm run build`。
-3. 同步到开源副本 `D:\桌面\虚拟女友-开源版`，然后**必须**运行 `node _sanitize_for_github.mjs`（清洗真实 Key / 内网地址，幂等）；其复扫输出必须为「干净 ✓」——**不要把任何内网地址 / Key 片段写进文档、注释或提交信息**（关键词清单只维护在脚本里）；副本绝不允许出现 `data/`、`.env.local*`、`*.bak-*`。
+3. 同步到开源副本 `D:\桌面\虚拟女友-开源版`（robocopy 额外排除 `_sanitize_for_github.mjs`——脚本含关键词清单，**绝不进副本、绝不提交**），然后在**真实项目目录**运行 `node _sanitize_for_github.mjs`（默认清洗副本、幂等、含兜底横扫：敏感串随代码搬家后仍能清到）；其复扫输出必须为「干净 ✓」——**不要把任何内网地址 / Key 片段写进文档、注释或提交信息**（关键词清单只维护在脚本里）；副本绝不允许出现 `data/`、`.env.local*`、`*.bak-*`、`_sanitize_for_github.mjs`。
 4. 副本 git 提交（单主题提交，说明「改了什么、为什么」）。
 5. 用户数据目录永远不参与任何同步。
 
