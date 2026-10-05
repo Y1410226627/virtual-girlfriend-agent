@@ -141,7 +141,8 @@ export default function PersonalityPage() {
   };
 
   if (loading && !data) return <Loading text="正在读她的性格…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  // 仅初次加载就失败才整页替换；已有数据时用顶部横幅提示，保留已加载内容可继续查看/操作
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   const state = data?.state || [];
   const radar = state.map((s) => ({ label: s.label.replace('/', '/\n'), value: s.value }));
@@ -152,7 +153,7 @@ export default function PersonalityPage() {
       const item = state.find((s) => s.key === k);
       return {
         name: item?.label || k,
-        color: COLORS[state.findIndex((s) => s.key === k) % COLORS.length]!,
+        color: COLORS[Math.max(0, state.findIndex((s) => s.key === k)) % COLORS.length]!,
         points: (series[k] || []).map((p) => ({ t: p.t, v: p.v })),
       };
     })
@@ -160,6 +161,7 @@ export default function PersonalityPage() {
 
   return (
     <div className="pb-10">
+      {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="性格"
         desc="她的性格不是一开始就定死的。只有同一方向的信号在不同情境下反复出现，才会带来 ±1 的微调；连续 15 次同向确认后进入半固化。"

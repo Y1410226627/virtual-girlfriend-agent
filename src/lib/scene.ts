@@ -13,6 +13,9 @@ const ONLINE_CUES =
 
 /** 纯表情包消息（不含其他内容） */
 const STICKER_ONLY_RE = new RegExp(`^\\s*${TOKEN_RE.source}\\s*$`, 'i');
+/** 线索计数的全局副本：提到模块级常量，避免每次调用重建正则（String.match 会重置 lastIndex，复用安全） */
+const OFFLINE_CUES_G = new RegExp(OFFLINE_CUES.source, 'g');
+const ONLINE_CUES_G = new RegExp(ONLINE_CUES.source, 'g');
 
 export interface SceneDetection {
   scene: Scene;
@@ -27,8 +30,8 @@ export function detectScene(userText: string, current: Scene): SceneDetection {
   if (STICKER_ONLY_RE.test(text)) {
     return { scene: current, reason: '', confidence: 0 };
   }
-  const off = (text.match(new RegExp(OFFLINE_CUES.source, 'g')) || []).length;
-  const on = (text.match(new RegExp(ONLINE_CUES.source, 'g')) || []).length;
+  const off = (text.match(OFFLINE_CUES_G) || []).length;
+  const on = (text.match(ONLINE_CUES_G) || []).length;
   if (off === 0 && on === 0) return { scene: current, reason: '', confidence: 0 };
   if (off > on) {
     return { scene: 'offline', reason: `他说的话像在旁边（${off} 个线下线索）`, confidence: Math.min(1, off / 2) };

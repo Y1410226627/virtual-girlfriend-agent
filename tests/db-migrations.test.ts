@@ -48,3 +48,8 @@ test('shared_world 表含 cast_json 列（迁移 v11）', () => {
   const names = cols.map((c) => c.name);
   assert.ok(names.includes('cast_json'), `shared_world 应有 cast_json 列，实际列：${names.join(', ')}`);
 });
+
+test('新库初始化：busy_timeout 为 5000（写-写竞争等待窗口，防止被误删）', () => {
+  const row = dbMod.dbGet<{ timeout: number }>('PRAGMA busy_timeout');
+  assert.equal(Number(row?.timeout), 5000, `busy_timeout 应为 5000，实际 ${row?.timeout}`);
+});

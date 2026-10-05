@@ -54,7 +54,9 @@ export function StageCard({
           <span>亲密度 {rel.intimacy} / 100（{rel.stageMin}-{rel.stageMax} 为本阶段区间）</span>
           <span>信任 {rel.trust}</span>
         </div>
-        <Bar value={rel.intimacy - rel.stageMin} min={0} max={rel.stageMax - rel.stageMin} height={10} />
+        {Number.isFinite(rel.stageMin) && Number.isFinite(rel.stageMax) && rel.stageMax > rel.stageMin ? (
+          <Bar value={rel.intimacy - rel.stageMin} min={0} max={rel.stageMax - rel.stageMin} height={10} />
+        ) : null}
       </div>
       <div className="mt-3 flex items-center gap-3">
         <span className="dim">手动设置阶段（体验不同阶段语气用）</span>
@@ -62,7 +64,17 @@ export function StageCard({
           className="input !w-auto !py-1.5 text-xs"
           aria-label="关系阶段"
           value={rel.stage}
-          onChange={(e) => post({ action: 'set_stage', stage: Number(e.target.value) }, '阶段已手动调整')}
+          onChange={(e) => {
+            const next = Number(e.target.value);
+            if (next === rel.stage) return;
+            const target = stages.find((s) => s.id === next);
+            // 手动改阶段会重置阶段计时与推进进度，必须二次确认，避免误触
+            if (!window.confirm(`确定把关系阶段调整为「${target ? target.name : next}期」吗？这会重置阶段计时和推进进度。`)) {
+              e.currentTarget.value = String(rel.stage);
+              return;
+            }
+            post({ action: 'set_stage', stage: next }, '阶段已手动调整');
+          }}
         >
           {stages.map((s) => (
             <option key={s.id} value={s.id}>

@@ -1,7 +1,8 @@
 # CI：push / PR 时跑与本地完全一致的验证回路（npm run verify 的同一套门禁）。
 # 隐私说明：CI 只做静态检查与构建，仓库里没有任何用户数据（data/ 从不提交）。
 # 说明：npm scripts 里的 NEXT_TELEMETRY_DISABLED=1 是 Windows cmd 语法；
-#      在 CI（bash）上由下面的 env 统一关闭 Next.js 遥测，效果一致。
+#      在 CI（bash）上 `set X=1` 只设置位置参数、不报错，后续命令照常执行；
+#      遥测由下面的 env（job 级）统一关闭，效果一致。
 name: verify
 
 on:
@@ -9,16 +10,26 @@ on:
     branches: [main]
   pull_request:
 
+# 同一分支上的新推送取消旧的运行，避免排队与互相拖慢
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 与 package.json engines（>=22.13）对齐：node:sqlite 需在 22 上覆盖，另跑最新 24
+        node-version: ['22.13', '24']
     env:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - name: 安装依赖（锁文件精确安装）
         run: npm ci
@@ -34,3 +45,29 @@ jobs:
         run: npm run check:migrations
       - name: 生产构建
         run: npm run build
+
+      # 构建产物冒烟：只在 node 24 档做（跑一次即可，避免重复）。
+      # 用临时空库启动（DB_PATH 指向 $RUNNER_TEMP），绝不接触任何真实数据；
+      # 用 bash 循环轮询 3000 端口就绪，不引入 wait-on 等额外依赖。
+      - name: 构建产物冒烟（node 24 档）
+        if: ${{ matrix.node-version == '24' }}
+        run: |
+          set -e
+          export DB_PATH="$RUNNER_TEMP/smoke.db"
+          # 后台启动生产服务，日志落盘便于失败排查
+          npm start > "$RUNNER_TEMP/server.log" 2>&1 &
+          SERVER_PID=$!
+          # 无论成功失败都确保杀掉服务进程
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          # 轮询等待端口就绪（最多 30 秒）
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/api/state >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then
+            echo "服务 30 秒内未就绪，服务日志如下："
+            cat "$RUNNER_TEMP/server.log"
+            exit 1
+          fi
+          node scripts/smoke.mjs

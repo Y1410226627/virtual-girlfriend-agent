@@ -103,5 +103,50 @@ export type SetToast = (text: string | null) => void;
 /** 字段写入（page.tsx 的 set） */
 export type SetFieldFn = (k: string, v: string) => void;
 
-/** 保存表单字段（page.tsx 的 save） */
-export type SaveFn = (keys?: string[], msg?: string) => Promise<void>;
+/** 保存表单字段（page.tsx 的 save）：返回是否成功；overrides 用于提交"目标值"而非 state 旧值 */
+export type SaveFn = (
+  keys: string[],
+  msg?: string,
+  overrides?: Record<string, string>
+) => Promise<boolean>;
+
+/**
+ * 组装"自定义数值"提交体：空字符串 / 空白 = 未填写 → 不提交（避免后端 Number('')=0 归零）。
+ * 只提交本次真正填写过的字段。
+ */
+export function buildCustomValues(cv: CustomValues): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const num = (x: number | string): number | undefined => {
+    if (typeof x === 'number') return Number.isFinite(x) ? x : undefined;
+    const s = String(x).trim();
+    if (!s) return undefined;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const NUM_KEYS = [
+    'intimacy',
+    'trust',
+    'emotional_balance',
+    'unresolved_tension',
+    'repair_credit',
+    'stage',
+    'anxiety',
+    'avoidance',
+    'libido',
+    'intimacy_need',
+    'sexual_satisfaction',
+    'sexual_stress',
+  ] as const;
+  for (const k of NUM_KEYS) {
+    const n = num(cv[k]);
+    if (n !== undefined) out[k] = n;
+  }
+  if (typeof cv.mood === 'string' && cv.mood.trim()) out.mood = cv.mood.trim();
+  const p: Record<string, number> = {};
+  for (const [k, v] of Object.entries(cv.personality || {})) {
+    const n = num(v);
+    if (n !== undefined) p[k] = n;
+  }
+  if (Object.keys(p).length) out.personality = p;
+  return out;
+}

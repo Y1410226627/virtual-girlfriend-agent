@@ -153,7 +153,8 @@ export default function ChatPage() {
         onSkipOnboard={() => setOnboard(false)}
       />
 
-      {/* 输入框 */}
+      {/* 输入框固定到底部；移动端有固定底部导航（Nav 移动端约 56px 高），
+          pb-20 为它预留空间避免遮挡，桌面端无底部导航改回 md:pb-3 */}
       <div className="sticky bottom-0 border-t line surf px-4 py-3 pb-20 backdrop-blur md:px-8 md:pb-3">
         <StickerPanel
           open={stickerOpen}

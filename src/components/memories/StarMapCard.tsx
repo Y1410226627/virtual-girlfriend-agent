@@ -33,13 +33,14 @@ export function StarMapCard({ stats }: { stats: MemoryStats }) {
   const padB = 24;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
-  const maxAccess = Math.max(1, ...scatter.map((s) => Number(s.access_count) || 0));
+  // 用 reduce 求最大值，避免大数组展开成 Math.max(...arr) 造成调用栈溢出
+  const maxAccess = scatter.reduce((m, s) => Math.max(m, Number(s.access_count) || 0), 1);
   const xOf = (imp: number) => padL + (Math.max(0, Math.min(10, imp)) / 10) * plotW;
   const yOf = (acc: number) => padT + plotH - (Math.max(0, acc) / maxAccess) * plotH;
   const rOf = (imp: number) => 3 + (Math.max(0, Math.min(10, imp)) / 10) * 3; // 半径 3~6，按重要度
   const yTicks = Array.from(new Set([0, Math.round(maxAccess / 2), maxAccess]));
 
-  const maxBucket = Math.max(1, ...buckets.map((b) => Number(b.count) || 0));
+  const maxBucket = buckets.reduce((m, b) => Math.max(m, Number(b.count) || 0), 1);
 
   return (
     <div className="px-5 pt-4 md:px-8">

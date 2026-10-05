@@ -43,6 +43,20 @@ export function daysSince(iso: string | null | undefined): number {
   return (Date.now() - new Date(iso).getTime()) / 86400000;
 }
 
+/**
+ * 两个时间点相差的「自然日」数：按本地日历日计算，忽略时分秒（同一天=0，昨天=1）。
+ * 用各自日历日的 UTC 零点相减，跨月/跨年/夏令时都不会错位；任一为非法时间返回 0。
+ * 与数据库里其它 localDateStr 的口径一致（本机无夏令时，此写法对任何时区都稳妥）。
+ */
+export function calendarDaysBetween(from: string | Date, to: string | Date = new Date()): number {
+  const a = from instanceof Date ? from : new Date(from);
+  const b = to instanceof Date ? to : new Date(to);
+  if (!isFinite(a.getTime()) || !isFinite(b.getTime())) return 0;
+  const av = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate());
+  const bv = Date.UTC(b.getFullYear(), b.getMonth(), b.getDate());
+  return Math.round((bv - av) / 86400000);
+}
+
 export function minutesSince(iso: string | null | undefined): number {
   if (!iso) return 99999;
   return (Date.now() - new Date(iso).getTime()) / 60000;

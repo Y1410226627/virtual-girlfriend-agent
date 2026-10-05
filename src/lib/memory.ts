@@ -1,10 +1,15 @@
 // 记忆系统：向量检索 + 关键词/重要度/新鲜度/阶段相关度评分 + 去重 + 遗忘 + 摘要
 import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, numSetting } from './db';
-import { cosine, nowIso, daysSince, clamp, safeJson, truncate } from './utils';
+import { cosine, nowIso, daysSince, clamp, truncate } from './utils';
 import { embedOne } from './llm';
 import type { MemoryRow, MessageRow, MemoryUpdate } from './types';
 import { getRelationshipState } from './relationship';
-import { embedModelTag } from './memory-embedding';
+import {
+  storedEmbeddingTag,
+  getMemoryVector,
+  invalidateMemoryVectorCache,
+  clearMemoryVectorCache,
+} from './memory-embedding';
 
 export { backfillEmbeddings, refreshMemoryEmbedding } from './memory-embedding';
 
@@ -55,7 +60,7 @@ export async function addMemory(
 
   let best: { row: (typeof existing)[number]; sim: number } | null = null;
   for (const row of existing) {
-    const v = safeJson<number[]>(row.vector, []);
+    const v = getMemoryVector(row.id, row.vector);
     if (!v.length) continue;
     const sim = cosine(vec, v);
     if (!best || sim > best.sim) best = { row, sim };
@@ -63,66 +68,79 @@ export async function addMemory(
 
   const isFactType = type === 'semantic' || type === 'relationship';
   const contentChanged = !!best && String(best.row.content || '').trim() !== content;
+  const expiry = update.expires_at || null;
 
-  // 极高相似 + （非事实类，或事实类但说法一致）→ 原地合并
-  // 事实类的新说法不在这里吞掉：走插入 + 把旧值标 superseded，保留历史版本
-  if (best && best.sim > 0.92 && !(isFactType && contentChanged)) {
-    const newImportance = Math.max(Number(best.row.importance) || 0, importance);
-    dbRun(
-      `UPDATE memories SET importance = ?, content = ?, emotion = COALESCE(?, emotion),
-         source_message_id = COALESCE(?, source_message_id), last_accessed_at = ?, access_count = access_count + 1
-       WHERE id = ?`,
-      newImportance,
+  // 一次逻辑写入的所有语句放进同一事务：避免"记忆已写入但向量缺失/脱节"的中间态
+  return tx(() => {
+    // 原地合并的判定：
+    // - 极高相似（>0.92）且（非事实类，或事实类但说法一致）
+    // - 灰区（0.85~0.92）的非事实类近似：同类相近应合并，避免两条近似记忆同时 active 挤占 top_k
+    // 事实类的新说法不在这里吞掉：走插入 + 把旧值标 superseded，保留历史版本
+    const oldContent = best ? String(best.row.content || '').trim() : '';
+    const grayZone = !!best && best.sim > 0.85 && best.sim <= 0.92;
+    const mergeInPlace =
+      !!best && !(isFactType && contentChanged) && (best.sim > 0.92 || (!isFactType && grayZone));
+
+    if (best && mergeInPlace) {
+      // 灰区合并保留信息更全的一条（更长者），避免用较短的近义句覆盖掉完整信息
+      const finalContent = grayZone && oldContent.length > content.length ? oldContent : content;
+      const newImportance = Math.max(Number(best.row.importance) || 0, importance);
+      dbRun(
+        `UPDATE memories SET importance = ?, content = ?, emotion = COALESCE(?, emotion),
+           source_message_id = COALESCE(?, source_message_id), last_accessed_at = ?, access_count = access_count + 1
+         WHERE id = ?`,
+        newImportance,
+        finalContent,
+        update.emotion || null,
+        sourceMessageId ?? null,
+        nowIso(),
+        best.row.id
+      );
+      if (finalContent !== oldContent) {
+        // 内容变了向量必须重算，否则检索会和内容脱节
+        dbRun(
+          `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
+          best.row.id,
+          storedEmbeddingTag(),
+          vec.length,
+          JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
+          nowIso()
+        );
+        invalidateMemoryVectorCache(best.row.id);
+      }
+      return best.row.id;
+    }
+
+    const { lastInsertRowid: id } = dbRun(
+      `INSERT INTO memories (user_id, type, content, importance, emotion, source_message_id, created_at, last_accessed_at, expires_at, status, access_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 'active', 0)`,
+      DEFAULT_USER_ID,
+      type,
       content,
+      importance,
       update.emotion || null,
       sourceMessageId ?? null,
       nowIso(),
-      best.row.id
+      expiry
     );
-    if (contentChanged) {
-      // 内容变了向量必须重算，否则检索会和内容脱节
-      dbRun(
-        `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
-        best.row.id,
-        embedModelTag(),
-        vec.length,
-        JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
-        nowIso()
-      );
+
+    dbRun(
+      `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
+      id,
+      storedEmbeddingTag(),
+      vec.length,
+      JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
+      nowIso()
+    );
+    invalidateMemoryVectorCache(id);
+
+    // 同一属性被新值覆盖 → 旧记录标记 superseded（保留历史）
+    if (best && best.sim > 0.85 && isFactType) {
+      dbRun("UPDATE memories SET status = 'superseded', superseded_by = ? WHERE id = ?", id, best.row.id);
     }
-    return best.row.id;
-  }
 
-  const expiry = update.expires_at || null;
-
-  const { lastInsertRowid: id } = dbRun(
-    `INSERT INTO memories (user_id, type, content, importance, emotion, source_message_id, created_at, last_accessed_at, expires_at, status, access_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 'active', 0)`,
-    DEFAULT_USER_ID,
-    type,
-    content,
-    importance,
-    update.emotion || null,
-    sourceMessageId ?? null,
-    nowIso(),
-    expiry
-  );
-
-  dbRun(
-    `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
-    id,
-    embedModelTag(),
-    vec.length,
-    JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
-    nowIso()
-  );
-
-  // 同一属性被新值覆盖 → 旧记录标记 superseded（保留历史）
-  if (best && best.sim > 0.85 && isFactType) {
-    dbRun("UPDATE memories SET status = 'superseded', superseded_by = ? WHERE id = ?", id, best.row.id);
-  }
-
-  return id;
+    return id;
+  });
 }
 
 /* ---------------------- 记忆纠正（用户明确指出她记错了） ---------------------- */
@@ -133,12 +151,25 @@ function charBigrams(s: string): Set<string> {
   return set;
 }
 
-/** 文本兜底相似度：包含匹配直接满分，否则用 2-gram Jaccard 重合度（向量缺失/失败时使用） */
+/**
+ * 文本兜底相似度（向量缺失/失败时使用）。
+ * 只有"几乎就是同一条记忆"才给高分，避免共享一个常见词的误判：
+ * - 完全一致 → 1（名字纠正这类短文本也成立）
+ * - 包含关系仅在短句覆盖长句 ≥80% 且长句不超过短句 2 倍时 → 1，否则证据不足 → 0.5
+ * - 其余走 2-gram Jaccard，但任一条 <6 字直接判 0（中文短句 2-gram 覆盖率天然偏高）
+ */
 function correctionTextScore(hint: string, content: string): number {
   const h = hint.replace(/\s+/g, '');
   const c = content.replace(/\s+/g, '');
   if (!h || !c) return 0;
-  if (c.includes(h) || h.includes(c)) return 1;
+  if (h === c) return 1;
+  const short = h.length <= c.length ? h : c;
+  const long = h.length <= c.length ? c : h;
+  if (long.includes(short)) {
+    if (short.length >= 4 && short.length >= 0.8 * long.length && long.length <= 2 * short.length) return 1;
+    return 0.5;
+  }
+  if (h.length < 6 || c.length < 6) return 0;
   const A = charBigrams(h);
   const B = charBigrams(c);
   if (!A.size || !B.size) return 0;
@@ -185,14 +216,15 @@ export async function applyMemoryCorrection(
 
     let best: { row: MemoryRow; sim: number } | null = null;
     for (const row of candidates) {
-      const v = safeJson<number[]>(row.vector, []);
+      const v = getMemoryVector(row.id, row.vector);
       const vecSim = hintVec.length && v.length ? Math.max(0, cosine(hintVec, v)) : 0;
       const textSim = hint ? correctionTextScore(hint, String(row.content || '')) : 0;
       const sim = Math.max(vecSim, textSim);
       if (!best || sim > best.sim) best = { row, sim };
     }
 
-    const hit = !!best && best.sim >= 0.55;
+    // 阈值上调：文本兜底只在"几乎同一条"时接近满分，0.62 以上才认作同一件事，避免误伤相近但不同的记忆
+    const hit = !!best && best.sim >= 0.62;
 
     // 2) 插入新的正确记忆（importance 7~8）
     const { lastInsertRowid: newId } = dbRun(
@@ -206,11 +238,12 @@ export async function applyMemoryCorrection(
     dbRun(
       `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
       newId,
-      embedModelTag(),
+      storedEmbeddingTag(),
       factVec.length,
       JSON.stringify(factVec.map((x) => Math.round(x * 10000) / 10000)),
       nowIso()
     );
+    invalidateMemoryVectorCache(newId);
 
     // 3) 命中旧记忆 → 标记 superseded 并指向新记忆（保留历史，不删除）
     let supersededId: number | null = null;
@@ -251,7 +284,7 @@ export async function retrieveMemories(query: string, topK?: number): Promise<Me
   );
 
   const scored = rows.map((row) => {
-    const v = safeJson<number[]>(row.vector, []);
+    const v = getMemoryVector(row.id, row.vector);
     const vecSim = v.length ? Math.max(0, cosine(qVec, v)) : 0;
     const importance = Number(row.importance) / 10;
 
@@ -385,15 +418,21 @@ export function updateMemory(id: number, fields: { content?: string; importance?
 }
 
 export function deleteMemory(id: number): boolean {
-  dbRun('DELETE FROM memory_embeddings WHERE memory_id = ?', id);
-  const { changes } = dbRun('DELETE FROM memories WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
-  return changes > 0;
+  return tx(() => {
+    dbRun('DELETE FROM memory_embeddings WHERE memory_id = ?', id);
+    const { changes } = dbRun('DELETE FROM memories WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+    invalidateMemoryVectorCache(id);
+    return changes > 0;
+  });
 }
 
-/** 清空该用户全部记忆及其向量（设置页"重置记忆"用；先删向量再删记忆） */
+/** 清空该用户全部记忆及其向量（设置页"重置记忆"用；先删向量再删记忆，同一事务保证原子性） */
 export function wipeAllMemories(): void {
-  dbRun('DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)', DEFAULT_USER_ID);
-  dbRun('DELETE FROM memories WHERE user_id = ?', DEFAULT_USER_ID);
+  tx(() => {
+    dbRun('DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)', DEFAULT_USER_ID);
+    dbRun('DELETE FROM memories WHERE user_id = ?', DEFAULT_USER_ID);
+  });
+  clearMemoryVectorCache();
 }
 
 export function createMemoryManually(type: string, content: string, importance = 6, emotion?: string): number {

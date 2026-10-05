@@ -40,7 +40,19 @@ export function IdentityCard({
           <textarea id="agent_story" className="textarea" rows={3} value={form.agent_story ?? ''} onChange={(e) => set('agent_story', e.target.value)} placeholder="她是谁、在哪、做什么、喜欢什么…" />
         </div>
       </div>
-      <button className="btn mt-3" onClick={() => save(['agent_name', 'user_name', 'personality_openness', 'user_profile', 'agent_story'], '已保存身份信息')} disabled={saving}>
+      <button
+        className="btn mt-3"
+        onClick={() => {
+          const keys = ['agent_name', 'user_name', 'personality_openness', 'user_profile', 'agent_story'];
+          // 性格开放度留空时不提交：空串会被后端 Number('') 解析成 0（= 性格锁死，她不再演化）
+          const payload =
+            (form.personality_openness ?? '').trim() === ''
+              ? keys.filter((k) => k !== 'personality_openness')
+              : keys;
+          save(payload, '已保存身份信息');
+        }}
+        disabled={saving}
+      >
         保存
       </button>
     </Card>

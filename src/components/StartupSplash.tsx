@@ -16,9 +16,11 @@ export default function StartupSplash() {
     return () => clearInterval(cyc);
   }, [leaving]);
 
+  // 收尾：优先监听淡出动画的 animationend；再兜底一个超时（后台标签页/低端机掉帧、
+  // 或 prefers-reduced-motion 关掉动画时 animationend 不会触发），保证覆盖层一定会消失。
   useEffect(() => {
     if (!leaving) return;
-    const b = setTimeout(() => setGone(true), 650);
+    const b = setTimeout(() => setGone(true), 1200);
     return () => clearTimeout(b);
   }, [leaving]);
 
@@ -27,7 +29,12 @@ export default function StartupSplash() {
   return (
     <div
       className={`splash ${leaving ? 'splash-leave' : ''}`}
+      style={leaving ? { pointerEvents: 'none' } : undefined}
       onClick={() => setLeaving(true)}
+      onAnimationEnd={(e) => {
+        // 只认覆盖层自己（排除子元素冒泡）上淡出动画的结束，立即移除
+        if (leaving && e.target === e.currentTarget && e.animationName === 'splash-out') setGone(true);
+      }}
       tabIndex={0}
       role="button"
       onKeyDown={(e) => {

@@ -9,7 +9,7 @@ export function SharedPlacesCard({ places }: { places?: SharedEntry[] }) {
       {places?.length ? (
         <div className="flex flex-wrap gap-2">
           {places.map((pl, i) => (
-            <Chip key={i} tone="plain">📍 {pl.content || pl.title}</Chip>
+            <Chip key={pl.content || pl.title || String(i)} tone="plain">📍 {pl.content || pl.title}</Chip>
           ))}
         </div>
       ) : (

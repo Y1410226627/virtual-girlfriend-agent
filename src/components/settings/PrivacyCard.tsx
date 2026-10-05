@@ -24,9 +24,14 @@ export function PrivacyCard({
           className="btn-ghost"
           onClick={async () => {
             if (!confirm('确定清空聊天记录吗？记忆、性格、关系状态会保留。')) return;
-            await fetch('/api/messages', { method: 'DELETE' });
-            setToast('聊天记录已清空');
-            reload();
+            try {
+              const r = await fetch('/api/messages?all=1', { method: 'DELETE' });
+              if (!r.ok) throw new Error();
+              setToast('聊天记录已清空');
+              reload();
+            } catch {
+              setToast('清空失败，请重试');
+            }
           }}
         >
           只清空聊天记录

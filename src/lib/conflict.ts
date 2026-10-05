@@ -54,7 +54,9 @@ export function registerConflict(type: ConflictType, description: string): void 
   s.last_conflict_at = nowIso();
   if (s.unresolved_tension > 50) s.mood = '生气';
   else s.mood = '委屈';
-  // 关系状态与冲突记录必须一起成功：用一个事务包住（addBankEntry 内部有自己的事务，放外层之外）
+  // 冲突登记 + 情感银行记账必须是一个整体：任一失败都不能出现"记了冲突却没扣钱"或反之。
+  // 全部放进同一个事务（tx 可重入，addBankEntry 内部的事务会退化为 SAVEPOINT）；
+  // 余额仍只由 addBankEntry 这一个记账点修改，不在这里重复改。
   tx(() => {
     saveRelationshipState(s);
     dbRun(
@@ -66,11 +68,10 @@ export function registerConflict(type: ConflictType, description: string): void 
       round1(tensionBefore),
       nowIso()
     );
+    // 冲突本身也是一次取款（问题的产生往往来自双方的忽视或越界）
+    addBankEntry(-(type === 'boundary' ? 5 : type === 'major' ? 4 : 2), '冲突', description);
+    logRelationship('conflict', `发生${type === 'boundary' ? '越界' : type === 'major' ? '严重' : '轻微'}冲突：${description}`, null, round1(s.unresolved_tension), '冲突检测');
   });
-
-  // 冲突本身也是一次取款（问题的产生往往来自双方的忽视或越界）
-  addBankEntry(-(type === 'boundary' ? 5 : type === 'major' ? 4 : 2), '冲突', description);
-  logRelationship('conflict', `发生${type === 'boundary' ? '越界' : type === 'major' ? '严重' : '轻微'}冲突：${description}`, null, round1(s.unresolved_tension), '冲突检测');
 }
 
 /** 修复行为：张力下降 50-80%、修复信用 +5~10、情感余额 +5 */

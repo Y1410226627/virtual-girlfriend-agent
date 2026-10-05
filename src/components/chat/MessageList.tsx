@@ -127,7 +127,11 @@ export default function MessageList({
       ) : null}
 
       <div className="mx-auto max-w-3xl space-y-3">
-        {waitHint ? <div className="text-center text-[11px] ink-3">{waitHint}</div> : null}
+        {waitHint ? (
+          <div className="text-center text-[11px] ink-3" role="status" aria-live="polite">
+            {waitHint}
+          </div>
+        ) : null}
         {messages.map((m) => (
           <MessageBubble
             key={m.id}
@@ -145,7 +149,7 @@ export default function MessageList({
         ))}
 
         {typing ? (
-          <div className="flex justify-start">
+          <div className="flex justify-start" role="status" aria-live="polite">
             <div className="bubble-agent flex items-center gap-1 border line surf px-4 py-3 shadow-bubble">
               <span className="dot-1 h-1.5 w-1.5 rounded-full bg-rose-400" />
               <span className="dot-2 h-1.5 w-1.5 rounded-full bg-rose-400" />

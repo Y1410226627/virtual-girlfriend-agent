@@ -30,6 +30,11 @@ export function ModelProfileCard({
   setPf: React.Dispatch<React.SetStateAction<ProfileForm>>;
   setToast: SetToast;
 }) {
+  // 最近降级时间：at 可能是脏值（undefined/NaN），先判有效性再格式化，避免 toISOString 抛 RangeError 整卡崩溃；
+  // 展示完整 fmtTime（含"昨天/x月x日"）而非 .slice(-5) 只取时分，避免跨日后被误当成当天。
+  const fallback = data?.usage?.lastFallback;
+  const fallbackAt = fallback ? new Date(fallback.at) : null;
+  const fallbackAtText = fallbackAt && isFinite(fallbackAt.getTime()) ? fmtTime(fallbackAt.toISOString()) : '—';
   return (
     <Card
       title="模型档案（随时切换，立即生效）"
@@ -45,12 +50,13 @@ export function ModelProfileCard({
           <p className="dim">
             今日调用：聊天 {data.usage.chat || 0} · 分析 {data.usage.analysis || 0} · 向量 {data.usage.embedding || 0}
             {data.usage.lastFallback?.label
-              ? ` ｜ 最近降级到「${data.usage.lastFallback.label}」（${fmtTime(new Date(data.usage.lastFallback.at).toISOString()).slice(-5)}）——说明首选模型当时不可用，检查一下网络或额度`
+              ? ` ｜ 最近降级到「${data.usage.lastFallback.label}」（${fallbackAtText}）——说明首选模型当时不可用，检查一下网络或额度`
               : ''}
           </p>
         ) : null}
         {(data?.profiles || []).map((p) => {
-          const h = data?.health?.[`chat|${(p.base_url || '').replace(/\/+$/, '')}|${p.chat_model}`];
+          // key 结构对齐后端 makeKey：`${kind}|${id}|${baseUrl}|${model}`（baseUrl 去尾斜杠）
+          const h = data?.health?.[`chat|${p.id}|${(p.base_url || '').replace(/\/+$/, '')}|${p.chat_model}`];
           const tr = testResults[p.id];
           return (
             <div
@@ -91,10 +97,24 @@ export function ModelProfileCard({
                 </button>
                 {!p.is_default ? (
                   <>
-                    <button className="btn-ghost !px-2 !py-1.5 text-xs" title="备用顺序上移" onClick={() => profilePost({ action: 'move_profile', id: p.id, dir: -1 })}>
+                    <button
+                      className="btn-ghost !px-2 !py-1.5 text-xs"
+                      title="备用顺序上移"
+                      onClick={async () => {
+                        const j = await profilePost({ action: 'move_profile', id: p.id, dir: -1 });
+                        setToast(j.ok ? '已上移备用顺序' : j.error || '调整失败');
+                      }}
+                    >
                       ↑
                     </button>
-                    <button className="btn-ghost !px-2 !py-1.5 text-xs" title="备用顺序下移" onClick={() => profilePost({ action: 'move_profile', id: p.id, dir: 1 })}>
+                    <button
+                      className="btn-ghost !px-2 !py-1.5 text-xs"
+                      title="备用顺序下移"
+                      onClick={async () => {
+                        const j = await profilePost({ action: 'move_profile', id: p.id, dir: 1 });
+                        setToast(j.ok ? '已下移备用顺序' : j.error || '调整失败');
+                      }}
+                    >
                       ↓
                     </button>
                   </>
@@ -131,7 +151,7 @@ export function ModelProfileCard({
         <div className="grid gap-2.5 md:grid-cols-2">
           <input id="pf_label" aria-label="档案名称" className="input" placeholder="档案名称（如 智谱 GLM-4.7-Flash）" value={pf.label || ''} onChange={(e) => setPf({ ...pf, label: e.target.value })} />
           <input id="pf_base_url" aria-label="接口地址 Base URL" className="input" placeholder="接口地址 Base URL" value={pf.base_url || ''} onChange={(e) => setPf({ ...pf, base_url: e.target.value })} />
-          <input id="pf_api_key" aria-label="API Key" className="input" placeholder="API Key" value={pf.api_key || ''} onChange={(e) => setPf({ ...pf, api_key: e.target.value })} />
+          <input id="pf_api_key" aria-label="API Key" type="password" className="input" placeholder="API Key" value={pf.api_key || ''} onChange={(e) => setPf({ ...pf, api_key: e.target.value })} />
           <input id="pf_chat_model" aria-label="聊天模型名" className="input" placeholder="聊天模型名" value={pf.chat_model || ''} onChange={(e) => setPf({ ...pf, chat_model: e.target.value })} />
           <input id="pf_analysis_model" aria-label="分析模型名" className="input" placeholder="分析模型名（留空同聊天模型）" value={pf.analysis_model || ''} onChange={(e) => setPf({ ...pf, analysis_model: e.target.value })} />
           <input id="pf_note" aria-label="备注" className="input" placeholder="备注（可选）" value={pf.note || ''} onChange={(e) => setPf({ ...pf, note: e.target.value })} />

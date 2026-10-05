@@ -36,8 +36,9 @@ export function PhotoCard({
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <div>
-          <label className="label">图片接口地址 Base URL</label>
+          <label className="label" htmlFor="photo_img_base_url">图片接口地址 Base URL</label>
           <input
+            id="photo_img_base_url"
             className="input"
             value={form.img_base_url ?? ''}
             onChange={(e) => set('img_base_url', e.target.value)}
@@ -45,8 +46,9 @@ export function PhotoCard({
           />
         </div>
         <div>
-          <label className="label">API Key</label>
+          <label className="label" htmlFor="photo_img_api_key">API Key</label>
           <input
+            id="photo_img_api_key"
             className="input"
             type="password"
             value={form.img_api_key ?? ''}
@@ -55,8 +57,8 @@ export function PhotoCard({
           />
         </div>
         <div>
-          <label className="label">模型</label>
-          <input className="input" value={form.img_model ?? ''} onChange={(e) => set('img_model', e.target.value)} placeholder="默认 gpt-image-1" />
+          <label className="label" htmlFor="photo_img_model">模型</label>
+          <input id="photo_img_model" className="input" value={form.img_model ?? ''} onChange={(e) => set('img_model', e.target.value)} placeholder="默认 gpt-image-1" />
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">

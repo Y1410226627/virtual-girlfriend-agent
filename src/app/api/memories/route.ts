@@ -164,5 +164,7 @@ export async function DELETE(req: Request) {
     return Response.json({ ok: true });
   }
   if (!id) return Response.json({ error: '缺少 id' }, { status: 400 });
-  return Response.json({ ok: deleteMemory(id) });
+  // 删 0 行不能包装成成功：否则前端会谎报"已删除"
+  if (!deleteMemory(id)) return Response.json({ ok: false, error: '记忆不存在或已删除' }, { status: 404 });
+  return Response.json({ ok: true });
 }

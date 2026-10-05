@@ -10,7 +10,7 @@ export function TimelineCard({ timeline }: { timeline?: TimelineRow[] }) {
       {timeline?.length ? (
         <div className="space-y-2">
           {timeline.map((l, i) => (
-            <div key={i} className="flex items-start gap-3 rounded-2xl border line surf px-3.5 py-2.5">
+            <div key={`${l.created_at ?? ''}-${i}`} className="flex items-start gap-3 rounded-2xl border line surf px-3.5 py-2.5">
               <span className="mt-0.5 shrink-0 whitespace-nowrap text-[11px] ink-3">{fmtTime(l.created_at)}</span>
               <div className="min-w-0">
                 <div className="text-xs ink-1">{timelineText(l)}</div>

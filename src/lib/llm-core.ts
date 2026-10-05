@@ -3,6 +3,7 @@
 // 严禁 import 任何 llm-* 文件（否则会与桶文件 llm.ts 形成循环依赖）。
 import { llmConfig, setSetting, setCounter, bumpCounter } from './db';
 import { listProfiles, isCooling } from './profiles';
+import { localDateStr } from './utils';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -192,10 +193,10 @@ export function noteUsed(target: LlmTarget, fallback: boolean) {
   }
 }
 
-/** 今日调用计数（成本透明：设置页显示） */
+/** 今日调用计数（成本透明：设置页显示）。key 用本地日期，避免东八区 0:00-8:00 记到前一天 */
 export function bumpUsage(kind: 'chat' | 'analysis' | 'embedding') {
   try {
-    const day = new Date().toISOString().slice(0, 10);
+    const day = localDateStr();
     bumpCounter(`llm_calls_${day}`, 1);
     bumpCounter(`llm_calls_${kind}_${day}`, 1);
   } catch {

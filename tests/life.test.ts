@@ -47,34 +47,35 @@ test('eventTypeOf：未知 → other', () => {
 /* parseExpectedEnd：文字 → ISO 时间                                    */
 /* ------------------------------------------------------------------ */
 
-// 固定一个"现在"时间：2026-10-05 14:00:00 UTC+8（即 06:00 UTC）
-const FROM = new Date('2026-10-05T06:00:00.000Z');
+// 固定一个"现在"时间：本地 2026-10-05 14:00（用本地组件构造，任意时区都成立）
+// 注意：不要用 '...Z' 这种 UTC 字面量——那是"某个瞬间"，换时区会改变本地钟点，断言随之失效。
+const FROM = new Date(2026, 9, 5, 14, 0, 0);
 
 test('parseExpectedEnd：小时数', () => {
   const r = parseExpectedEnd('2小时', FROM);
   assert.ok(r, '应解析成功');
-  // 2 小时后 = 08:00 UTC
-  assert.equal(new Date(r!).getUTCHours(), 8);
+  // 2 小时后 = 本地 16:00
+  assert.equal(new Date(r!).getHours(), 16);
 });
 
 test('parseExpectedEnd：分钟数', () => {
   const r = parseExpectedEnd('30分钟', FROM);
   assert.ok(r);
-  assert.equal(new Date(r!).getUTCMinutes(), 30);
+  assert.equal(new Date(r!).getMinutes(), 30);
 });
 
 test('parseExpectedEnd：半点', () => {
   const r = parseExpectedEnd('半小时', FROM);
   assert.ok(r);
-  assert.equal(new Date(r!).getUTCMinutes(), 30);
+  assert.equal(new Date(r!).getMinutes(), 30);
 });
 
 test('parseExpectedEnd：一个半小时', () => {
   const r = parseExpectedEnd('一个半小时', FROM);
   assert.ok(r);
-  // 1.5 小时后 = 07:30 UTC
-  assert.equal(new Date(r!).getUTCHours(), 7);
-  assert.equal(new Date(r!).getUTCMinutes(), 30);
+  // 1.5 小时后 = 本地 15:30
+  assert.equal(new Date(r!).getHours(), 15);
+  assert.equal(new Date(r!).getMinutes(), 30);
 });
 
 test('parseExpectedEnd：HH:MM 格式', () => {
@@ -114,17 +115,17 @@ test('parseExpectedEnd：无法识别 → null', () => {
 /* ------------------------------------------------------------------ */
 
 test('smartDurationMinutes：午睡（11:30-16:30）→ 90 分钟', () => {
-  const noon = new Date('2026-10-05T04:00:00.000Z'); // 12:00 本地
+  const noon = new Date(2026, 9, 5, 12, 0, 0); // 本地 12:00
   assert.equal(smartDurationMinutes('sleep', '午睡', noon), 90);
 });
 
 test('smartDurationMinutes：早上回笼睡（<11:30）→ 60 分钟', () => {
-  const morning = new Date('2026-10-05T01:00:00.000Z'); // 09:00 本地
+  const morning = new Date(2026, 9, 5, 9, 0, 0); // 本地 09:00
   assert.equal(smartDurationMinutes('sleep', '', morning), 60);
 });
 
 test('smartDurationMinutes：晚上睡睡 → 睡到次日早上（≥180 分钟）', () => {
-  const night = new Date('2026-10-05T14:00:00.000Z'); // 22:00 本地
+  const night = new Date(2026, 9, 5, 22, 0, 0); // 本地 22:00
   const mins = smartDurationMinutes('sleep', '', night);
   assert.ok(mins >= 180 && mins <= 720, `应在 180-720 之间，实际 ${mins}`);
 });

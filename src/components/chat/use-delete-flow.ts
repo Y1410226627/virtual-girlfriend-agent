@@ -30,6 +30,12 @@ export function useDeleteFlow(params: {
 
   const doDelete = async () => {
     if (!delTarget) return;
+    // 负 id = 还没落库的临时消息（服务端会拒绝）；此时绝不能发 DELETE
+    if (delTarget.id <= 0) {
+      setToast('这条消息还没同步完成，稍后再试');
+      setDelTarget(null);
+      return;
+    }
     setDeleting(true);
     try {
       const r = await fetch(`/api/messages?id=${delTarget.id}&cascade=${delCascade ? 1 : 0}`, { method: 'DELETE' });

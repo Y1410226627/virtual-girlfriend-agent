@@ -3,7 +3,8 @@ import { getRelationshipState, userName } from './relationship';
 import { getAttachmentState } from './attachment';
 import { personalityMap } from './personality';
 import { getIntimacy } from './intimacy';
-import { getCast, getActiveArc } from './life';
+import { getCast } from './life-shared';
+import { getActiveArc } from './life-arc';
 import { round1 } from './utils';
 import { customModeOn } from './db';
 

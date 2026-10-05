@@ -153,14 +153,27 @@ export async function POST(req: Request) {
 
   if (action === 'delete_event') {
     const id = Number(body.id);
-    return Response.json({ ok: deleteEvent(id) });
+    // 删 0 行不能包装成成功：否则前端会谎报"已删除"
+    if (!deleteEvent(id)) return Response.json({ ok: false, error: '事件不存在或已删除' }, { status: 404 });
+    return Response.json({ ok: true });
   }
 
   if (action === 'set_stage') {
     // 调试/体验用：手动设置阶段（会重置阶段计时）
-    const stageNum = Number(body.stage);
-    if (!Number.isFinite(stageNum)) return Response.json({ error: '参数错误' }, { status: 400 });
-    const stage = Math.max(0, Math.min(4, stageNum));
+    // 必须显式提供一个数字或数字字符串：Number('')/Number(null)/Number([]) 都会得到 0，
+    // 若不拦住，缺参数或空串会把阶段静默重置为 0 并清掉 stage_cap_since / pending_stage_confirm。
+    const rawStage: unknown = body.stage;
+    if (typeof rawStage !== 'number' && typeof rawStage !== 'string') {
+      return Response.json({ error: '参数错误' }, { status: 400 });
+    }
+    if (typeof rawStage === 'string' && rawStage.trim() === '') {
+      return Response.json({ error: '参数错误' }, { status: 400 });
+    }
+    const stageNum = Number(rawStage);
+    if (!Number.isInteger(stageNum) || stageNum < 0 || stageNum > 4) {
+      return Response.json({ error: '阶段参数必须是 0-4 的整数' }, { status: 400 });
+    }
+    const stage = stageNum;
     const s = getRelationshipState();
     const old = s.stage;
     s.stage = stage;

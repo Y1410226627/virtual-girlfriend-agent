@@ -124,7 +124,8 @@ export default function StoryPage() {
   }, [data]);
 
   if (loading && !data) return <Loading text="正在翻开你们的纪念册…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  // 仅初次加载就失败才整页替换；已有数据时用顶部横幅提示，保留已加载内容可继续查看
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   const events = data?.events || [];
   const summaries = data?.summaries || [];
@@ -132,6 +133,7 @@ export default function StoryPage() {
 
   return (
     <div className="pb-10">
+      {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader title="纪念册" desc="你们之间发生过的重要时刻。" />
 
       <div className="grid gap-4 px-5 pt-2 md:grid-cols-2 md:px-8">

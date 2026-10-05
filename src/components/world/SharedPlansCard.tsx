@@ -20,17 +20,21 @@ export function SharedPlansCard({
     <Card title="共同计划">
       {plans?.length ? (
         <div className="space-y-2">
-          {plans.map((pl, i) => (
-            <div key={i} className="flex items-center justify-between gap-2 rounded-2xl border line surf px-3.5 py-2.5">
-              <div className="min-w-0">
-                <div className={`text-xs ${pl.status === 'done' ? 'ink-3 line-through' : 'ink-1'}`}>{pl.content || pl.title}</div>
-                <div className="dim mt-0.5">{pl.status === 'done' ? '已完成' : '计划中'} · {fmtTime(pl.created_at)}</div>
+          {plans.map((pl, i) => {
+            // 新条目带稳定 id；老数据没有 id 时回退到下标（服务端同样兼容）
+            const planId = (pl as SharedEntry & { id?: string }).id;
+            return (
+              <div key={planId || i} className="flex items-center justify-between gap-2 rounded-2xl border line surf px-3.5 py-2.5">
+                <div className="min-w-0">
+                  <div className={`text-xs ${pl.status === 'done' ? 'ink-3 line-through' : 'ink-1'}`}>{pl.content || pl.title}</div>
+                  <div className="dim mt-0.5">{pl.status === 'done' ? '已完成' : '计划中'} · {fmtTime(pl.created_at)}</div>
+                </div>
+                <button className="btn-ghost shrink-0 !py-1 text-xs" disabled={busy} onClick={() => post({ action: 'toggle_plan', id: planId, index: i }, '已更新')}>
+                  {pl.status === 'done' ? '标为未完成' : '完成'}
+                </button>
               </div>
-              <button className="btn-ghost shrink-0 !py-1 text-xs" disabled={busy} onClick={() => post({ action: 'toggle_plan', index: i }, '已更新')}>
-                {pl.status === 'done' ? '标为未完成' : '完成'}
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <p className="dim">还没有约定。聊天里说到"我们一起去……"就会自动记下来。</p>

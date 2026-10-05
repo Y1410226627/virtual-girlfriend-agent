@@ -9,7 +9,7 @@ import {
   deleteProactiveMessagesByMessageId,
   type PreparedTurn,
 } from '@/lib/engine';
-import { chat } from '@/lib/llm';
+import { chat, cleanContent } from '@/lib/llm';
 import { humanizeReply } from '@/lib/humanize';
 import { detectEventFromConversation } from '@/lib/life';
 import { errMsg } from '@/lib/utils';
@@ -67,6 +67,19 @@ export async function POST(req: Request) {
   return buildChatStream(req, prepared, content, { cleanupUserOnError: true });
 }
 
+/** 把非流式兜底的整段文本切成若干段（句末标点优先），让前端仍能"逐句浮现"，与流式体验一致 */
+function splitForStream(text: string): string[] {
+  const t = String(text || '');
+  if (!t) return [];
+  const parts = t.split(/(?<=[。！？!?…；;\n])/).filter((s) => s.length > 0);
+  // 只有一句（没有句末标点）时按长度对半拆，保证至少 2 段
+  if (parts.length <= 1 && t.length > 8) {
+    const mid = Math.ceil(t.length / 2);
+    return [t.slice(0, mid), t.slice(mid)];
+  }
+  return parts;
+}
+
 /** 生成 + 流式返回（正常回复与重新生成共用同一套协议：delta/final/done/error） */
 function buildChatStream(
   req: Request,
@@ -114,13 +127,19 @@ function buildChatStream(
             { maxTokens: 400, temperature: 0.95, thinking: false }
           );
           if (String(retry || '').trim()) {
-            full = retry;
-            send({ type: 'delta', text: retry });
+            // 与流式协议一致：分段逐个发 delta（而不是把整段当单个 delta 一次性灌下去）
+            full = '';
+            const segs = splitForStream(retry);
+            for (let i = 0; i < segs.length; i++) {
+              full += segs[i]!;
+              send({ type: 'delta', text: segs[i]! });
+              if (i < segs.length - 1) await new Promise((r) => setTimeout(r, 40));
+            }
           }
         }
 
         // 兜底二：人味层（清洗 AI 腔 / 控制长度 / 补神态动作 / 空回复用兜底台词）
-        const h = humanizeReply(full, prepared.humanize);
+        const h = humanizeReply(cleanContent(full), prepared.humanize);
         assistantMessageId = saveAssistantMessage(h.text);
         assistantSaved = true;
         // 规则兜底：她话里明确说了"我睡了/我去洗澡/我去吃饭…" → 立刻登记可控事件

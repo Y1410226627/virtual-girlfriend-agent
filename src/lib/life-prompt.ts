@@ -1,6 +1,6 @@
 // 生活系统 · 提示词层：把她的状态/事件/档案/偏好注入到对话 Prompt
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { localDateStr, localTimeStr, nowIso } from './utils';
+import { localDateStr, localTimeStr, nowIso, calendarDaysBetween } from './utils';
 import { getRelationshipState } from './relationship';
 import { getHealth, getPsychology, getLocation, getActivity, getProfileSeed } from './life-core';
 import { getActiveEvent } from './life-events';
@@ -26,7 +26,7 @@ export function lifePromptBlock(opts: { ignoreEvent?: boolean } = {}): string {
   const illnessText =
     h.illness === 'none'
       ? '身体还好'
-      : `${h.illness}中（第 ${Math.max(1, Math.round((Date.now() - new Date(h.illness_start || nowIso()).getTime()) / 86400000) + 1)} 天，还没完全好）`;
+      : `${h.illness}中（第 ${Math.max(1, calendarDaysBetween(h.illness_start || nowIso()) + 1)} 天，还没完全好）`;
   const cycleText =
     h.cycle_enabled && h.cycle_day >= 1
       ? `生理期第 ${h.cycle_day} 天`

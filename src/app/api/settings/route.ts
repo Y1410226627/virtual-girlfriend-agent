@@ -14,6 +14,7 @@ import {
   activeProfile,
   seedProfilesIfEmpty,
   healthSnapshot,
+  resolveTestTarget,
 } from '@/lib/profiles';
 import { getPersonalityRows, manualAdjust } from '@/lib/personality';
 import { getAttachmentState, setAttachmentAxes } from '@/lib/attachment';
@@ -127,8 +128,10 @@ export async function PUT(req: Request) {
   };
   for (const [k, v] of Object.entries(incoming || {})) {
     if (!EDITABLE.has(k)) continue;
-    // 前端回传的掩码值不算修改（避免把"••••1234"当成新 Key 存进去）
-    if (SECRET_KEYS.includes(k) && looksLikeMask(v)) continue;
+    // 敏感键保护：前端回传的掩码值、以及空串都不算修改（避免把"••••1234"当新 Key 存进去，
+    // 也避免用户清空输入框时把已保存的真实 Key 覆盖成空 → 明文永久丢失）。
+    // 本应用没有"显式清空 Key"的需求，空 = 保持不变。
+    if (SECRET_KEYS.includes(k) && (looksLikeMask(v) || String(v ?? '') === '')) continue;
     let value: string;
     if (k in RANGE) {
       // 数值型键：越界钳制，非数字跳过
@@ -227,15 +230,18 @@ export async function POST(req: Request) {
 
   if (action === 'test_profile') {
     const p = body.id ? listProfiles().find((x) => x.id === Number(body.id)) : null;
-    const target = p
+    // 统一走纯函数校验：地址必须是合法的 http(s) URL；
+    // 自定地址且未带 Key 时不回落服务端保存的 Key（防止真实 Key 被发往任意地址）
+    const src = p
       ? { baseUrl: p.base_url, apiKey: p.api_key, model: p.chat_model, label: p.label }
-      : {
-          baseUrl: String(body.base_url || llmConfig().baseUrl),
-          apiKey: String(body.api_key || llmConfig().apiKey),
-          model: String(body.chat_model || llmConfig().model),
-          label: String(body.label || '当前配置'),
-        };
-    const r = await testTarget(target, { timeoutMs: Number(body.timeoutMs) || 30000 });
+      : { baseUrl: body.base_url, apiKey: body.api_key, model: body.chat_model, label: body.label };
+    const resolved = resolveTestTarget(src, {
+      baseUrl: llmConfig().baseUrl,
+      apiKey: llmConfig().apiKey,
+      model: llmConfig().model,
+    });
+    if (!resolved.ok) return Response.json({ ok: false, error: resolved.error }, { status: 400 });
+    const r = await testTarget(resolved.target, { timeoutMs: Number(body.timeoutMs) || 30000 });
     return Response.json({ ok: r.ok, result: r });
   }
 
@@ -257,6 +263,9 @@ export async function POST(req: Request) {
     // 自定义模式：数值直控（全部钳制到合法范围；不改动任何开关与配置）
     const v = (body.values && typeof body.values === 'object' ? body.values : {}) as Record<string, unknown>;
     const numOr = (x: unknown, d: number) => {
+      // 空 = 保持原值：Number('') === 0，若不先拦下会把数值静默归零
+      if (x === '' || x === null || x === undefined) return d;
+      if (typeof x === 'string' && x.trim() === '') return d;
       const n = Number(x);
       return isFinite(n) ? n : d;
     };
@@ -282,8 +291,12 @@ export async function POST(req: Request) {
     saveRelationshipState(rel);
 
     const pv = (v.personality && typeof v.personality === 'object' ? v.personality : {}) as Record<string, unknown>;
+    const personalityRows = getPersonalityRows();
     for (const dim of ['warmth', 'playfulness', 'romance', 'directness', 'independence', 'emotional_intensity']) {
-      if (pv[dim] !== undefined) manualAdjust(dim, numOr(pv[dim], 50), '自定义模式：数值直控');
+      if (pv[dim] === undefined) continue;
+      // 空值保持"当前值"（而非硬编码 50），与"空 = 不修改"的语义一致
+      const cur = Number(personalityRows.find((r) => r.dimension === dim)?.value ?? 50);
+      manualAdjust(dim, numOr(pv[dim], cur), '自定义模式：数值直控');
     }
 
     if (v.anxiety !== undefined || v.avoidance !== undefined) {
@@ -297,7 +310,15 @@ export async function POST(req: Request) {
     }
 
     if (v.libido !== undefined || v.intimacy_need !== undefined || v.sexual_satisfaction !== undefined || v.sexual_stress !== undefined) {
-      setIntimacyState(v as Parameters<typeof setIntimacyState>[0]);
+      // setIntimacyState 内部的 Number('')===0 会把清空的框归零：这里先剔除空值，只提交真正填写过的字段
+      const iv: Parameters<typeof setIntimacyState>[0] = {};
+      for (const k of ['libido', 'intimacy_need', 'sexual_satisfaction', 'sexual_stress'] as const) {
+        const raw = v[k];
+        if (raw === undefined || (typeof raw === 'string' && raw.trim() === '')) continue;
+        const n = Number(raw);
+        if (isFinite(n)) iv[k] = n;
+      }
+      if (Object.keys(iv).length) setIntimacyState(iv);
     }
 
     logRelationship('milestone', '自定义模式：数值已按设定更新', null, null, '用户在设置页直控');

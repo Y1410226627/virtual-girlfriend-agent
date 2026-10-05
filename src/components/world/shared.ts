@@ -55,6 +55,19 @@ export interface LifeEvent {
   created_at: string;
 }
 
+/** 生活日记 event_type → 中文标签（未知类型原样显示，避免在界面露出裸英文） */
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  small: '小事',
+  生活: '生活',
+  关系: '关系',
+  工作学习: '工作学习',
+  意外: '意外',
+};
+
+export function eventTypeLabel(type: string): string {
+  return EVENT_TYPE_LABELS[type] || type;
+}
+
 export interface WeeklySnapshot {
   week: string;
   state_json: string;
@@ -84,6 +97,8 @@ export interface LifeData {
   cast?: CastMember[];
   timeline?: TimelineRow[];
   events?: LifeEvent[];
+  /** 生活日记总数（服务端可能只返回部分数组，计数以它为准；缺失时回退 events.length） */
+  eventsTotal?: number;
   weeklySnapshots?: WeeklySnapshot[];
   profile: { revealedCount: number; fields: ProfileField[] };
   shared: { plans?: SharedEntry[]; rituals?: SharedEntry[]; places?: SharedEntry[]; items?: SharedEntry[] };

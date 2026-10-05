@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApi, PageHeader, Loading, ErrorBox, Toast } from '@/components/ui';
 import { errMsg } from '@/lib/utils';
 import type { LifeData } from '@/components/world/shared';
@@ -44,6 +44,8 @@ export default function WorldPage() {
   // 她身边的人（具名社会关系）编辑
   const [editCast, setEditCast] = useState(false);
   const [castDraft, setCastDraft] = useState<Array<{ name: string; role: string; note: string }>>([]);
+  // 已提示过的错误：同一错误只弹一次，避免 data 刷新时反复弹同一条 toast
+  const lastErrRef = useRef<string | null>(null);
 
   const post = async (body: Record<string, unknown>, msg?: string) => {
     setBusy(true);
@@ -66,9 +68,16 @@ export default function WorldPage() {
     }
   };
 
-  // 已有数据时只在顶部轻提示，不整页替换
+  // 已有数据时只在顶部轻提示，不整页替换；同一错误只提示一次
   useEffect(() => {
-    if (error && data) setToast(error);
+    if (!error) {
+      lastErrRef.current = null;
+      return;
+    }
+    if (data && lastErrRef.current !== error) {
+      lastErrRef.current = error;
+      setToast(error);
+    }
   }, [error, data]);
 
   if (loading && !data) return <Loading text="正在看她的生活…" />;
@@ -124,7 +133,7 @@ export default function WorldPage() {
             <ManualStatesCard h={h} sv={sv} setSv={setSv} busy={busy} post={post} setEditStates={setEditStates} />
           ) : null}
 
-          <TestCard busy={busy} post={post} />
+          <TestCard busy={busy} post={post} illness={h.illness} illnessDay={h.illnessDay} />
         </div>
       ) : null}
 
@@ -132,7 +141,7 @@ export default function WorldPage() {
         <div className="space-y-4 px-5 pt-4 md:px-8">
           <TimelineCard timeline={data.timeline} />
 
-          <LifeEventsCard events={data.events} showAllEvents={showAllEvents} setShowAllEvents={setShowAllEvents} />
+          <LifeEventsCard events={data.events} eventsTotal={data.eventsTotal} showAllEvents={showAllEvents} setShowAllEvents={setShowAllEvents} />
 
           <WeeklySnapshotCard weeklySnapshots={data.weeklySnapshots} />
         </div>

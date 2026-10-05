@@ -39,8 +39,9 @@ export function VoiceCard({
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <div>
-          <label className="label">语音接口地址 Base URL</label>
+          <label className="label" htmlFor="voice_tts_base_url">语音接口地址 Base URL</label>
           <input
+            id="voice_tts_base_url"
             className="input"
             value={form.tts_base_url ?? ''}
             onChange={(e) => set('tts_base_url', e.target.value)}
@@ -48,8 +49,9 @@ export function VoiceCard({
           />
         </div>
         <div>
-          <label className="label">API Key</label>
+          <label className="label" htmlFor="voice_tts_api_key">API Key</label>
           <input
+            id="voice_tts_api_key"
             className="input"
             type="password"
             value={form.tts_api_key ?? ''}
@@ -58,12 +60,12 @@ export function VoiceCard({
           />
         </div>
         <div>
-          <label className="label">模型</label>
-          <input className="input" value={form.tts_model ?? ''} onChange={(e) => set('tts_model', e.target.value)} placeholder="默认 tts-1" />
+          <label className="label" htmlFor="voice_tts_model">模型</label>
+          <input id="voice_tts_model" className="input" value={form.tts_model ?? ''} onChange={(e) => set('tts_model', e.target.value)} placeholder="默认 tts-1" />
         </div>
         <div>
-          <label className="label">音色 voice</label>
-          <input className="input" value={form.tts_voice ?? ''} onChange={(e) => set('tts_voice', e.target.value)} placeholder="默认 alloy" />
+          <label className="label" htmlFor="voice_tts_voice">音色 voice</label>
+          <input id="voice_tts_voice" className="input" value={form.tts_voice ?? ''} onChange={(e) => set('tts_voice', e.target.value)} placeholder="默认 alloy" />
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">

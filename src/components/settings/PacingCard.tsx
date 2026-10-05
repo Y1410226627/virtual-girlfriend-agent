@@ -18,16 +18,16 @@ export function PacingCard({
     <Card title="关系与记忆的节奏">
       <div className="grid gap-3 md:grid-cols-3">
         <div>
-          <label className="label">阶段跃迁等待天数（默认 3 天）</label>
-          <input className="input" type="number" min={0} max={30} value={form.stage_dwell_days ?? '3'} onChange={(e) => set('stage_dwell_days', e.target.value)} />
+          <label className="label" htmlFor="pacing_stage_dwell_days">阶段跃迁等待天数（默认 3 天）</label>
+          <input id="pacing_stage_dwell_days" className="input" type="number" min={0} max={30} value={form.stage_dwell_days ?? '3'} onChange={(e) => set('stage_dwell_days', e.target.value)} />
         </div>
         <div>
-          <label className="label">带入对话的历史轮数</label>
-          <input className="input" type="number" min={4} max={60} value={form.context_size ?? '20'} onChange={(e) => set('context_size', e.target.value)} />
+          <label className="label" htmlFor="pacing_context_size">带入对话的历史轮数</label>
+          <input id="pacing_context_size" className="input" type="number" min={2} max={60} value={form.context_size ?? '20'} onChange={(e) => set('context_size', e.target.value)} />
         </div>
         <div>
-          <label className="label">每轮检索记忆条数</label>
-          <input className="input" type="number" min={0} max={20} value={form.memory_top_k ?? '8'} onChange={(e) => set('memory_top_k', e.target.value)} />
+          <label className="label" htmlFor="pacing_memory_top_k">每轮检索记忆条数</label>
+          <input id="pacing_memory_top_k" className="input" type="number" min={3} max={30} value={form.memory_top_k ?? '8'} onChange={(e) => set('memory_top_k', e.target.value)} />
         </div>
       </div>
       <p className="dim mt-3">

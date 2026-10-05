@@ -1,19 +1,9 @@
 'use client';
 
 import { Card } from '@/components/ui';
-import type { SetFieldFn, SetToast } from './shared';
+import type { SaveFn } from './shared';
 
-export function SceneCard({
-  form,
-  set,
-  setToast,
-  reload,
-}: {
-  form: Record<string, string>;
-  set: SetFieldFn;
-  setToast: SetToast;
-  reload: () => void;
-}) {
+export function SceneCard({ form, save }: { form: Record<string, string>; save: SaveFn }) {
   return (
     <Card title="场景（线上聊天 / 线下相处）">
       <div className="flex flex-wrap items-center gap-2">
@@ -28,21 +18,9 @@ export function SceneCard({
             key={k}
             aria-pressed={(form.scene_mode || 'auto') === k}
             className={(form.scene_mode || 'auto') === k ? 'btn' : 'btn-ghost'}
-            onClick={async () => {
-              // 直接提交目标值：save() 里读的是 setState 之前的旧 form，先 set 再 save 会把旧值存回去
-              set('scene_mode', k);
-              await fetch('/api/settings', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ settings: { scene_mode: k } }),
-              })
-                .then((r) => {
-                  if (!r.ok) throw new Error(`保存失败 ${r.status}`);
-                  setToast(`场景已设为：${label}`);
-                  reload();
-                })
-                .catch((e) => setToast(`保存失败：${e?.message || e}`));
-            }}
+            // 提交"目标值"（overrides）：save() 读的是 setState 之前的旧 form，直接传目标值避免旧值回写。
+            // 统一走同一保存路径（含失败提示与 reload）。
+            onClick={() => void save(['scene_mode'], `场景已设为：${label}`, { scene_mode: k })}
           >
             {label}
           </button>

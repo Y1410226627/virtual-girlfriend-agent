@@ -26,26 +26,35 @@ export default function Nav() {
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
   const [unread, setUnread] = useState(0);
 
-  /* 未读红点：不在聊天页时每 60s 拉一次"她是否又发来了新消息" */
+  /* 未读红点：一律以本地 lastReadMsgId 为准（该值只有聊天页真正加载成功后才写入），
+     所以"进了聊天页但消息加载失败"时红点不会被丢掉。不在此处无条件清零。 */
   useEffect(() => {
-    if (pathname === '/') {
-      setUnread(0);
-      return;
-    }
     let stopped = false;
     const check = async () => {
       try {
         const lastRead = Number(window.localStorage.getItem('lastReadMsgId') || 0);
-        const r = await fetch(`/api/messages?afterId=${lastRead}&limit=20`, { cache: 'no-store' });
-        const j = await r.json();
-        const n = (j?.messages || []).filter((m: MessageRow) => m.role === 'assistant' && Number(m.id) > lastRead).length;
+        let after = lastRead;
+        let n = 0;
+        // 分页拉取未读：单页 limit 太小会系统性少报（显示封顶 9+，够 10 条即可停）
+        for (let page = 0; page < 5; page++) {
+          const r = await fetch(`/api/messages?afterId=${after}&limit=100`, { cache: 'no-store' });
+          const j = await r.json();
+          const msgs = (j?.messages || []) as MessageRow[];
+          for (const m of msgs) {
+            const id = Number(m.id);
+            if (m.role === 'assistant' && id > lastRead) n++;
+            if (Number.isInteger(id) && id > after) after = id;
+          }
+          if (msgs.length < 100 || n >= 10) break;
+        }
         if (!stopped) setUnread(n);
       } catch {
         /* ignore */
       }
     };
     check();
-    const t = setInterval(check, 60000);
+    // 在聊天页更勤一点，让"加载成功后红点消失"来得更快（失败则继续保留）
+    const t = setInterval(check, pathname === '/' ? 15000 : 60000);
     return () => {
       stopped = true;
       clearInterval(t);
@@ -55,7 +64,9 @@ export default function Nav() {
   const badge = (href: string) =>
     href === '/' && unread > 0 ? (
       <span className="absolute -right-2 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium leading-none text-white shadow-bubble">
-        {unread > 9 ? '9+' : unread}
+        <span aria-hidden>{unread > 9 ? '9+' : unread}</span>
+        {/* 挂在 aria-hidden 图标外的可读文本：读屏能把未读数并入链接名称 */}
+        <span className="sr-only">有 {unread} 条未读消息</span>
       </span>
     ) : null;
 
@@ -78,8 +89,8 @@ export default function Nav() {
                 : 'ink-2 hover:accent-soft'
             }`}
           >
-            <span className="relative text-base" aria-hidden>
-              {it.icon}
+            <span className="relative text-base">
+              <span aria-hidden>{it.icon}</span>
               {badge(it.href)}
             </span>
             {it.label}
@@ -102,8 +113,8 @@ export default function Nav() {
                 isActive(it.href) ? 'acc font-medium' : 'ink-2'
               }`}
             >
-              <span className="relative text-lg leading-none" aria-hidden>
-                {it.icon}
+              <span className="relative text-lg leading-none">
+                <span aria-hidden>{it.icon}</span>
                 {badge(it.href)}
               </span>
               {it.label}

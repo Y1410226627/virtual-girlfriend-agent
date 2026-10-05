@@ -15,16 +15,24 @@ export async function GET(req: Request) {
 
 export async function DELETE(req: Request) {
   const url = new URL(req.url);
-  const id = Number(url.searchParams.get('id') || 0);
+  const idParam = url.searchParams.get('id');
   const cascade = url.searchParams.get('cascade') === '1';
 
-  // 删除单条消息（可选撤销它产生的影响）
-  if (id > 0) {
+  // 带 id：删除单条消息。id 非法（含负数临时 id）直接 400，绝不退化成"清空全部"
+  if (idParam !== null) {
+    const id = Number(idParam);
+    if (!Number.isInteger(id) || id <= 0) {
+      return Response.json({ error: '消息 id 无效' }, { status: 400 });
+    }
     const report = deleteMessageById(id, cascade);
     return Response.json(report, { status: report.ok ? 200 : 400 });
   }
 
-  // 没有 id：清空全部聊天记录
-  wipeAllMessages();
-  return Response.json({ ok: true });
+  // 清空全部聊天记录：必须显式 all=1，避免误传参数（如负 id）清库
+  if (url.searchParams.get('all') === '1') {
+    wipeAllMessages();
+    return Response.json({ ok: true });
+  }
+
+  return Response.json({ error: '缺少 id，或需显式 all=1 才能清空全部聊天记录' }, { status: 400 });
 }

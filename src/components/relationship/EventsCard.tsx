@@ -27,7 +27,13 @@ export function EventsCard({
                 {e.event_date} · {e.kind === 'birthday' ? '生日' : e.kind === 'plan' ? '约定' : '纪念日'}
               </div>
             </div>
-            <button className="btn-ghost !py-1 text-xs" onClick={() => post({ action: 'delete_event', id: e.id }, '已删除')}>
+            <button
+              className="btn-ghost !py-1 text-xs"
+              onClick={() => {
+                if (!window.confirm(`确定删除「${e.title}」吗？删除后不可恢复。`)) return;
+                post({ action: 'delete_event', id: e.id }, '已删除');
+              }}
+            >
               删除
             </button>
           </div>

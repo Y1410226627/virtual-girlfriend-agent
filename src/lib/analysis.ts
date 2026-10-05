@@ -317,8 +317,9 @@ export async function analyzeTurn(params: {
             runAttachmentLayer(); // 累积 3 次同向才真正调整
             outcome.applied.attachmentAnalyzed = true;
           }
-        } catch {
-          // 依恋分析失败不影响主流程
+        } catch (e) {
+          // 依恋分析失败不影响主流程，但要留痕，避免依恋系统长期静默不更新
+          console.warn('[依恋分析] 失败（不影响主流程）:', errMsg(e));
         }
       } else {
         runAttachmentLayer();

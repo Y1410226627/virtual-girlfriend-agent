@@ -19,7 +19,7 @@ export function BankCard({ bank }: { bank?: RelationshipData['bank'] }) {
               <div className="dim truncate">{e.reason}</div>
             </div>
             <div className="shrink-0 text-right">
-              <div className={`text-sm font-semibold ${e.delta > 0 ? 'acc' : 'text-sky-500'}`}>
+              <div className={`text-sm font-semibold ${e.delta > 0 ? 'acc' : e.delta < 0 ? 'text-sky-500' : 'ink-3'}`}>
                 {e.delta > 0 ? '+' : ''}
                 {e.delta}
               </div>

@@ -120,6 +120,11 @@ export function listDailyEvents(limit = 30, sinceIso?: string) {
     ? dbAll<DailyEventRow>('SELECT * FROM agent_daily_events WHERE user_id = ? AND created_at >= ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, sinceIso, limit)
     : dbAll<DailyEventRow>('SELECT * FROM agent_daily_events WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
 }
+/** 日常事件真实总数（接口返回最多 30 条明细时，用真实总数给前端显示"共 N 条"） */
+export function countDailyEvents(): number {
+  const row = dbGet<{ c: number }>('SELECT COUNT(*) AS c FROM agent_daily_events WHERE user_id = ?', DEFAULT_USER_ID);
+  return Number(row?.c || 0);
+}
 
 /* ------------------------------------------------------------------ */
 /* 手动直控状态（"她的世界"页）                                          */
@@ -187,8 +192,17 @@ export function setCycle(enabled: boolean, day: number): void {
   dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE user_id = ?', enabled ? 1 : 0, Math.round(clamp(day, 1, 60)), DEFAULT_USER_ID);
 }
 
-/** 只切换生理期开关（保留当前天数） */
+/**
+ * 只切换生理期开关。
+ * 重新开启（此前是关闭状态）视为新周期开始，cycle_day 重置为 1——
+ * 否则关闭数周后再打开会显示"第 28 天"，intimacy.ts 的周期系数也会按错误天数生效。
+ */
 export function setCycleEnabled(enabled: boolean): void {
+  const cur = getHealth();
+  if (enabled && cur.cycle_enabled !== 1) {
+    dbRun('UPDATE agent_health SET cycle_enabled = 1, cycle_day = 1 WHERE user_id = ?', DEFAULT_USER_ID);
+    return;
+  }
   dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', enabled ? 1 : 0, DEFAULT_USER_ID);
 }
 

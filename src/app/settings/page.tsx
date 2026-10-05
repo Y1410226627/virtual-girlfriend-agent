@@ -26,8 +26,8 @@ export default function SettingsPage() {
   const [ping, setPing] = useState<PingResult | null>(null);
   const [pinging, setPinging] = useState(false);
   const [saving, setSaving] = useState(false);
-  // 用户改过表单后，后台 reload 不要覆盖他还没保存的编辑
-  const dirtyRef = useRef(false);
+  // 用户改过的字段（未保存前，后台 reload 只跳过这些字段，其余照常回填）
+  const dirtyRef = useRef<Set<string>>(new Set());
   const [pf, setPf] = useState<ProfileForm>({ label: '', base_url: '', api_key: '', chat_model: '', analysis_model: '', note: '' });
   const [editingId, setEditingId] = useState<number | null>(null);
   const [testing, setTesting] = useState<number | null>(null);
@@ -138,12 +138,19 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-    if (data?.settings && !dirtyRef.current) {
+    if (data?.settings) {
       const f: Record<string, string> = { ...data.settings };
       // 名字/共同故事以 personas 为准（settings 里那份是历史镜像，可能恒为空 → 否则"保存"会把名字抹掉）
       if (data.persona?.agent_name) f.agent_name = data.persona.agent_name;
       if (data.persona?.self_story) f.agent_story = data.persona.self_story;
-      setForm(f);
+      // 已改过但还没保存的字段保留用户当前输入，其余回填服务端值
+      setForm((prev) => {
+        const next: Record<string, string> = { ...f };
+        for (const k of dirtyRef.current) {
+          if (prev[k] !== undefined) next[k] = prev[k];
+        }
+        return next;
+      });
     }
   }, [data]);
 
@@ -152,14 +159,25 @@ export default function SettingsPage() {
   }, []);
 
   const set = (k: string, v: string) => {
-    dirtyRef.current = true;
+    dirtyRef.current.add(k);
     setForm((s) => ({ ...s, [k]: v }));
   };
 
-  const save = async (keys?: string[], msg = '已保存') => {
+  // 保存：永远只提交该卡片自己负责的字段（keys 由调用方显式给出），
+  // overrides 用于提交"目标值"（避开 setState 异步导致的旧值回写）。
+  // 返回是否成功，便于调用方决定后续动作。
+  const save = async (
+    keys: string[],
+    msg = '已保存',
+    overrides?: Record<string, string>
+  ): Promise<boolean> => {
     setSaving(true);
     const payload: Record<string, string> = {};
-    (keys || Object.keys(form)).forEach((k) => (payload[k] = form[k]!));
+    for (const k of keys) {
+      const v = overrides && Object.prototype.hasOwnProperty.call(overrides, k) ? overrides[k] : form[k];
+      if (v === undefined || v === null) continue;
+      payload[k] = v;
+    }
     try {
       const r = await fetch('/api/settings', {
         method: 'PUT',
@@ -168,11 +186,19 @@ export default function SettingsPage() {
       });
       if (!r.ok) throw new Error(`保存失败 ${r.status}`);
       const j = await r.json().catch(() => ({}));
-      setToast(j?.error ? j.error : msg);
-      dirtyRef.current = false;
+      // 服务端对非法值（URL / 时间格式 / 非数字等）会静默跳过，不进 changed。
+      // 这里如实提示被跳过的字段，避免"部分保存"被谎报成"已保存"。
+      // *_api_key 为空/掩码时按"不修改"处理属预期行为，不视为失败。
+      const changed: string[] = Array.isArray(j?.changed) ? j.changed : [];
+      const skipped = Object.keys(payload).filter((k) => !changed.includes(k) && !k.endsWith('_api_key'));
+      setToast(j?.error ? j.error : skipped.length ? `部分设置未保存（格式不正确）：${skipped.join('、')}` : msg);
+      // 只清除本次保存的字段；其它卡片未保存的草稿继续保留
+      for (const k of keys) dirtyRef.current.delete(k);
       reload();
+      return true;
     } catch (e) {
       setToast(`保存失败：${errMsg(e)}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -219,21 +245,22 @@ export default function SettingsPage() {
     }
   };
 
-  const profilePost = async (body: Record<string, unknown>) => {
+  const profilePost = async (body: Record<string, unknown>, reloadAfter = true) => {
     const r = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const j = await r.json();
-    reload();
+    // 只读操作（如测试连接）不 reload：避免无谓地覆盖表单
+    if (reloadAfter) reload();
     return j;
   };
 
   const testProfile = async (id: number) => {
     setTesting(id);
     setTestResults((s) => ({ ...s, [id]: { pending: true } }));
-    const j = await profilePost({ action: 'test_profile', id, timeoutMs: 15000 });
+    const j = await profilePost({ action: 'test_profile', id, timeoutMs: 15000 }, false);
     setTestResults((s) => ({ ...s, [id]: j.result }));
     setTesting(null);
   };
@@ -278,7 +305,8 @@ export default function SettingsPage() {
   };
 
   if (loading && !data) return <Loading text="正在读设置…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  // 仅初次加载就失败才整页替换；已有数据时用顶部横幅提示，保留已加载内容可继续查看/操作
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   const eff: Partial<EffectiveInfo> = data?.effective || {};
   // 自定义模式开关：'1' 和 'true' 都算开启（历史数据可能存成 true）
@@ -297,6 +325,7 @@ export default function SettingsPage() {
 
   return (
     <div className="pb-10">
+      {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader title="设置" desc="模型、身份、主动消息、隐私。所有数据都存在你自己电脑上。" />
 
       <div className="space-y-4 px-5 md:px-8">
@@ -319,11 +348,11 @@ export default function SettingsPage() {
 
         <AdvancedApiCard form={form} set={set} save={save} saving={saving} eff={eff} profilePost={profilePost} ping={ping} setToast={setToast} />
 
-        <SceneCard form={form} set={set} setToast={setToast} reload={reload} />
+        <SceneCard form={form} save={save} />
 
         <LifeIntimacyCard form={form} set={set} save={save} saving={saving} />
 
-        <CustomModeCard customOn={customOn} setForm={setForm} setSaving={setSaving} setToast={setToast} reload={reload} cv={cv} setCv={setCv} loadCv={loadCv} />
+        <CustomModeCard customOn={customOn} setForm={setForm} setToast={setToast} cv={cv} setCv={setCv} loadCv={loadCv} save={save} profilePost={profilePost} />
 
         <IdentityCard form={form} set={set} save={save} saving={saving} />
 

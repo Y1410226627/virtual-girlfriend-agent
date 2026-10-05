@@ -250,6 +250,48 @@ export function activeProfile(): ModelProfile | null {
 }
 
 /* ------------------------------------------------------------------ */
+/* 测试目标解析（纯函数，设置页"测试连接"用）                            */
+/* ------------------------------------------------------------------ */
+export interface TestTargetSpec {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  label: string;
+}
+
+/**
+ * 校验并组装"测试连接"的目标（不发请求，便于单测）。
+ * 安全要点：
+ *  - 地址必须是合法的 http(s) URL，否则返回错误；
+ *  - 当调用方提供了自定 baseUrl 却没有提供 apiKey 时，**绝不**回落服务端保存的 Key
+ *    （否则可被构造请求把真实 Key 发往任意地址）；只有未提供 baseUrl（= 测试当前配置）
+ *    时才允许回落。
+ * 说明：不封禁私有网段——用户自己的内网 GPU 服务器就是合法测试目标。
+ */
+export function resolveTestTarget(
+  input: { baseUrl?: unknown; apiKey?: unknown; model?: unknown; label?: unknown },
+  fallback: { baseUrl: string; apiKey: string; model: string }
+): { ok: true; target: TestTargetSpec } | { ok: false; error: string } {
+  const ownBase = typeof input.baseUrl === 'string' ? input.baseUrl.trim() : '';
+  const hasOwnBase = ownBase !== '';
+  const baseUrl = (hasOwnBase ? ownBase : String(fallback.baseUrl || '')).replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    return { ok: false, error: '接口地址必须以 http:// 或 https:// 开头' };
+  }
+  try {
+    new URL(baseUrl);
+  } catch {
+    return { ok: false, error: '接口地址格式不合法' };
+  }
+  const providedKey = typeof input.apiKey === 'string' ? input.apiKey : '';
+  const apiKey = hasOwnBase ? providedKey : providedKey || String(fallback.apiKey || '');
+  const ownModel = typeof input.model === 'string' && input.model.trim() ? input.model.trim() : '';
+  const model = ownModel || String(fallback.model || '');
+  const label = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : '当前配置';
+  return { ok: true, target: { baseUrl, apiKey, model, label } };
+}
+
+/* ------------------------------------------------------------------ */
 /* 备用链健康度：某个模型失败后进冷却，自动切下一个                      */
 /* ------------------------------------------------------------------ */
 interface Health {

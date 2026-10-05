@@ -79,13 +79,15 @@ export default function IntimacyPage() {
   };
 
   if (loading && !data) return <Loading text="正在读亲密状态…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  // 仅初次加载就失败才整页替换；已有数据时用顶部横幅提示，保留已加载内容可继续查看/操作
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   const s = data!.state;
   const lv = data!.level;
 
   return (
     <div className="pb-10">
+      {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="亲密"
         desc="亲密是关系里的一个维度，不是全部。它服从于关系阶段和你们当下的状态。"
@@ -182,8 +184,9 @@ export default function IntimacyPage() {
             className="btn mt-2"
             disabled={busy || !newPref.content.trim()}
             onClick={async () => {
-              await post({ action: 'add_preference', ...newPref }, '已添加偏好');
-              setNewPref({ type: 'custom', content: '' });
+              // 仅提交成功时清空，失败时保留用户输入
+              const ok = await post({ action: 'add_preference', ...newPref }, '已添加偏好');
+              if (ok) setNewPref({ type: 'custom', content: '' });
             }}
           >
             添加偏好

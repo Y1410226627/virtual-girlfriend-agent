@@ -38,7 +38,8 @@ export function NowDoingCard({
           <div className="text-xs font-medium ink-2">最近这段时间她……</div>
           <ul className="mt-1.5 space-y-1 text-xs leading-relaxed ink-2">
             {recently.map((r, i) => (
-              <li key={i}>· {r}</li>
+              // 文本列表无稳定 id：用"内容+位置"组合，避免纯下标在插入/重排时错位
+              <li key={`${r}-${i}`}>· {r}</li>
             ))}
           </ul>
         </div>

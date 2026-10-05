@@ -5,18 +5,23 @@ import { Chip, fmtTime } from '@/components/ui';
 import { TYPES } from './shared';
 import type { MemoryItem } from './shared';
 
-/** 重要度滑杆：拖动时只改本地值，松手/失焦才提交一次 */
-function ImportanceSlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+/** 重要度滑杆：拖动时只改本地值，松手/失焦才提交一次；提交失败回滚到服务端值并允许重试 */
+function ImportanceSlider({ value, onChange }: { value: number; onChange: (v: number) => Promise<boolean> }) {
   const [local, setLocal] = useState(value);
   const committed = useRef(value);
   useEffect(() => {
     setLocal(value);
     committed.current = value;
   }, [value]);
-  const commit = () => {
-    if (local !== committed.current) {
-      committed.current = local;
-      onChange(local);
+  const commit = async () => {
+    if (local === committed.current) return;
+    const target = local;
+    const ok = await onChange(target);
+    if (ok) {
+      committed.current = target;
+    } else {
+      // 提交失败：回滚到已确认的服务端值（local 与 committed 重新不一致，同值可再次重试）
+      setLocal(committed.current);
     }
   };
   return (
@@ -28,9 +33,9 @@ function ImportanceSlider({ value, onChange }: { value: number; onChange: (v: nu
       aria-label="重要度"
       className="h-1 w-20 accent-rose-500"
       onChange={(e) => setLocal(Number(e.target.value))}
-      onMouseUp={commit}
-      onTouchEnd={commit}
-      onBlur={commit}
+      onMouseUp={() => void commit()}
+      onTouchEnd={() => void commit()}
+      onBlur={() => void commit()}
     />
   );
 }
@@ -52,7 +57,7 @@ export function MemoryList({
   setEditing: React.Dispatch<React.SetStateAction<number | null>>;
   saveEdit: (id: number) => void;
   remove: (id: number) => void;
-  changeImportance: (id: number, importance: number) => void;
+  changeImportance: (id: number, importance: number) => Promise<boolean>;
 }) {
   return (
     <div className="space-y-3 px-5 pt-4 md:px-8">

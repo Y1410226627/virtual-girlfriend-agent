@@ -66,25 +66,38 @@ export function ManualStatesCard({
           className="btn"
           disabled={busy}
           onClick={async () => {
-            const num = (x: unknown, d = 0) => (isFinite(Number(x)) ? Number(x) : d);
+            // 留空的输入框不提交（保持她的原值）：空串会被 Number('') 解析成 0，静默清零
+            const pick = (x: unknown): number | undefined => {
+              if (x === undefined || x === null || x === '') return undefined;
+              const n = Number(x);
+              return isFinite(n) ? n : undefined;
+            };
+            const collect = (fields: Record<string, unknown>): Record<string, number> => {
+              const out: Record<string, number> = {};
+              for (const [k, v] of Object.entries(fields)) {
+                const n = pick(v);
+                if (n !== undefined) out[k] = n;
+              }
+              return out;
+            };
             await post(
               {
                 action: 'set_states',
-                health: {
-                  energy: num(sv.energy),
-                  sleep_quality: num(sv.sleep_quality),
-                  hunger: num(sv.hunger),
-                  exercise: num(sv.exercise),
-                  cycle_day: num(sv.cycle_day, h.cycleDay),
-                },
-                psychology: {
-                  stress: num(sv.stress),
-                  loneliness: num(sv.loneliness),
-                  missing_user: num(sv.missing_user),
-                  security: num(sv.security),
-                  self_worth: num(sv.self_worth),
-                  mental_energy: num(sv.mental_energy),
-                },
+                health: collect({
+                  energy: sv.energy,
+                  sleep_quality: sv.sleep_quality,
+                  hunger: sv.hunger,
+                  exercise: sv.exercise,
+                  cycle_day: sv.cycle_day,
+                }),
+                psychology: collect({
+                  stress: sv.stress,
+                  loneliness: sv.loneliness,
+                  missing_user: sv.missing_user,
+                  security: sv.security,
+                  self_worth: sv.self_worth,
+                  mental_energy: sv.mental_energy,
+                }),
               },
               '数值已按你的设定更新'
             );

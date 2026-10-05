@@ -1,12 +1,13 @@
 // 环境自检（doctor）：一条命令检查本机运行条件，缺什么直接说怎么补。
 // 用法：npm run doctor
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { connect } from 'node:net';
 
 const MIN_NODE = [22, 13];
 const results = [];
-/** passNote：通过时显示在括号里；fix：失败时显示的修复建议 */
-const ok = (name, pass, fix = '', passNote = '') => results.push({ name, pass, fix, passNote });
+/** status：pass=通过 / warn=提示（不影响退出码） / fail=失败；fix：失败时的修复建议；note：附加说明 */
+const add = (name, status, fix = '', note = '') => results.push({ name, status, fix, note });
+const ok = (name, pass, fix = '', passNote = '') => add(name, pass ? 'pass' : 'fail', fix, passNote);
 
 // 1) Node 版本
 const [major, minor] = process.versions.node.split('.').map(Number);
@@ -27,33 +28,62 @@ if (envFile) {
   ok('LLM_API_KEY 已设置', has('LLM_API_KEY'), `在 ${envFile} 里填写 API Key`, '已设置');
 }
 
-// 4) 数据目录（只检查存在性，不做任何写入）
-ok('data 目录', true, '', existsSync('data') ? '已存在' : '首次启动自动创建');
+// 4) 数据目录：真实检查"能否创建/写入"（只写一个 0 字节临时文件，写完立即删除）。
+//    红线：绝不读写 girlfriend.db，也不在 data/ 留下任何东西。
+{
+  let status = 'pass';
+  let note = '';
+  let fix = '';
+  const probe = `data/.doctor-probe-${process.pid}.tmp`;
+  try {
+    mkdirSync('data', { recursive: true });
+    writeFileSync(probe, '');
+    note = existsSync('data') ? '可创建、可写入' : '';
+  } catch (e) {
+    status = 'fail';
+    note = '';
+    fix = `data 目录无法创建/写入：${e?.message || e}（请检查磁盘权限或剩余空间）`;
+  } finally {
+    try {
+      if (existsSync(probe)) unlinkSync(probe); // 确保不留下临时文件
+    } catch {
+      /* 清理失败不影响判定，但会在下方 note 里体现为可写 */
+    }
+  }
+  add('data 目录可读写', status, fix, note);
+}
 
-// 5) 端口 3000（被占用不算失败——可能已有实例在运行，只是提示）
-const portFree = await new Promise((resolve) => {
+// 5) 端口 3000（被占用不算失败——可能已有实例在运行，只是提示；用 warn 如实呈现）
+const portBusy = await new Promise((resolve) => {
   const s = connect({ port: 3000, host: '127.0.0.1', timeout: 800 });
   s.on('connect', () => {
     s.destroy();
-    resolve(false);
-  });
-  s.on('error', () => resolve(true));
-  s.on('timeout', () => {
-    s.destroy();
     resolve(true);
   });
+  s.on('error', () => resolve(false));
+  s.on('timeout', () => {
+    s.destroy();
+    resolve(false);
+  });
 });
-ok('端口 3000', true, '', portFree ? '空闲' : '已有服务在运行（若不需要请先关闭）');
+if (portBusy) {
+  add('端口 3000', 'warn', '', '已有服务在运行（如果你没在用它，可能是别的程序占用）');
+} else {
+  add('端口 3000', 'pass', '', '空闲');
+}
 
 // 输出
+const ICON = { pass: '✔', warn: '⚠', fail: '✘' };
 console.log('=== 环境自检（doctor）===');
 for (const r of results) {
-  if (r.pass) {
-    console.log(`✔ ${r.name}${r.passNote ? `（${r.passNote}）` : ''}`);
-  } else {
-    console.log(`✘ ${r.name}${r.fix ? `\n    → ${r.fix}` : ''}`);
-  }
+  const line = `${ICON[r.status]} ${r.name}${r.note ? `（${r.note}）` : ''}`;
+  const fix = r.status === 'fail' && r.fix ? `\n    → ${r.fix}` : '';
+  console.log(line + fix);
 }
-const failed = results.filter((r) => !r.pass).length;
-console.log(failed === 0 ? '\n结论：全部通过，可以启动。' : `\n结论：有 ${failed} 项需要注意（见上方 ✘）。`);
-process.exit(failed ? 1 : 0);
+const passes = results.filter((r) => r.status === 'pass').length;
+const warns = results.filter((r) => r.status === 'warn').length;
+const fails = results.filter((r) => r.status === 'fail').length;
+console.log(`\n结论：通过 ${passes} 项，警告 ${warns} 项，失败 ${fails} 项。`);
+if (fails) console.log('请先按上方 ✘ 的提示修复后再启动（⚠ 仅提示，不影响启动）。');
+else console.log(warns ? '可以启动（⚠ 项请自行确认）。' : '全部通过，可以启动。');
+process.exit(fails ? 1 : 0);

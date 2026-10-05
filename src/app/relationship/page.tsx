@@ -14,32 +14,47 @@ import { NicknameCard } from '@/components/relationship/NicknameCard';
 import { PersonaCard } from '@/components/relationship/PersonaCard';
 import { ProfileCard } from '@/components/relationship/ProfileCard';
 
+/** 各"写回表单"的 action 成功后，应清除哪些字段的 dirty 标记 */
+const ACTION_KEYS: Record<string, (keyof Edits)[]> = {
+  set_nickname: ['nickname'],
+  set_anniversary: ['anniversary'],
+  set_persona: ['agent_name', 'age', 'occupation', 'self_story'],
+  set_user: ['user_name', 'user_profile'],
+};
+
 export default function RelationshipPage() {
   const { data, loading, error, reload } = useApi<RelationshipData>('/api/relationship');
   const [toast, setToast] = useState<string | null>(null);
   const [edits, setEdits] = useState<Edits>({});
   const [newEvent, setNewEvent] = useState({ title: '', event_date: '', kind: 'anniversary', repeat_yearly: true });
   const [tab, setTab] = useState<Tab>('bank');
-  // 用户改过表单后，后台 reload 不要覆盖他还没保存的编辑（同 settings 页 dirtyRef 模式）
-  const dirtyRef = useRef(false);
+  // 用户改过的字段（未保存前，后台 reload 只跳过这些字段，其余照常回填）（同 settings 页 dirtyRef 模式）
+  const dirtyRef = useRef<Set<keyof Edits>>(new Set());
 
   useEffect(() => {
-    if (data && !dirtyRef.current) {
-      setEdits({
-        nickname: data.relationship?.nickname || '',
-        anniversary: data.relationship?.anniversary || '',
-        agent_name: data.persona?.agent_name || '',
-        age: data.persona?.age || '',
-        occupation: data.persona?.occupation || '',
-        self_story: data.persona?.self_story || '',
-        user_name: data.user?.name || '',
-        user_profile: data.user?.profile || '',
-      });
-    }
+    if (!data) return;
+    const fresh: Edits = {
+      nickname: data.relationship?.nickname || '',
+      anniversary: data.relationship?.anniversary || '',
+      agent_name: data.persona?.agent_name || '',
+      age: data.persona?.age || '',
+      occupation: data.persona?.occupation || '',
+      self_story: data.persona?.self_story || '',
+      user_name: data.user?.name || '',
+      user_profile: data.user?.profile || '',
+    };
+    setEdits((prev) => {
+      const next: Edits = { ...fresh };
+      // 已改过但还没保存的字段保留用户当前输入，其余回填服务端值
+      for (const k of dirtyRef.current) {
+        Object.assign(next, { [k]: prev[k] });
+      }
+      return next;
+    });
   }, [data]);
 
   const setEdit = (k: keyof Edits, v: string | number) => {
-    dirtyRef.current = true;
+    dirtyRef.current.add(k);
     setEdits((s) => ({ ...s, [k]: v }) as Edits);
   };
 
@@ -52,7 +67,10 @@ export default function RelationshipPage() {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
-      if (FORM_ACTIONS.includes(body.action)) dirtyRef.current = false;
+      if (FORM_ACTIONS.includes(body.action)) {
+        // 只清除本次保存涉及的字段；其它卡片未保存的草稿继续保留
+        for (const k of ACTION_KEYS[body.action] ?? []) dirtyRef.current.delete(k);
+      }
       setToast(msg || '已保存');
       await reload();
     } catch (e) {
@@ -61,7 +79,8 @@ export default function RelationshipPage() {
   };
 
   if (loading && !data) return <Loading text="正在读你们的关系…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  // 仅初次加载就失败才整页替换；已有数据时用顶部横幅提示，保留已加载内容可继续查看/操作
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   const rel = data?.relationship || ({} as RelationshipInfo);
   const stages = data?.stages || [];
@@ -71,6 +90,7 @@ export default function RelationshipPage() {
 
   return (
     <div className="pb-10">
+      {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="关系"
         desc="亲密度、阶段、情感银行账户、冲突与修复。关系不是永远甜的——会有摩擦，也需要经营。"

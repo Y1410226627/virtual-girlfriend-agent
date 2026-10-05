@@ -1,4 +1,5 @@
-// 循环依赖检测：静态扫描 src/lib 的顶层 import（相对路径与 @/lib alias），DFS 找环。
+// 循环依赖检测：静态扫描 src/lib 的顶层依赖（相对路径与 @/lib alias），DFS 找环。
+// 覆盖三类依赖：静态 import、桶文件再导出（export * / export {} from）、动态 import('字面量')。
 // 用法：npm run check:cycles   （发现环 → 退出码 1）
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -7,19 +8,31 @@ const LIB = path.resolve('src/lib');
 const files = readdirSync(LIB).filter((f) => f.endsWith('.ts') && !f.includes('.bak'));
 const graph = new Map();
 
+// 依赖来源正则（都只认相对路径与 @/lib alias；动态 import 只认字面量参数，变量参数无法静态解析）
+const DEP_PATTERNS = [
+  // 静态 import：import x from '...' / import {..} from '...' / import '...' / import type .. from '...'
+  /^import\s+(?:[^'"]*\s+from\s+)?['"](\.[^'"]+|@\/lib\/[^'"]+)['"]/gm,
+  // 桶文件再导出：export * from '...' / export { ... } from '...'
+  /^export\s+(?:\*|\{[^}]*\})\s*from\s*['"](\.[^'"]+|@\/lib\/[^'"]+)['"]/gm,
+  // 动态 import：import('...')
+  /\bimport\s*\(\s*['"](\.[^'"]+|@\/lib\/[^'"]+)['"]/g,
+];
+
 for (const f of files) {
   const src = readFileSync(path.join(LIB, f), 'utf8');
-  const deps = [];
-  const re = /^import[^'"]*['"](\.[^'"]+|@\/lib\/[^'"]+)['"]/gm;
-  let m;
-  while ((m = re.exec(src)) !== null) {
-    let spec = m[1];
-    if (spec.startsWith('@/lib/')) spec = './' + spec.slice('@/lib/'.length);
-    let target = spec.replace(/^\.\//, '');
-    if (!target.endsWith('.ts')) target += '.ts';
-    if (files.includes(target)) deps.push(target);
+  const deps = new Set();
+  for (const re of DEP_PATTERNS) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      let spec = m[1];
+      if (spec.startsWith('@/lib/')) spec = './' + spec.slice('@/lib/'.length);
+      let target = spec.replace(/^\.\//, '');
+      if (!target.endsWith('.ts')) target += '.ts';
+      if (files.includes(target)) deps.add(target);
+    }
   }
-  graph.set(f, deps);
+  graph.set(f, [...deps]);
 }
 
 const cycles = [];

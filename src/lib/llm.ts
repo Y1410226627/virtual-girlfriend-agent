@@ -2,7 +2,7 @@
 // 支持：本地 vLLM / 智谱 GLM / 任何 OpenAI 兼容服务
 // 本文件为"桶文件"：对外 API 不变，具体实现按职责拆到 llm-core / llm-stream / llm-embedding。
 import { getCounter, getSetting } from './db';
-import { parseJsonLoose, errMsg } from './utils';
+import { parseJsonLoose, errMsg, localDateStr } from './utils';
 import { markModelFailure, markModelSuccess } from './profiles';
 import {
   buildBody,
@@ -28,7 +28,8 @@ export { localEmbedding, embed, embedOne, embeddingMode } from './llm-embedding'
 export { cleanContent };
 
 export function usageToday() {
-  const day = new Date().toISOString().slice(0, 10);
+  // 与 bumpUsage 一致，用本地日期 key（东八区 0:00-8:00 不能记到前一天）
+  const day = localDateStr();
   const chat = getCounter(`llm_calls_chat_${day}`);
   const analysis = getCounter(`llm_calls_analysis_${day}`);
   const embedding = getCounter(`llm_calls_embedding_${day}`);

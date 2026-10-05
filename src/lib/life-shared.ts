@@ -1,14 +1,21 @@
 // 生活系统 · 共享世界层：共享地点/约定/仪式/物品、她身边的人、亲密度偏好、档案揭露
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID } from './db';
+import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
 import { nowIso, safeJson } from './utils';
 import { getRelationshipState } from './relationship';
 import { logLife, getProfileSeed, type CastMember } from './life-core';
 
 /** shared_world 里的条目（地点 / 仪式 / 物品） */
-interface SharedEntry { content?: string; title?: string; created_at?: string }
+interface SharedEntry { id?: string; content?: string; title?: string; created_at?: string }
 /** shared_world 里的计划（多 status / done_at） */
 interface SharedPlan extends SharedEntry { status?: string; done_at?: string | null }
+
+/** 生成条目的稳定 id（老数据没有 id，读取/操作侧仍按下标兜底） */
+function newSharedId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export function getSharedWorld() {
   const row = dbGet<{
@@ -50,30 +57,39 @@ export function setCast(cast: CastMember[]): void {
 /* 共享世界                                                            */
 /* ------------------------------------------------------------------ */
 export function addSharedPlan(content: string, status = 'planning'): void {
+  // 统一 trim 口径：模型写入的条目可能带空白，旧去重按原文比较会漏掉、产生重复计划
+  const value = String(content || '').trim();
+  if (!value) return;
   const w = getSharedWorld();
   const plans = w.plans || [];
-  if (plans.some((p) => (p.content || p.title) === content)) return;
-  plans.push({ content, status, created_at: nowIso() });
+  if (plans.some((p) => String(p.content || p.title || '').trim() === value)) return;
+  plans.push({ id: newSharedId(), content: value, status, created_at: nowIso() });
   dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
-  logLife('shared_plan', '', content, '新的共同约定');
+  logLife('shared_plan', '', value, '新的共同约定');
 }
 
 export function addSharedRitual(content: string): void {
+  // 统一 trim 口径：模型写入的条目可能带空白，旧去重按原文比较会漏掉、产生重复仪式
+  const value = String(content || '').trim();
+  if (!value) return;
   const w = getSharedWorld();
   const rituals = w.rituals || [];
-  if (rituals.some((p) => (p.content || p.title) === content)) return;
-  rituals.push({ content, created_at: nowIso() });
+  if (rituals.some((p) => String(p.content || p.title || '').trim() === value)) return;
+  rituals.push({ content: value, created_at: nowIso() });
   dbRun('UPDATE shared_world SET shared_rituals_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(rituals), nowIso(), DEFAULT_USER_ID);
-  logLife('shared_ritual', '', content, '新的共同仪式');
+  logLife('shared_ritual', '', value, '新的共同仪式');
 }
 
 export function addSharedPlace(content: string): void {
+  // 统一 trim 口径：模型写入的条目可能带空白，旧去重按原文比较会漏掉、产生重复地点
+  const value = String(content || '').trim();
+  if (!value) return;
   const w = getSharedWorld();
   const places = w.places || [];
-  if (places.some((p) => (p.content || p.title) === content)) return;
-  places.push({ content, created_at: nowIso() });
+  if (places.some((p) => String(p.content || p.title || '').trim() === value)) return;
+  places.push({ content: value, created_at: nowIso() });
   dbRun('UPDATE shared_world SET shared_places_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(places), nowIso(), DEFAULT_USER_ID);
-  logLife('shared_place', '', content, '共同地点');
+  logLife('shared_place', '', value, '共同地点');
 }
 
 export function addSharedItem(content: string): void {
@@ -87,12 +103,25 @@ export function addSharedItem(content: string): void {
   logLife('shared_item', '', value, '共同物品或共同记忆');
 }
 
-export function completePlan(index: number): void {
+/**
+ * 切换某条计划的完成状态。
+ * 优先按稳定 id 寻址（避免"打开页面瞬间新增条目导致下标位移"点错），
+ * 老数据没有 id 时回退到下标，保持向后兼容。
+ */
+export function completePlan(planIdOrIndex: string | number): void {
   const w = getSharedWorld();
   const plans = w.plans || [];
-  if (!plans[index]) return;
-  plans[index].status = plans[index].status === 'done' ? 'planning' : 'done';
-  plans[index].done_at = plans[index].status === 'done' ? nowIso() : null;
+  let idx = -1;
+  if (typeof planIdOrIndex === 'string' && planIdOrIndex) {
+    idx = plans.findIndex((p) => p.id === planIdOrIndex);
+  } else {
+    const i = Number(planIdOrIndex);
+    if (Number.isInteger(i) && i >= 0 && i < plans.length) idx = i;
+  }
+  const target = idx >= 0 ? plans[idx] : undefined;
+  if (!target) return;
+  target.status = target.status === 'done' ? 'planning' : 'done';
+  target.done_at = target.status === 'done' ? nowIso() : null;
   dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
 }
 
@@ -150,25 +179,41 @@ interface IntimacyPreferenceRow {
   reveal_status: string; reveal_stage: number; created_at: string;
 }
 
+/**
+ * 偏好门槛统一取值：NULL / 空 → 迁移里的默认值 2。
+ * 否则 `Number(x || 0)` 会把"未设置"当成 0，初识期（阶段 0/1）就暴露亲密偏好。
+ */
+export function preferenceRevealStage(row: { reveal_stage?: number | string | null }): number {
+  const raw = row?.reveal_stage;
+  if (raw === null || raw === undefined || raw === '') return 2;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 2;
+}
+
 export function listPreferences(includeHidden = false) {
-  return includeHidden
+  const rows = includeHidden
     ? dbAll<IntimacyPreferenceRow>('SELECT * FROM intimacy_preferences WHERE user_id = ? ORDER BY id', DEFAULT_USER_ID)
     : dbAll<IntimacyPreferenceRow>("SELECT * FROM intimacy_preferences WHERE user_id = ? AND reveal_status = 'revealed' ORDER BY id", DEFAULT_USER_ID);
+  // 在读取出口统一门槛口径，preferencePromptBlock 等消费方无需各自处理 NULL
+  return rows.map((r) => ({ ...r, reveal_stage: preferenceRevealStage(r) }));
 }
 
 export function revealPreferences(types: string[]): void {
   if (!types || !types.length) return;
   const stage = getRelationshipState().stage;
-  for (const t of types) {
-    // 逐行按各自的门槛判定（原来按类型取第一行的 reveal_stage 批量改，同类型多行时门槛判定错位）
-    const rows = dbAll<IntimacyPreferenceRow>(
-      "SELECT id, reveal_stage FROM intimacy_preferences WHERE user_id = ? AND preference_type = ? AND reveal_status != 'revealed'",
-      DEFAULT_USER_ID,
-      t
-    );
-    for (const p of rows) {
-      if (stage < Number(p.reveal_stage || 0)) continue;
-      dbRun("UPDATE intimacy_preferences SET reveal_status = 'revealed' WHERE id = ?", p.id);
+  // 批量揭露放进同一事务：避免部分行揭露、部分行失败的不一致
+  tx(() => {
+    for (const t of types) {
+      // 逐行按各自的门槛判定（原来按类型取第一行的 reveal_stage 批量改，同类型多行时门槛判定错位）
+      const rows = dbAll<IntimacyPreferenceRow>(
+        "SELECT id, reveal_stage FROM intimacy_preferences WHERE user_id = ? AND preference_type = ? AND reveal_status != 'revealed'",
+        DEFAULT_USER_ID,
+        t
+      );
+      for (const p of rows) {
+        if (stage < preferenceRevealStage(p)) continue;
+        dbRun("UPDATE intimacy_preferences SET reveal_status = 'revealed' WHERE id = ?", p.id);
+      }
     }
-  }
+  });
 }

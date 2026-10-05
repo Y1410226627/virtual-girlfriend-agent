@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { Card, Chip } from '@/components/ui';
 import type { CastMember, PostFn } from './shared';
 
@@ -20,6 +21,7 @@ export function CastCard({
   castDraft: Array<{ name: string; role: string; note: string }>;
   setCastDraft: React.Dispatch<React.SetStateAction<Array<{ name: string; role: string; note: string }>>>;
 }) {
+  const [err, setErr] = useState<string | null>(null);
   return (
     <Card
       title="她身边的人"
@@ -27,6 +29,7 @@ export function CastCard({
         <button
           className="btn-ghost"
           onClick={() => {
+            setErr(null);
             setCastDraft(
               editCast
                 ? []
@@ -118,16 +121,20 @@ export function CastCard({
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
               className="btn"
-              disabled={busy || !castDraft.length || castDraft.some((c) => !c.name.trim())}
+              disabled={busy || castDraft.some((c) => !c.name.trim())}
               onClick={async () => {
-                await post(
-                  {
-                    action: 'set_cast',
-                    cast: castDraft.map((c) => ({ name: c.name.trim(), role: c.role.trim(), note: c.note.trim() })),
-                  },
-                  '已保存她身边的人'
-                );
-                setEditCast(false);
+                // 允许保存空列表（清空她身边的人）；服务端 set_cast 接受空数组
+                const cast = castDraft.map((c) => ({ name: c.name.trim(), role: c.role.trim(), note: c.note.trim() }));
+                // maxLength 可被粘贴绕过，提交前按服务端同款限制显式校验
+                const bad = cast.find((c) => c.name.length > 12 || c.role.length > 10 || c.note.length > 60);
+                if (bad) {
+                  setErr(bad.name.length > 12 ? '名字最多 12 个字' : bad.role.length > 10 ? '关系最多 10 个字' : '备注最多 60 个字');
+                  return;
+                }
+                setErr(null);
+                // 仅在成功时收起面板并丢弃草稿；失败保留草稿供修改重试
+                const r = await post({ action: 'set_cast', cast }, '已保存她身边的人');
+                if (r) setEditCast(false);
               }}
             >
               保存
@@ -135,6 +142,7 @@ export function CastCard({
             <button className="btn-ghost" onClick={() => setEditCast(false)}>
               取消
             </button>
+            {err ? <span className="acc text-xs">{err}</span> : null}
             <span className="dim">她聊天时会自然提到这些人（她们也有自己的事），但不会每轮都提。</span>
           </div>
         </div>

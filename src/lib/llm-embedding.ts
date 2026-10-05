@@ -38,6 +38,9 @@ export function localEmbedding(text: string): number[] {
 
 let embeddingApiAvailable: boolean | null = null;
 let lastConfigVersion = -1;
+/** 上次 embedding 接口失败的时间戳：用于节流重试（失败后每 60 秒才允许再试一次） */
+let embeddingApiFailedAt = 0;
+const EMBED_RETRY_MS = 60_000;
 
 const embedCache = new Map<string, number[]>();
 const EMBED_CACHE_MAX = 800;
@@ -66,7 +69,20 @@ function syncConfigVersion() {
     lastConfigVersion = v;
     embedCache.clear();
     embeddingApiAvailable = null;
+    embeddingApiFailedAt = 0; // 配置变了，允许立刻重试
   }
+}
+
+/** 是否允许本次尝试调用 API：接口未失败时总是试；失败后按 EMBED_RETRY_MS 节流重试 */
+function shouldTryEmbeddingApi(cfg: { embeddingModel: string; embeddingBaseUrl: string }): boolean {
+  if (!cfg.embeddingModel || !cfg.embeddingBaseUrl) return false;
+  if (embeddingApiAvailable !== false) return true;
+  return Date.now() - embeddingApiFailedAt >= EMBED_RETRY_MS;
+}
+
+/** 当前是否处于"API 降级为本地向量"状态（供写入方决定向量标识，便于恢复后重算） */
+export function embeddingApiDegraded(): boolean {
+  return embeddingApiAvailable === false;
 }
 
 export async function embed(texts: string[]): Promise<number[][]> {
@@ -88,7 +104,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
     return out as number[][];
   };
 
-  if (cfg.embeddingModel && cfg.embeddingBaseUrl && embeddingApiAvailable !== false) {
+  if (shouldTryEmbeddingApi(cfg)) {
     try {
       const res = await fetchWithTimeout(
         `${cfg.embeddingBaseUrl}/embeddings`,
@@ -109,8 +125,10 @@ export async function embed(texts: string[]): Promise<number[][]> {
         }
       }
       embeddingApiAvailable = false;
+      embeddingApiFailedAt = Date.now();
     } catch {
       embeddingApiAvailable = false;
+      embeddingApiFailedAt = Date.now();
     }
   }
   return fill(missTexts.map((t) => localEmbedding(t)));

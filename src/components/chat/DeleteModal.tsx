@@ -1,6 +1,8 @@
 'use client';
 
+import { useRef } from 'react';
 import { RichText } from '@/components/ui';
+import { useFocusTrap } from './use-focus-trap';
 import type { Msg, Sticker } from './shared';
 
 interface DeleteModalProps {
@@ -24,19 +26,24 @@ export default function DeleteModal({
   onCancel,
   onDelete,
 }: DeleteModalProps) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  // 焦点陷阱：打开时聚焦"取消"（安全性优先），Tab 在框内循环，关闭后还原焦点。
+  // Escape 关闭已由 use-delete-flow 处理，此处不重复。
+  useFocusTrap({ active: !!target, containerRef: dialogRef, initialFocusRef: cancelRef });
   if (!target) return null;
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/40 p-4 backdrop-blur-sm md:items-center"
       role="dialog"
       aria-modal="true"
       aria-label="删除这条消息？"
-      onClick={onCancel}
+      onClick={(e) => {
+        // 仅点击遮罩本身时关闭：拖拽选中文字后松手不会误关
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
-      <div
-        className="w-full max-w-md animate-fade-up rounded-3xl surf p-5 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="w-full max-w-md animate-fade-up rounded-3xl surf p-5 shadow-xl">
         <h3 className="text-base font-semibold ink-1">删除这条消息？</h3>
         <div className="mt-2 rounded-2xl accent-soft px-3 py-2 text-xs leading-relaxed ink-2">
           <RichText text={target.content} stickers={stickers} />

@@ -71,7 +71,7 @@ export function ProfileCard({
                 <label className="label">{f.label}</label>
                 <input
                   className="input"
-                  defaultValue={f.value}
+                  value={pf[f.field] ?? f.value ?? ''}
                   placeholder={`她的${f.label}`}
                   onChange={(e) => setPf((s) => ({ ...s, [f.field]: e.target.value }))}
                 />

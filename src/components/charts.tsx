@@ -118,15 +118,22 @@ export function LineChart({
     return <div className="dim py-8 text-center">还没有足够的数据，多聊几天就能看到曲线啦</div>;
   }
   const times = all.map((p) => new Date(p.t).getTime());
-  const t0 = Math.min(...times);
-  const t1 = Math.max(...times);
+  // 用 reduce 求极值，避免大数组展开成 Math.min(...arr) 造成调用栈溢出
+  const t0 = times.reduce((a, b) => Math.min(a, b), times[0]!);
+  const t1 = times.reduce((a, b) => Math.max(a, b), times[0]!);
   const span = Math.max(1, t1 - t0);
   // max === min 时抬高上界，避免除零
   const yMax = max === min ? min + 1 : max;
   const ticks = Math.max(1, yTicks);
 
   const xOf = (t: string) => padL + ((new Date(t).getTime() - t0) / span) * innerW;
-  const yOf = (v: number) => padT + innerH - ((Math.max(min, Math.min(yMax, v)) - min) / (yMax - min)) * innerH;
+  const yOf = (v: number) => {
+    const denom = yMax - min;
+    // max/min 为 NaN 或 max < min 时退化到底线，不让 NaN 传播进坐标
+    if (!(denom > 0)) return padT + innerH;
+    const c = Number.isFinite(v) ? Math.max(min, Math.min(yMax, v)) : min;
+    return padT + innerH - ((c - min) / denom) * innerH;
+  };
 
   return (
     <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">

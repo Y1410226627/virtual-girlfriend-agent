@@ -14,7 +14,16 @@ export function useChatStream(params: {
 }) {
   const { state, loadState, setToast, input, setInput } = params;
 
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [messages, setMessagesState] = useState<Msg[]>([]);
+  // 最新消息快照：regenerate/withdraw 用它确认"最后一条是她"，避免读到渲染期的过期闭包
+  const messagesRef = useRef<Msg[]>([]);
+  const setMessages = useCallback((updater: SetStateAction<Msg[]>) => {
+    setMessagesState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      messagesRef.current = next;
+      return next;
+    });
+  }, []);
   const [sending, setSending] = useState(false);
   const [typing, setTyping] = useState(false);
   const [busyNote, setBusyNote] = useState<string | null>(null); // 她忙时"正在输入"处的小字提示（在场闸门）
@@ -123,7 +132,7 @@ export function useChatStream(params: {
   };
 
   /* 标准流式渲染：把她的回复落到一个流式气泡上，收敛后返回 {text, ids, error} */
-  const renderChatStream = async (body: ChatRequest, streamId: number) => {
+  const renderChatStream = async (body: ChatRequest, streamId: number, userTempId?: number) => {
     const st: { text: string; ids: ChatEvent | null; started: boolean; error: unknown } = {
       text: '',
       ids: null,
@@ -167,10 +176,20 @@ export function useChatStream(params: {
           }
         } else if (evt.type === 'done') {
           st.ids = evt;
+          // 用服务端真实 id 替换本地临时 id（负 id）：否则删除/撤回会带着负 id 请求服务端
           setMessages((prev) =>
-            prev.map((m) => (m.id === streamId ? { ...m, id: evt.assistantMessageId ?? m.id, streaming: false } : m))
+            prev.map((m) => {
+              if (m.id === streamId) return { ...m, id: evt.assistantMessageId ?? m.id, streaming: false };
+              if (userTempId !== undefined && m.id === userTempId && evt.userMessageId)
+                return { ...m, id: evt.userMessageId };
+              return m;
+            })
           );
-          lastIdRef.current = Math.max(lastIdRef.current, evt.assistantMessageId || 0);
+          lastIdRef.current = Math.max(
+            lastIdRef.current,
+            evt.assistantMessageId || 0,
+            evt.userMessageId || 0
+          );
         } else if (evt.type === 'error') {
           throw new Error(evt.message);
         }
@@ -190,6 +209,15 @@ export function useChatStream(params: {
     if (et === 'shower' || et === 'commute' || et === 'out')
       return { ms: 800 + Math.random() * 1000, note: '（她正忙着，抽空瞄了眼手机）' };
     return { ms: 250 + Math.random() * 500, note: null };
+  };
+
+  /* 结束后台分析轮询并复位"她在回味…"提示（正常完成 / 失败 / 超时 / 任务丢失共用） */
+  const endAnalysisPoll = () => {
+    if (analysisTimerRef.current) {
+      clearInterval(analysisTimerRef.current);
+      analysisTimerRef.current = null;
+    }
+    setRecalling(false);
   };
 
   const loadMessages = useCallback(async () => {
@@ -212,7 +240,7 @@ export function useChatStream(params: {
     } catch (e) {
       setLoadErr(errMsg(e));
     }
-  }, [scrollToBottom]);
+  }, [scrollToBottom, setMessages]);
 
   useEffect(() => {
     loadMessages();
@@ -247,7 +275,7 @@ export function useChatStream(params: {
       }
     }, 15000);
     return () => clearInterval(t);
-  }, [loadState, scrollToBottom]);
+  }, [loadState, scrollToBottom, setMessages]);
 
   const send = async (override?: string) => {
     const text = (override ?? input).trim();
@@ -276,7 +304,7 @@ export function useChatStream(params: {
     let ids: ChatEvent | null = null;
 
     try {
-      const st = await renderChatStream({ content: text }, streamId);
+      const st = await renderChatStream({ content: text }, streamId, tempId);
       if (st.error) throw st.error;
       if (!st.text) throw new Error('她这次没说话，再试一次吧');
       assistantText = st.text;
@@ -310,23 +338,33 @@ export function useChatStream(params: {
       });
 
       // 轮询后台进度：跑完了再刷新状态、给一个小提示
+      // 服务端语义：busy = running || 队列非空（入队未开始/运行中皆为 true），lastFinishedAt 在每轮完成时更新，
+      // 因此 !busy && lastFinishedAt > enqueueAt 能正确判定"本轮已结束"。
       if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
+      let sawBusy = false; // 是否观测到过 busy，用于识别"本轮任务被队列丢弃"的异常空窗
       const timer = setInterval(async () => {
+        // 超时兜底放在 fetch 之外：GET 一直失败也必须能收尾，绝不让"她在回味…"永久卡住、轮询空转
+        if (Date.now() - enqueueAt > 120000) {
+          endAnalysisPoll(); // 超 120s 静默结束
+          return;
+        }
         try {
           const st = await (await fetch('/api/analyze', { cache: 'no-store' })).json();
-          const done = !st?.busy && Number(st?.lastFinishedAt || 0) > enqueueAt;
+          if (st?.busy) sawBusy = true;
+          const finishedAfterEnqueue = Number(st?.lastFinishedAt || 0) > enqueueAt;
           // 分析失败：真实错误在 st.last.error（旧代码看的 st.error 并不存在）
-          const failed = !!st?.last && st.last.ok === false && Number(st.lastFinishedAt || 0) > enqueueAt;
-          if (failed || st?.error || Date.now() - enqueueAt > 120000) {
-            if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
-            analysisTimerRef.current = null;
-            setRecalling(false);
+          const failed = !!st?.last && st.last.ok === false && finishedAfterEnqueue;
+          if (failed || st?.error) {
+            endAnalysisPoll();
             return;
           }
-          if (!done) return;
-          if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
-          analysisTimerRef.current = null;
-          setRecalling(false);
+          // 见过 busy、如今队列空闲却没有本轮完成时间 → 本轮被队列上限丢弃，静默收尾（不再空等）
+          if (sawBusy && !st?.busy && !finishedAfterEnqueue) {
+            endAnalysisPoll();
+            return;
+          }
+          if (st?.busy || !finishedAfterEnqueue) return;
+          endAnalysisPoll();
           const last = st.last;
           if (last?.ok) {
             const u = st.updated || {};
@@ -363,7 +401,8 @@ export function useChatStream(params: {
   /* 重新生成她最后一条回复（服务端删除后重跑，客户端复用同一套流式渲染） */
   const regenerate = async () => {
     if (sendingRef.current) return;
-    const last = messages[messages.length - 1];
+    // 用 ref 取"当下真正的最后一条"：避免 15s 轮询插入新消息后，闭包里的 messages 已过期
+    const last = messagesRef.current[messagesRef.current.length - 1];
     if (!last || last.role !== 'assistant' || last.streaming) return;
     setSending(true);
     sendingRef.current = true;
@@ -388,6 +427,12 @@ export function useChatStream(params: {
   /* 撤回她最后一条回复（只删这一条，不撤销记忆与影响） */
   const withdraw = async (m: Msg) => {
     if (sendingRef.current) return;
+    // 以 ref 为准确认要撤回的确实是"最后一条她"：消息列表变动后旧闭包可能已指向过期气泡
+    const last = messagesRef.current[messagesRef.current.length - 1];
+    if (!last || last.id !== m.id) {
+      setToast('只能撤回她最新的一条回复');
+      return;
+    }
     try {
       const r = await fetch(`/api/messages?id=${m.id}&cascade=0`, { method: 'DELETE' });
       const j = await r.json();

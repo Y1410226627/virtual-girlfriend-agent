@@ -10,10 +10,22 @@ export function useApi<T = unknown>(url: string | null) {
   const [loading, setLoading] = useState(!!url);
   // 请求序号：旧响应不得覆盖新响应
   const reqIdRef = useRef(0);
+  const [prevUrl, setPrevUrl] = useState(url);
+
+  // url 变化时在渲染阶段就清空旧数据：否则切换筛选后会先渲染上一组结果（旧列表闪变）。
+  // 这里同步推进请求序号，让改动前 url 的在途响应在提交前即失效。
+  if (prevUrl !== url) {
+    setPrevUrl(url);
+    setData(null);
+    setError(null);
+    setLoading(!!url);
+    reqIdRef.current += 1;
+  }
 
   const reload = useCallback(async () => {
-    if (!url) return;
+    // 每次请求都推进序号：url 变为 null 时也能让上一 url 的在途响应失效
     const reqId = ++reqIdRef.current;
+    if (!url) return;
     try {
       setLoading(true);
       const r = await fetch(url, { cache: 'no-store' });
@@ -78,7 +90,10 @@ export function Stat({ label, value, unit, tone = 'rose' }: { label: string; val
 }
 
 export function Bar({ value, max = 100, min = 0, tone = 'rose', height = 8 }: { value: number; max?: number; min?: number; tone?: string; height?: number }) {
-  const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+  // value/max/min 可能是脏值（NaN 或 max===min），不能让 NaN 穿透成 width: NaN%
+  const span = max - min;
+  const raw = span > 0 ? ((value - min) / span) * 100 : 0;
+  const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
   const bg =
     tone === 'peach'
       ? 'bg-gradient-to-r from-peach-300 to-peach-500'
@@ -116,9 +131,12 @@ export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () =
 
 /* ---------------------- 轻提示 ---------------------- */
 export function Toast({ text, onClose }: { text: string; onClose: () => void }) {
-  // 固化回调身份，父组件每次渲染都不会重置计时器
+  // 固化回调身份：父组件每次渲染都会新建 onClose，直接进依赖会重置计时器。
+  // 在 effect 里写 ref（而非渲染期赋值），避免并发渲染下读到未提交的脏值。
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     const t = setTimeout(() => onCloseRef.current(), 3200);
     return () => clearTimeout(t);
@@ -193,7 +211,7 @@ export function RichText({
   const pushText = (segment: string) => {
     // 动作可能被写成：（全角）(半角)【方头括号】[方括号]、全/半角混搭、以及句尾未闭合——都认
     const re =
-      /（([^)）\n]{1,120})\)|\(([^)）\n]{1,120})）|（([^）]{1,120})）|\(([^)]{1,120})\)|【([^】]{1,120})】|\[([^\]\n]{1,120})\]|（([^）]{1,120})$|\(([^)\n]{1,120})$/g;
+      /(?:（[^)）\n]{1,120})\)|(?:\([^)）\n]{1,120})）|(?:（[^）]{1,120})）|(?:\([^)]{1,120})\)|(?:【[^】]{1,120}】)|(?:\[[^\]\n]{1,120}\])|(?:（[^）]{1,120})$|(?:\([^)\n]{1,120})$/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(segment)) !== null) {

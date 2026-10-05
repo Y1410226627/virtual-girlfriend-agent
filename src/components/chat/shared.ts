@@ -11,7 +11,9 @@ export interface Msg {
 }
 
 export interface OngoingEvent {
-  id?: number;
+  // 服务端（/api/state、/api/life）在有进行中事件时总会带上 id，故这里收紧为必填，
+  // 避免 id 可选导致的 undefined / null 语义混淆（无事件时整体为 null）。
+  id: number;
   activity?: string;
   eventType?: string;
   startedAt?: string;

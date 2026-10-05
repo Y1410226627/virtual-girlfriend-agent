@@ -1,48 +1,43 @@
 'use client';
 
 import { Card, Chip } from '@/components/ui';
-import type { CustomValues, SetToast } from './shared';
+import type { CustomValues, ProfilePostResult, SaveFn, SetToast } from './shared';
+import { buildCustomValues } from './shared';
 
 export function CustomModeCard({
   customOn,
   setForm,
-  setSaving,
   setToast,
-  reload,
   cv,
   setCv,
   loadCv,
+  save,
+  profilePost,
 }: {
   customOn: boolean;
   setForm: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  setSaving: React.Dispatch<React.SetStateAction<boolean>>;
   setToast: SetToast;
-  reload: () => void;
   cv: CustomValues | null;
   setCv: React.Dispatch<React.SetStateAction<CustomValues | null>>;
   loadCv: () => void;
+  save: SaveFn;
+  profilePost: (body: Record<string, unknown>) => Promise<ProfilePostResult>;
 }) {
   return (
     <Card title="自定义模式（数值直控）">
       <div className="flex flex-wrap items-center gap-2">
         <button
           className={customOn ? 'btn' : 'btn-ghost'}
-          onClick={async () => {
-            // 注意：必须用"目标值"直接提交，不能走 save(['custom_mode'])——
-            // 那会读到 setState 之前的旧值，导致"关不掉"
+          onClick={() => {
+            // 用"目标值"直接提交（overrides），不能走 set 后 save——那会读到 setState 之前的旧值，导致"关不掉"
             const on = !customOn;
             const next = on ? '1' : '0';
             setForm((s) => ({ ...s, custom_mode: next }));
-            setSaving(true);
-            const r = await fetch('/api/settings', {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ settings: { custom_mode: next } }),
-            });
-            const j = await r.json();
-            setSaving(false);
-            setToast(j?.error ? j.error : on ? '自定义模式已开启：数值不再自动变化' : '自定义模式已关闭：数值恢复自动演化');
-            reload();
+            void save(
+              ['custom_mode'],
+              on ? '自定义模式已开启：数值不再自动变化' : '自定义模式已关闭：数值恢复自动演化',
+              { custom_mode: next }
+            );
           }}
         >
           {customOn ? '已开启（点击关闭）' : '开启自定义模式'}
@@ -61,28 +56,28 @@ export function CustomModeCard({
         <div className="mt-3 space-y-3">
           <div className="grid gap-3 md:grid-cols-3">
             <div>
-              <label className="label">亲密度 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.intimacy} onChange={(e) => setCv({ ...cv, intimacy: e.target.value })} />
+              <label className="label" htmlFor="cm_intimacy">亲密度 0-100</label>
+              <input id="cm_intimacy" className="input" type="number" min={0} max={100} value={cv.intimacy} onChange={(e) => setCv({ ...cv, intimacy: e.target.value })} />
             </div>
             <div>
-              <label className="label">信任 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.trust} onChange={(e) => setCv({ ...cv, trust: e.target.value })} />
+              <label className="label" htmlFor="cm_trust">信任 0-100</label>
+              <input id="cm_trust" className="input" type="number" min={0} max={100} value={cv.trust} onChange={(e) => setCv({ ...cv, trust: e.target.value })} />
             </div>
             <div>
-              <label className="label">情感余额 -100~100</label>
-              <input className="input" type="number" min={-100} max={100} value={cv.emotional_balance} onChange={(e) => setCv({ ...cv, emotional_balance: e.target.value })} />
+              <label className="label" htmlFor="cm_emotional_balance">情感余额 -100~100</label>
+              <input id="cm_emotional_balance" className="input" type="number" min={-100} max={100} value={cv.emotional_balance} onChange={(e) => setCv({ ...cv, emotional_balance: e.target.value })} />
             </div>
             <div>
-              <label className="label">未解决张力 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.unresolved_tension} onChange={(e) => setCv({ ...cv, unresolved_tension: e.target.value })} />
+              <label className="label" htmlFor="cm_unresolved_tension">未解决张力 0-100</label>
+              <input id="cm_unresolved_tension" className="input" type="number" min={0} max={100} value={cv.unresolved_tension} onChange={(e) => setCv({ ...cv, unresolved_tension: e.target.value })} />
             </div>
             <div>
-              <label className="label">修复信用 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.repair_credit} onChange={(e) => setCv({ ...cv, repair_credit: e.target.value })} />
+              <label className="label" htmlFor="cm_repair_credit">修复信用 0-100</label>
+              <input id="cm_repair_credit" className="input" type="number" min={0} max={100} value={cv.repair_credit} onChange={(e) => setCv({ ...cv, repair_credit: e.target.value })} />
             </div>
             <div>
-              <label className="label">关系阶段</label>
-              <select className="input" value={cv.stage} onChange={(e) => setCv({ ...cv, stage: Number(e.target.value) })}>
+              <label className="label" htmlFor="cm_stage">关系阶段</label>
+              <select id="cm_stage" className="input" value={cv.stage} onChange={(e) => setCv({ ...cv, stage: Number(e.target.value) })}>
                 {['初识', '试探', '加深', '融合', '承诺'].map((n, i) => (
                   <option key={i} value={i}>
                     {`${i} ${n}`}
@@ -91,8 +86,8 @@ export function CustomModeCard({
               </select>
             </div>
             <div>
-              <label className="label">心情（文字，如 心动 / 低落）</label>
-              <input className="input" maxLength={12} value={cv.mood} onChange={(e) => setCv({ ...cv, mood: e.target.value })} />
+              <label className="label" htmlFor="cm_mood">心情（文字，如 心动 / 低落）</label>
+              <input id="cm_mood" className="input" maxLength={12} value={cv.mood} onChange={(e) => setCv({ ...cv, mood: e.target.value })} />
             </div>
           </div>
           <div>
@@ -109,8 +104,9 @@ export function CustomModeCard({
                 ] as const
               ).map(([k, label]) => (
                 <div key={k}>
-                  <label className="label">{label}</label>
+                  <label className="label" htmlFor={`cm_personality_${k}`}>{label}</label>
                   <input
+                    id={`cm_personality_${k}`}
                     className="input"
                     type="number"
                     min={0}
@@ -124,40 +120,38 @@ export function CustomModeCard({
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             <div>
-              <label className="label">依恋·焦虑 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.anxiety} onChange={(e) => setCv({ ...cv, anxiety: e.target.value })} />
+              <label className="label" htmlFor="cm_anxiety">依恋·焦虑 0-100</label>
+              <input id="cm_anxiety" className="input" type="number" min={0} max={100} value={cv.anxiety} onChange={(e) => setCv({ ...cv, anxiety: e.target.value })} />
             </div>
             <div>
-              <label className="label">依恋·回避 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.avoidance} onChange={(e) => setCv({ ...cv, avoidance: e.target.value })} />
+              <label className="label" htmlFor="cm_avoidance">依恋·回避 0-100</label>
+              <input id="cm_avoidance" className="input" type="number" min={0} max={100} value={cv.avoidance} onChange={(e) => setCv({ ...cv, avoidance: e.target.value })} />
             </div>
             <div>
-              <label className="label">性欲 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.libido} onChange={(e) => setCv({ ...cv, libido: e.target.value })} />
+              <label className="label" htmlFor="cm_libido">性欲 0-100</label>
+              <input id="cm_libido" className="input" type="number" min={0} max={100} value={cv.libido} onChange={(e) => setCv({ ...cv, libido: e.target.value })} />
             </div>
             <div>
-              <label className="label">亲密需求 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.intimacy_need} onChange={(e) => setCv({ ...cv, intimacy_need: e.target.value })} />
+              <label className="label" htmlFor="cm_intimacy_need">亲密需求 0-100</label>
+              <input id="cm_intimacy_need" className="input" type="number" min={0} max={100} value={cv.intimacy_need} onChange={(e) => setCv({ ...cv, intimacy_need: e.target.value })} />
             </div>
             <div>
-              <label className="label">性满意度 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.sexual_satisfaction} onChange={(e) => setCv({ ...cv, sexual_satisfaction: e.target.value })} />
+              <label className="label" htmlFor="cm_sexual_satisfaction">性满意度 0-100</label>
+              <input id="cm_sexual_satisfaction" className="input" type="number" min={0} max={100} value={cv.sexual_satisfaction} onChange={(e) => setCv({ ...cv, sexual_satisfaction: e.target.value })} />
             </div>
             <div>
-              <label className="label">性压力 0-100</label>
-              <input className="input" type="number" min={0} max={100} value={cv.sexual_stress} onChange={(e) => setCv({ ...cv, sexual_stress: e.target.value })} />
+              <label className="label" htmlFor="cm_sexual_stress">性压力 0-100</label>
+              <input id="cm_sexual_stress" className="input" type="number" min={0} max={100} value={cv.sexual_stress} onChange={(e) => setCv({ ...cv, sexual_stress: e.target.value })} />
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               className="btn"
               onClick={async () => {
-                const r = await fetch('/api/settings', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ action: 'custom_values', values: { ...cv, stage: Number(cv.stage) } }),
-                });
-                const j = await r.json();
+                // 应用数值会整体覆盖她当前的亲密度、性格、依恋与性相关数值，属破坏性操作，先二次确认
+                if (!window.confirm('确定要把这些数值应用到她的当前状态吗？会立即覆盖现有的亲密度、信任、性格、依恋等数值。')) return;
+                // 空 = 未填写 → 不提交（buildCustomValues 已过滤），避免把 0 当成用户意图发出去
+                const j = await profilePost({ action: 'custom_values', values: buildCustomValues(cv) });
                 setToast(j?.ok ? '数值已应用，从下一句回复开始明显生效' : j?.error || '保存失败');
                 loadCv();
               }}

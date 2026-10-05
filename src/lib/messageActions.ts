@@ -335,7 +335,34 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
   }
 }
 
-/** 清空该用户全部聊天记录（消息列表页"清空聊天"用） */
+/**
+ * 清空该用户全部聊天记录（设置页"清空聊天记录"用）
+ * 一个事务内完成：清掉消息派生的内部审计数据（turn_effects / proactive_messages）、
+ * 把其余业务表中指向消息的列置 NULL（记忆/流水等业务数据保留，用户可另行"清空记忆"），
+ * 最后删除消息本身并重置自增序列——否则新消息会复用旧 id，让撤销/删除命中陈旧记录。
+ */
 export function wipeAllMessages(): void {
-  dbRun('DELETE FROM messages WHERE user_id = ?', DEFAULT_USER_ID);
+  tx(() => {
+    // 1) 消息派生的内部审计数据：直接删除
+    dbRun('DELETE FROM turn_effects WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('DELETE FROM proactive_messages WHERE user_id = ?', DEFAULT_USER_ID);
+
+    // 2) 指向消息的列：置 NULL（保留业务数据本体）
+    dbRun('UPDATE memories SET source_message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('UPDATE personality_signals SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('UPDATE personality_logs SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('UPDATE attachment_signals SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('UPDATE emotional_bank SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('UPDATE relationship_logs SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
+
+    // 3) 删除消息本身
+    dbRun('DELETE FROM messages WHERE user_id = ?', DEFAULT_USER_ID);
+
+    // 4) 重置自增序列：sqlite_sequence 只在存在自增表时才有，缺表则忽略
+    try {
+      dbRun("DELETE FROM sqlite_sequence WHERE name = 'messages'");
+    } catch {
+      /* sqlite_sequence 不存在：忽略 */
+    }
+  });
 }

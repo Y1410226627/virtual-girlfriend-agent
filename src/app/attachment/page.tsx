@@ -77,7 +77,8 @@ export default function AttachmentPage() {
   };
 
   if (loading && !data) return <Loading text="正在读她的依恋状态…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  // 仅初次加载就失败才整页替换；已有数据时用顶部横幅提示，保留已加载内容可继续查看/操作
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   const st: Partial<AttachmentStateView> = data?.state || {};
   const anxiety = draft?.anxiety ?? Number(st.anxiety ?? 30);
@@ -88,6 +89,7 @@ export default function AttachmentPage() {
 
   return (
     <div className="pb-10">
+      {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="依恋"
         desc="依恋风格是她性格的底层结构：焦虑轴（怕被抛弃）与回避轴（情感疏离）两条正交轴，决定她如何回应亲密、冲突、分离与安抚。"
@@ -131,6 +133,7 @@ export default function AttachmentPage() {
                 min={0}
                 max={100}
                 value={anxiety}
+                aria-label="焦虑轴（怕被抛弃）"
                 className="mt-1.5 w-full accent-rose-500"
                 onChange={(e) => setDraft({ anxiety: Number(e.target.value), avoidance })}
               />
@@ -145,6 +148,7 @@ export default function AttachmentPage() {
                 min={0}
                 max={100}
                 value={avoidance}
+                aria-label="回避轴（情感疏离）"
                 className="mt-1.5 w-full accent-peach-500"
                 onChange={(e) => setDraft({ anxiety, avoidance: Number(e.target.value) })}
               />

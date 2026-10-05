@@ -43,6 +43,20 @@ const ROLE_PREFIX_RE = /^\s*(?:她|他|AI|Assistant|assistant)\s*[：:]\s*/;
 /** 括号里的元信息（内心独白/注释） */
 const META_PAREN_RE = /[（(](?:内心|注|旁白|说明|补充|PS|ps)[：:][^）)]{0,80}[）)]/g;
 
+/** 用户名后是否紧跟冒号（全/半角都算）：用字面量判断，避免用户名含正则元字符时误判或抛错 */
+function startsWithNameColon(text: string, name: string): boolean {
+  return text.startsWith(`${name}：`) || text.startsWith(`${name}:`);
+}
+
+/** 用户名后紧跟冒号（全/半角）首次出现的位置；没有则返回 -1 */
+function indexOfNameColon(text: string, name: string): number {
+  const iFull = text.indexOf(`${name}：`);
+  const iHalf = text.indexOf(`${name}:`);
+  if (iFull < 0) return iHalf;
+  if (iHalf < 0) return iFull;
+  return Math.min(iFull, iHalf);
+}
+
 function stripMarkdown(line: string): string {
   let t = line;
   t = t.replace(/^\s*#{1,6}\s*/, ''); // 标题
@@ -191,10 +205,13 @@ function cleanSentences(text: string, userName: string): { text: string; notes: 
       continue;
     }
     // 替用户说话：出现"用户名："之后的内容整段截掉（半角冒号同样要拦）
-    if (userName && new RegExp(`${userName}[：:]`).test(cur)) {
-      cur = cur.split(new RegExp(`${userName}[：:]`))[0]!;
-      notes.push('截掉替用户发言');
-      if (!cur.trim()) continue;
+    if (userName) {
+      const idx = indexOfNameColon(cur, userName);
+      if (idx >= 0) {
+        cur = cur.slice(0, idx);
+        notes.push('截掉替用户发言');
+        if (!cur.trim()) continue;
+      }
     }
     kept.push(cur);
   }
@@ -268,7 +285,7 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
       notes.push(`删掉AI腔: ${truncate(cur, 24)}`);
       continue;
     }
-    if (ctx.userName && new RegExp(`^\\s*${ctx.userName}[：:]`).test(cur)) {
+    if (ctx.userName && startsWithNameColon(cur.trimStart(), ctx.userName)) {
       notes.push('截掉替用户发言');
       cutForImpersonation = true;
       continue;

@@ -30,6 +30,22 @@ export function getActiveArc(): LifeArcRow | null {
   return row || null;
 }
 
+/**
+ * 生活线"第 N 天"：按 started_at 起经过的时间推导（floor(已过毫秒/一天) + 1），
+ * 与基于节流推进的 progress 解耦——即使后台没推进，读取侧也随时间自洽；上限为 planned_days。
+ */
+export function lifeArcDay(
+  arc: Pick<LifeArcRow, 'started_at' | 'planned_days'>,
+  nowMs: number = Date.now()
+): number {
+  const planned = Math.max(1, Number(arc.planned_days) || 1);
+  const startMs = new Date(arc.started_at).getTime();
+  if (!Number.isFinite(startMs)) return 1;
+  const elapsed = Math.max(0, nowMs - startMs);
+  const day = Math.floor(elapsed / 86400000) + 1;
+  return Math.min(planned, Math.max(1, day));
+}
+
 function seasonOf(d: Date = new Date()): string {
   const m = d.getMonth() + 1;
   if (m >= 3 && m <= 5) return '春天';
@@ -129,7 +145,23 @@ export async function tickLifeArc(): Promise<void> {
 /* ------------------------------------------------------------------ */
 /* 她的日记：为本机最近 7 天内"有生活痕迹但还没日记"的日子补写           */
 /* ------------------------------------------------------------------ */
-const DIARY_FORBIDDEN = /(AI|人工智能|系统|用户|对话|程序|模型|虚拟)/i;
+// 日记硬约束：出现这些词说明"她"把 AI/系统设定写进了日记，视为失败重试。
+// 匹配要点（避免误杀正常日记）：
+// - 英文/ASCII 词（AI）用词边界匹配：像 "aim" / "rain" / "wait" 里夹着的 "ai" 不会被误判。
+// - 中文词用"独立词"匹配（左右都不是中文表意字符）：把禁用词嵌在更长词里的正常表达
+//   （"系统解剖学" / "消化系统" / "虚拟现实"）不会被误判。
+// 说明：本函数是"提示词已要求不出现这些词"之外的兜底网；误杀会让当天日记被静默卡住、
+// 反复重试写不出，因此优先避免误杀，对中文采取独立词匹配。
+const DIARY_FORBIDDEN_ASCII = /\bAI\b/i;
+const CJK_CHAR = '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff';
+const DIARY_FORBIDDEN_CN = new RegExp(
+  `(?<![${CJK_CHAR}])(人工智能|系统|用户|对话|程序|模型|虚拟)(?![${CJK_CHAR}])`
+);
+
+/** 日记正文是否命中"禁止出现"的破壁词（独立词匹配，避免误杀正常中文日记） */
+export function hasForbiddenDiaryTerm(text: string): boolean {
+  return DIARY_FORBIDDEN_ASCII.test(text) || DIARY_FORBIDDEN_CN.test(text);
+}
 
 /** 写某一天的日记；成功返回 true */
 async function generateDiary(date: string): Promise<boolean> {
@@ -180,7 +212,7 @@ async function generateDiary(date: string): Promise<boolean> {
     });
     const content = String(raw?.content || '').trim();
     if (content.length < 20) return false;
-    if (DIARY_FORBIDDEN.test(content)) return false; // 违反硬约束 → 当作失败重试
+    if (hasForbiddenDiaryTerm(content)) return false; // 违反硬约束 → 当作失败重试
 
     const now = nowIso();
     dbRun(

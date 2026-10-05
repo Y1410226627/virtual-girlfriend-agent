@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { Card } from '@/components/ui';
 import { clampImportance } from './shared';
 import type { NewMem } from './shared';
@@ -17,6 +18,9 @@ export function MemoryForm({
   setToast: React.Dispatch<React.SetStateAction<string | null>>;
   setCreating: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
+  // 重要度用本地字符串保存，允许用户清空输入框后再重填（受控 number 无法表示"空"）。
+  // 提交时若为空按默认 7 处理。
+  const [impText, setImpText] = useState(String(newMem.importance));
   return (
     <div className="px-5 pt-4 md:px-8">
       <Card title="添加一条记忆">
@@ -37,8 +41,13 @@ export function MemoryForm({
               type="number"
               min={0}
               max={10}
-              value={newMem.importance}
-              onChange={(e) => setNewMem((s) => ({ ...s, importance: e.target.value === '' ? s.importance : Number(e.target.value) }))}
+              value={impText}
+              onChange={(e) => {
+                const v = e.target.value;
+                setImpText(v);
+                // 清空时不要立刻回填旧值（否则"删不掉"）；只在有值时同步进表单状态
+                if (v !== '') setNewMem((s) => ({ ...s, importance: Number(v) }));
+              }}
             />
           </div>
         </div>
@@ -60,7 +69,7 @@ export function MemoryForm({
               return;
             }
             const ok = await act(
-              { action: 'create', ...newMem, importance: clampImportance(newMem.importance) },
+              { action: 'create', ...newMem, importance: clampImportance(impText.trim() === '' ? 7 : Number(impText)) },
               '记住了'
             );
             if (ok) {

@@ -33,8 +33,8 @@ function state(): QueueState {
 
 /** 队列上限：超出时丢弃最旧的排队项，避免无限增长占内存 */
 const MAX_QUEUE = 50;
-/** 单轮分析超时：底层挂起时不至于永久卡死后续分析 */
-const ANALYZE_TIMEOUT_MS = 90_000;
+/** "分析较慢"告警阈值：仅打印日志，仍然等它跑完；绝不并发启动下一轮 */
+const ANALYZE_SLOW_WARN_MS = 90_000;
 
 function emptyApplied(): AnalyzeOutcome['applied'] {
   return {
@@ -47,21 +47,23 @@ function emptyApplied(): AnalyzeOutcome['applied'] {
   };
 }
 
-/** 给 Promise 加超时：超时后抛错，且清理计时器；底层 promise 仍会自行结束，不影响队列继续 */
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`分析超时（${ms / 1000} 秒）`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      }
+/**
+ * 运行单轮分析：超过阈值只告警，仍然 await 其真正结束。
+ * 关键：绝不在底层仍可能写库时"放弃等待"并启动下一轮——否则两轮 analyzeTurn 并发会
+ * 互相覆盖关系数值、触发嵌套 BEGIN / SQLITE_BUSY。因此这里不做超时放弃。
+ * analyzeTurn 内部所有网络调用都有超时（chat/chatJson 单次 45s，embedding 20s），不会永久挂死。
+ */
+async function runAnalyzeTurn(job: Job): Promise<AnalyzeOutcome> {
+  const timer = setTimeout(() => {
+    console.warn(
+      `[analysisQueue] 分析较慢：本轮已运行超过 ${ANALYZE_SLOW_WARN_MS / 1000} 秒，继续等待其完成（不并发启动下一轮）`
     );
-  });
+  }, ANALYZE_SLOW_WARN_MS);
+  try {
+    return await analyzeTurn(job);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -84,6 +86,7 @@ export function enqueueAnalysis(job: Omit<Job, 'resolve' | 'queuedAt'>): { promi
 
 async function drain(): Promise<void> {
   const st = state();
+  // 模块级 in-flight 保护：任何时刻只有一个 drain、也只有一个 analyzeTurn 在跑
   if (st.running) return;
   st.running = true;
   try {
@@ -91,7 +94,8 @@ async function drain(): Promise<void> {
       const job = st.queue.shift()!;
       const t0 = Date.now();
       try {
-        const out = await withTimeout(analyzeTurn(job), ANALYZE_TIMEOUT_MS);
+        // 严格串行：完成当前 job 后才取下一个（不做超时放弃，避免并发写坏数据）
+        const out = await runAnalyzeTurn(job);
         st.last = { ok: out.ok, error: out.error, applied: out.applied };
         job.resolve(out);
       } catch (e) {
@@ -103,7 +107,7 @@ async function drain(): Promise<void> {
       st.lastFinishedAt = Date.now();
     }
   } finally {
-    // 无论超时/异常/正常结束，都确保复位，避免后续分析永久卡死
+    // 无论异常/正常结束，都确保复位，避免后续分析永久卡死
     st.running = false;
   }
 }

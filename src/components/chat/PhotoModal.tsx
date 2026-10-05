@@ -1,5 +1,8 @@
 'use client';
 
+import { useRef } from 'react';
+import { useFocusTrap } from './use-focus-trap';
+
 interface PhotoModalProps {
   open: boolean;
   loading: boolean;
@@ -9,19 +12,23 @@ interface PhotoModalProps {
 }
 
 export default function PhotoModal({ open, loading, src, caption, onClose }: PhotoModalProps) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  // 焦点陷阱：打开时聚焦框内首个可聚焦元素（"关闭"按钮），Tab 在框内循环，Escape 关闭，关闭后还原焦点
+  useFocusTrap({ active: open, containerRef: dialogRef, onEscape: onClose });
   if (!open) return null;
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label="她"
-      onClick={onClose}
+      onClick={(e) => {
+        // 仅点击遮罩本身时关闭：拖拽选中文字后松手不会误关
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
-      <div
-        className="w-full max-w-md animate-fade-up rounded-3xl surf p-5 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="w-full max-w-md animate-fade-up rounded-3xl surf p-5 shadow-xl">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold ink-1">她</h3>
           <button className="btn-ghost !px-2 !py-1 text-xs" onClick={onClose}>

@@ -130,6 +130,10 @@ export function pickEnum<T extends string>(v: unknown, allowed: readonly T[], fa
 }
 
 export function num(v: unknown, def = 0): number {
+  // 空值（null/undefined/空串）必须回落到 def，绝不能让 Number('')===0 冒充真实值：
+  // 否则模型返回 importance:'' 会被记录成 0（最不重要），strength:'' 会把性格权重归零。
+  if (v === null || v === undefined) return def;
+  if (typeof v === 'string' && v.trim() === '') return def;
   const n = Number(v);
   return isFinite(n) ? n : def;
 }

@@ -1,6 +1,6 @@
 // 她的世界：健康 / 心理 / 位置 / 活动 / 日常事件 / 档案里逐步揭露的信息 / 共享世界
 import { dbAll, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
-import { round1, clamp } from '@/lib/utils';
+import { round1, clamp, calendarDaysBetween } from '@/lib/utils';
 import {
   ensureLife,
   advanceLife,
@@ -13,6 +13,7 @@ import {
   getSharedWorld,
   listLifeLogs,
   listDailyEvents,
+  countDailyEvents,
   addSharedPlan,
   addSharedRitual,
   addSharedPlace,
@@ -24,6 +25,7 @@ import {
   whatHappenedSince,
   labelOf,
   getActiveEvent,
+  lifeArcDay,
   endOngoingEvent,
   setEventExpectedEnd,
   applyEventEffectsAsIf,
@@ -90,7 +92,7 @@ export async function GET() {
       illness: h.illness,
       illnessDay:
         h.illness !== 'none' && h.illness_start
-          ? Math.max(1, Math.round((Date.now() - new Date(h.illness_start).getTime()) / 86400000) + 1)
+          ? Math.max(1, calendarDaysBetween(h.illness_start) + 1)
           : 0,
       cycleEnabled: h.cycle_enabled === 1,
       cycleDay: h.cycle_day,
@@ -118,6 +120,8 @@ export async function GET() {
     recently: whatHappenedSince(12),
     timeline,
     events: listDailyEvents(30),
+    // 明细最多 30 条；eventsTotal 是真实总数（前端"共 N 条"用，避免把上限当总数）
+    eventsTotal: countDailyEvents(),
     profile: {
       fields,
       revealedCount: fields.filter((f) => f.revealed && f.value).length,
@@ -134,7 +138,8 @@ export async function GET() {
             description: arc.description,
             progress: arc.progress,
             plannedDays: arc.planned_days,
-            day: Math.min(arc.planned_days || 1, (arc.progress || 0) + 1),
+            // "第 N 天"按 started_at 起经过的时间推导，不依赖 6h 节流推进的 progress（否则"第 1 天"能挂一整周）
+            day: lifeArcDay(arc),
             startedAt: arc.started_at,
           }
         : null;
@@ -193,7 +198,9 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, shared: getSharedWorld() });
   }
   if (action === 'toggle_plan') {
-    completePlan(Number(body.index));
+    // 优先按稳定 id（新前端）；老前端只传 index 时按旧下标兜底
+    const planId = typeof body.id === 'string' && body.id ? body.id : Number(body.index);
+    completePlan(planId);
     return Response.json({ ok: true, shared: getSharedWorld() });
   }
   if (action === 'add_ritual') {

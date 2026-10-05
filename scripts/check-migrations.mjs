@@ -20,6 +20,25 @@ if (migrations.length === 0) {
   process.exit(1);
 }
 
+// 版本单调性校验：版本号必须严格递增，且与数组顺序一致。
+// 为什么需要：迁移按数组顺序逐条执行；若版本号乱序或重复，会造成"已应用"判定错乱、
+// 迁移被跳过或重复执行，是难以察觉的数据风险。这里做静态兜底。
+const versionIssues = [];
+for (let i = 1; i < migrations.length; i++) {
+  if (migrations[i].version <= migrations[i - 1].version) {
+    versionIssues.push(
+      `第 ${i + 1} 条 v${migrations[i].version}（${migrations[i].name}）不大于第 ${i} 条 v${migrations[i - 1].version}（${migrations[i - 1].name}）`
+    );
+  }
+}
+if (versionIssues.length) {
+  console.log(`=== 迁移安全检查（${DB_FILE}）===`);
+  console.log(`✘ 迁移版本号必须严格递增且与数组顺序一致，发现 ${versionIssues.length} 处问题：`);
+  for (const v of versionIssues) console.log(`  ${v}`);
+  console.log('\n修复方式：调整版本号使数组自上而下严格递增（历史条目的版本号不可修改，新条目取最大值 +1）。');
+  process.exit(1);
+}
+
 // 破坏性操作模式（SQL 关键字，不区分大小写）
 const destructivePatterns = [
   { name: 'DROP TABLE', re: /\bDROP\s+TABLE\b/i },

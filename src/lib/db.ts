@@ -1,6 +1,6 @@
 // SQLite 数据库层：全部表结构迁移 + 单例连接 + 设置读写
 // 使用 Node 24 内置的 node:sqlite，零原生依赖，开箱即跑。
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { nowIso } from './utils';
@@ -23,7 +23,34 @@ function resolveDbPath(): string {
   return path.isAbsolute(p) ? p : path.join(process.cwd(), p);
 }
 
+/* ------------------------------------------------------------------ */
+/* 预编译语句缓存：同一条 SQL 复用同一个 statement，避免每次查询都 prepare */
+/* 仅覆盖 dbAll/dbGet/dbRun；DDL / 迁移仍直接用 db.prepare，不进缓存。   */
+/* key = SQL 串；LRU 上限 200 条，超出淘汰最久未用的一条。               */
+/* ------------------------------------------------------------------ */
+const STATEMENT_CACHE_LIMIT = 200;
+const stmtCache = new Map<string, StatementSync>();
+
+function prepareCached(db: DatabaseSync, sql: string): StatementSync {
+  const cached = stmtCache.get(sql);
+  if (cached) {
+    // 命中后移到队尾（Map 保持插入顺序，队首即最久未用）
+    stmtCache.delete(sql);
+    stmtCache.set(sql, cached);
+    return cached;
+  }
+  const stmt = db.prepare(sql);
+  if (stmtCache.size >= STATEMENT_CACHE_LIMIT) {
+    const oldest = stmtCache.keys().next().value;
+    if (oldest !== undefined) stmtCache.delete(oldest);
+  }
+  stmtCache.set(sql, stmt);
+  return stmt;
+}
+
 function createDb(): DatabaseSync {
+  // 新连接：清掉可能残留的旧语句缓存（旧 connection 的 statement 不可复用）
+  stmtCache.clear();
   const file = resolveDbPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -33,6 +60,10 @@ function createDb(): DatabaseSync {
   db.exec('PRAGMA cache_size = -64000;'); // 约 64MB 页缓存
   db.exec('PRAGMA mmap_size = 268435456;'); // 256MB mmap
   db.exec('PRAGMA temp_store = MEMORY;');
+  // 写-写竞争时等待锁释放（默认 0 会立即抛 SQLITE_BUSY 不重试）。
+  // 本应用有 scheduler / proactive / analysisQueue / life-sim 多个后台任务共用同一连接，
+  // 给 5 秒重试窗口，避免偶发并发写直接失败。
+  db.exec('PRAGMA busy_timeout = 5000;');
   migrate(db);
   seed(db);
   return db;
@@ -42,23 +73,44 @@ function migrate(db: DatabaseSync) {
   db.exec(
     'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);'
   );
+  // 加载期校验：迁移版本必须严格递增，否则迁移顺序/已应用集合会错乱（不改历史条目，只做校验）
+  for (let i = 1; i < MIGRATIONS.length; i++) {
+    const prev = MIGRATIONS[i - 1]!;
+    const cur = MIGRATIONS[i]!;
+    if (cur.version <= prev.version) {
+      throw new Error(
+        `迁移版本号必须严格递增：v${prev.version}（${prev.name}）之后出现 v${cur.version}（${cur.name}）`
+      );
+    }
+  }
   const applied = new Set<number>(
     (db.prepare('SELECT version FROM schema_migrations').all() as AnyRow[]).map((r) => Number(r.version))
   );
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
-    db.exec('BEGIN');
     try {
+      // BEGIN 放进 try：开事务本身失败时也要走统一的错误路径，不能让它裸抛
+      db.exec('BEGIN');
       // 迁移容错：对 "ALTER TABLE x DROP COLUMN y" 先查列是否存在，不存在就跳过
       // （SQLite 不支持 DROP COLUMN IF EXISTS；历史分叉/手工改库导致列缺失时，原来会直接崩在启动阶段）
+      // 正则只匹配到列名为止（用前瞻断言语句终结符），因此列存在时原样返回、SQL 语义零改动；
+      // 列名与终结符之间允许空白、注释、行尾或分号（含多行注释），避免"夹了注释就静默失效"。
       const cols = new Map<string, Set<string>>();
-      const guarded = m.sql.replace(/ALTER TABLE\s+(\w+)\s+DROP COLUMN\s+(\w+)\s*;/gi, (stmt, table, col) => {
-        if (!cols.has(table)) {
-          const rows = db.prepare(`PRAGMA table_info(${table})`).all() as AnyRow[];
-          cols.set(table, new Set(rows.map((r) => String(r.name))));
+      let guarded = m.sql.replace(
+        /ALTER TABLE\s+(\w+)\s+DROP COLUMN\s+(\w+)(?=(?:\s|--[^\n]*)*;)/gi,
+        (stmt, table, col) => {
+          if (!cols.has(table)) {
+            const rows = db.prepare(`PRAGMA table_info(${table})`).all() as AnyRow[];
+            cols.set(table, new Set(rows.map((r) => String(r.name))));
+          }
+          return cols.get(table)!.has(col)
+            ? stmt
+            : `-- skipped (column ${table}.${col} not present)`;
         }
-        return cols.get(table)!.has(col) ? stmt : `-- skipped (column ${table}.${col} not present)`;
-      });
+      );
+      // 裸 DROP TABLE（无 IF EXISTS）容错：缺表时报错会卡在启动阶段；补成 IF EXISTS。
+      // 表存在时二者语义完全一致，仅对"对象缺失"更宽容，不改变正常路径行为。
+      guarded = guarded.replace(/\bDROP\s+TABLE\s+(?!IF\s+EXISTS\b)(\w+)/gi, (_stmt, name) => `DROP TABLE IF EXISTS ${name}`);
       db.exec(guarded);
       db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
         m.version,
@@ -67,7 +119,12 @@ function migrate(db: DatabaseSync) {
       );
       db.exec('COMMIT');
     } catch (e) {
-      db.exec('ROLLBACK');
+      // ROLLBACK 自身也可能抛（例如 BEGIN 就没成功、当前无活动事务）→ 吞掉它，保留原始错误
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        /* 无活动事务时忽略，避免掩盖下面的原始错误 */
+      }
       throw e;
     }
   }
@@ -155,6 +212,12 @@ export function getDb(): DatabaseSync {
 /** SQLite 可绑定的参数类型（node:sqlite 只接受这些） */
 type SqlValue = string | number | bigint | null | Uint8Array;
 
+/**
+ * 参数规整（有意设计，不是掩盖传参遗漏）：
+ * node:sqlite 不接受 undefined / boolean，这里把 undefined 显式规整为 SQL NULL、boolean 规整为 0/1，
+ * 让调用方可以自然地传值而不必处处判空/转换。因此"传 undefined"会落库为 NULL 是预期行为，
+ * 而非把遗漏的参数悄悄掩盖——需要"保持原值"的语义请在业务层处理。
+ */
 function normalize(args: unknown[]): SqlValue[] {
   return args.map((v) => {
     if (v === undefined) return null;
@@ -164,17 +227,17 @@ function normalize(args: unknown[]): SqlValue[] {
 }
 
 export function dbAll<T = AnyRow>(sql: string, ...params: unknown[]): T[] {
-  const stmt = getDb().prepare(sql);
-  return stmt.all(...normalize(params)) as unknown as T[];
+  const stmt = prepareCached(getDb(), sql);
+  return stmt.all(...normalize(params)) as T[];
 }
 
 export function dbGet<T = AnyRow>(sql: string, ...params: unknown[]): T | undefined {
-  const stmt = getDb().prepare(sql);
-  return stmt.get(...normalize(params)) as unknown as T | undefined;
+  const stmt = prepareCached(getDb(), sql);
+  return stmt.get(...normalize(params)) as T | undefined;
 }
 
 export function dbRun(sql: string, ...params: unknown[]): { changes: number; lastInsertRowid: number } {
-  const stmt = getDb().prepare(sql);
+  const stmt = prepareCached(getDb(), sql);
   const r = stmt.run(...normalize(params));
   return {
     changes: Number(r.changes),
@@ -182,16 +245,47 @@ export function dbRun(sql: string, ...params: unknown[]): { changes: number; las
   };
 }
 
+/**
+ * 事务（可重入）：最外层用 BEGIN/COMMIT/ROLLBACK；
+ * 嵌套调用用 SAVEPOINT/RELEASE/ROLLBACK TO，内层回滚不影响外层已完成的写入。
+ * 签名与行为对外保持不变（同步函数）。
+ */
+let txDepth = 0;
+
 export function tx<T>(fn: () => T): T {
   const db = getDb();
-  db.exec('BEGIN');
+  const outer = txDepth === 0;
+  const sp = `sp_${txDepth}`; // 内层保存点名，按深度唯一（严格嵌套保证不重名）
+  if (outer) db.exec('BEGIN');
+  else db.exec(`SAVEPOINT ${sp}`);
+  txDepth++;
+  let ok = false;
   try {
     const out = fn();
-    db.exec('COMMIT');
+    ok = true;
     return out;
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
+  } finally {
+    txDepth--;
+    if (ok) {
+      if (outer) db.exec('COMMIT');
+      else db.exec(`RELEASE ${sp}`);
+    } else {
+      // 回滚失败不应掩盖 fn 抛出的原始错误
+      try {
+        if (outer) db.exec('ROLLBACK');
+        else db.exec(`ROLLBACK TO ${sp}`);
+      } catch {
+        /* 保留原始错误 */
+      }
+      if (!outer) {
+        // ROLLBACK TO 之后保存点仍在栈上，必须 RELEASE，否则污染后续保存点
+        try {
+          db.exec(`RELEASE ${sp}`);
+        } catch {
+          /* 保留原始错误 */
+        }
+      }
+    }
   }
 }
 
@@ -239,12 +333,16 @@ export const SECRET_SETTING_KEYS = ['llm_api_key', 'embedding_api_key'];
 export function maskSecret(value: string | null | undefined): string {
   const v = String(value || '');
   if (!v) return '';
-  if (v.length <= 4) return '••••';
+  // 短 Key（≤8 位）整体遮蔽，不露尾 4 位：位数越短，露出的尾 4 位越接近完整凭据。
+  // 空值仍返回 ''（"未设置"由调用方用"是否存在该值"表达，不改协议）。
+  if (v.length <= 8) return '••••••';
   return `••••••••${v.slice(-4)}`;
 }
 
 export function looksLikeMask(value: unknown): boolean {
-  return typeof value === 'string' && value.includes('•');
+  // 只认"以 ≥4 个连续圆点开头"的掩码（maskSecret 生成的一定满足）。
+  // 正常 API Key 不会以 4 个以上圆点开头，故收严后不会把真 Key 误判成掩码而丢弃。
+  return typeof value === 'string' && /^•{4,}/.test(value);
 }
 
 /** 给前端展示用的设置副本（API Key 只回传掩码，明文不出后端） */
@@ -273,7 +371,11 @@ export function boolSetting(key: string, def: boolean): boolean {
 /* ------------------------------------------------------------------ */
 export function getCounter(key: string): number {
   const row = dbGet<{ value: number }>('SELECT value FROM counters WHERE key = ?', key);
-  return row ? Number(row.value) : 0;
+  if (!row) return 0;
+  const n = Number(row.value);
+  // 非数字（脏数据/手工改库）返回 0：否则 NaN 会让 `NaN % 20 === 0` 恒为 false，
+  // 使依赖"每 N 轮触发一次"的遗忘清理/依恋分析窗口永久不触发
+  return Number.isFinite(n) ? n : 0;
 }
 
 export function bumpCounter(key: string, by = 1): number {

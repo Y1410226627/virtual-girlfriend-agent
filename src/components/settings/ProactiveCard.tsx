@@ -1,6 +1,7 @@
 'use client';
 
 import { Card } from '@/components/ui';
+import { errMsg } from '@/lib/utils';
 import type { SaveFn, SetFieldFn, SetToast } from './shared';
 
 export function ProactiveCard({
@@ -25,14 +26,27 @@ export function ProactiveCard({
         <button
           className="btn-ghost"
           onClick={async () => {
-            const r = await fetch('/api/proactive', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ force: true }),
-            });
-            const j = await r.json();
-            setToast(j.sent ? `她发来了：${j.message}` : `这次没有发：${j.reason}`);
-            reload();
+            try {
+              const r = await fetch('/api/proactive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ force: true }),
+              });
+              const j = (await r.json().catch(() => ({}))) as {
+                sent?: boolean;
+                message?: string;
+                reason?: string;
+                error?: string;
+              };
+              if (!r.ok) {
+                setToast(j.error || `操作失败 ${r.status}`);
+                return;
+              }
+              setToast(j.sent ? `她发来了：${j.message ?? ''}` : `这次没有发：${j.reason ?? '未知原因'}`);
+              reload();
+            } catch (e) {
+              setToast(errMsg(e) || '操作失败');
+            }
           }}
         >
           立刻试一次

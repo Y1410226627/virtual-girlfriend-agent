@@ -256,7 +256,11 @@ export function getPersona(): { agent_name: string | null; age: string | null; o
   };
 }
 
+/** setPersonaField 允许写入的列白名单（列名会拼进 SQL，运行时兜底防止越权列名） */
+const PERSONA_FIELDS: ReadonlySet<string> = new Set(['agent_name', 'age', 'occupation', 'self_story']);
+
 export function setPersonaField(field: 'agent_name' | 'age' | 'occupation' | 'self_story', value: string): void {
+  if (!PERSONA_FIELDS.has(field)) throw new Error(`非法的人设字段：${String(field)}`);
   dbRun(
     `UPDATE personas SET ${field} = ?, updated_at = ? WHERE user_id = ?`,
     value || null,

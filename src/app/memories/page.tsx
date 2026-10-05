@@ -70,7 +70,7 @@ export default function MemoriesPage() {
     }
   };
 
-  const changeImportance = async (id: number, importance: number) => {
+  const changeImportance = async (id: number, importance: number): Promise<boolean> => {
     try {
       const r = await fetch('/api/memories', {
         method: 'PATCH',
@@ -79,16 +79,20 @@ export default function MemoriesPage() {
       });
       if (!r.ok) throw new Error();
       await reload();
+      return true;
     } catch {
       setToast('重要度调整失败，请重试');
+      return false;
     }
   };
 
   if (loading && !data) return <Loading text="正在打开她的记忆…" />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
+  // 仅初次加载就失败才整页替换；已有数据时用顶部横幅提示，保留已加载内容可继续查看/操作
+  if (error && !data) return <ErrorBox message={error} onRetry={reload} />;
 
   return (
     <div className="pb-10">
+      {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="记忆"
         desc="她记住的关于你的一切。可以查看、编辑、删除；低价值记忆会自动归档。"

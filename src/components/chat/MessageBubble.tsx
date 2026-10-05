@@ -36,6 +36,7 @@ export default function MessageBubble({
         <button
           onClick={() => onRequestDelete(m)}
           title="删除这条消息"
+          aria-label="删除这条消息"
           className="shrink-0 rounded-full border line surf px-2 py-0.5 text-[11px] ink-3 opacity-50 transition hover:accent-soft hover:acc focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
         >
           ✕
@@ -82,6 +83,7 @@ export default function MessageBubble({
         <button
           onClick={() => onRequestDelete(m)}
           title="删除这条消息"
+          aria-label="删除这条消息"
           className="shrink-0 rounded-full border line surf px-2 py-0.5 text-[11px] ink-3 opacity-50 transition hover:accent-soft hover:acc focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
         >
           ✕
