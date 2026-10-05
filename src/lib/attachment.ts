@@ -3,7 +3,27 @@
 import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, customModeOn } from './db';
 import { clamp, nowIso, round1 } from './utils';
 import { attachmentStyleOf, ATTACHMENT_STYLES, type AttachmentState, type AttachmentSignal } from './types';
-import { getRelationshipState, logRelationship } from './relationship';
+import { logRelationship } from './relationship';
+
+interface AttachmentSignalRow {
+  id: number;
+  axis: string;
+  direction: string;
+  delta: number;
+  reasoning: string | null;
+}
+
+export interface AttachmentLogRow {
+  id: number;
+  user_id: number;
+  old_anxiety: number;
+  new_anxiety: number;
+  old_avoidance: number;
+  new_avoidance: number;
+  trigger: string | null;
+  reasoning: string | null;
+  created_at: string;
+}
 
 export function getAttachmentState(): AttachmentState {
   const a = dbGet<AttachmentState>('SELECT * FROM attachment_state WHERE user_id = ?', DEFAULT_USER_ID);
@@ -82,7 +102,7 @@ export function runAttachmentLayer(): void {
   const gatedConsume: Array<Array<{ id: number }>> = [];
 
   for (const axis of ['anxiety', 'avoidance'] as const) {
-    const rows = dbAll<any>(
+    const rows = dbAll<AttachmentSignalRow>(
       'SELECT * FROM attachment_signals WHERE user_id = ? AND axis = ? AND applied = 0 ORDER BY id ASC',
       DEFAULT_USER_ID,
       axis
@@ -121,7 +141,7 @@ export function runAttachmentLayer(): void {
     reasons.push(
       `${axis === 'anxiety' ? '焦虑轴' : '回避轴'}：3 次同向信号（${group
         .map((r) => round1(Number(r.delta)))
-        .join('/')}）→ 平均偏移 ${round1(shift)}。${group[group.length - 1].reasoning || ''}`
+        .join('/')}）→ 平均偏移 ${round1(shift)}。${group[group.length - 1]!.reasoning || ''}`
     );
     gatedConsume.push(group);
   }
@@ -135,11 +155,11 @@ export function runAttachmentLayer(): void {
 }
 
 export function listAttachmentLogs(limit = 60) {
-  return dbAll<any>('SELECT * FROM attachment_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
+  return dbAll<AttachmentLogRow>('SELECT * FROM attachment_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
 }
 
 export function attachmentEvolution() {
-  const logs = dbAll<any>(
+  const logs = dbAll<Pick<AttachmentLogRow, 'new_anxiety' | 'new_avoidance' | 'created_at'>>(
     'SELECT new_anxiety, new_avoidance, created_at FROM attachment_logs WHERE user_id = ? ORDER BY id ASC',
     DEFAULT_USER_ID
   );

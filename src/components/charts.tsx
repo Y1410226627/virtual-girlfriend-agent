@@ -149,7 +149,7 @@ export function LineChart({
         return (
           <g key={s.name}>
             <path d={d} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-            {pts.length === 1 ? <circle cx={xOf(pts[0].t)} cy={yOf(pts[0].v)} r={3} fill={s.color} /> : null}
+            {pts.length === 1 ? <circle cx={xOf(pts[0]!.t)} cy={yOf(pts[0]!.v)} r={3} fill={s.color} /> : null}
           </g>
         );
       })}
@@ -219,7 +219,7 @@ export function StageLadder({
   const ids = stages.map((s) => s.id);
   const cur = ids.includes(current)
     ? current
-    : ids.reduce((best, id) => (Math.abs(id - current) < Math.abs(best - current) ? id : best), ids[0]);
+    : ids.reduce((best, id) => (Math.abs(id - current) < Math.abs(best - current) ? id : best), ids[0]!);
   return (
     <div className="flex items-stretch gap-1.5">
       {stages.map((s) => {

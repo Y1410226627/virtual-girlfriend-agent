@@ -5,11 +5,11 @@ import { STAGES, stageOf } from '../src/lib/stages.ts';
 
 test('STAGES：5 个阶段、区间连续无缝、覆盖 0-100', () => {
   assert.equal(STAGES.length, 5);
-  assert.equal(STAGES[0].min, 0);
-  assert.equal(STAGES[STAGES.length - 1].max, 100);
+  assert.equal(STAGES[0]!.min, 0);
+  assert.equal(STAGES[STAGES.length - 1]!.max, 100);
   for (let i = 0; i < STAGES.length; i++) {
-    assert.equal(STAGES[i].id, i, 'id 应与序号一致');
-    if (i > 0) assert.equal(STAGES[i].min, STAGES[i - 1].max, '相邻阶段区间应无缝衔接');
+    assert.equal(STAGES[i]!.id, i, 'id 应与序号一致');
+    if (i > 0) assert.equal(STAGES[i]!.min, STAGES[i - 1]!.max, '相邻阶段区间应无缝衔接');
   }
 });
 

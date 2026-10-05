@@ -16,6 +16,21 @@ import { clamp, truncate } from '@/lib/utils';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/** memories 表只读列（星图聚合用） */
+interface TopAccessedRow {
+  id: number;
+  content: string | null;
+  importance: number | null;
+  access_count: number | null;
+  type: string | null;
+}
+interface ScatterRow {
+  id: number;
+  importance: number | null;
+  access_count: number | null;
+  content: string | null;
+}
+
 /**
  * 记忆星图：在原有 memoryStats() 基础上，追加"最常想起 / 重要度分布 / 散点 / 状态计数"。
  * 全部在服务端聚合，前端只拿结果，不拉全量再算。
@@ -38,7 +53,7 @@ function starStats() {
   };
 
   // 最常想起：active 记忆按 access_count 倒序取前 10
-  const topAccessed = dbAll<any>(
+  const topAccessed = dbAll<TopAccessedRow>(
     `SELECT id, content, importance, access_count, type FROM memories
      WHERE user_id = ? AND status = 'active'
      ORDER BY access_count DESC, importance DESC, id DESC LIMIT 10`,
@@ -69,7 +84,7 @@ function starStats() {
   }));
 
   // 散点：active 记忆按重要度倒序取最多 200 条
-  const scatter = dbAll<any>(
+  const scatter = dbAll<ScatterRow>(
     `SELECT id, importance, access_count, content FROM memories
      WHERE user_id = ? AND status = 'active'
      ORDER BY importance DESC, access_count DESC, id DESC LIMIT 200`,

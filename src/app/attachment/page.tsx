@@ -3,6 +3,45 @@
 import { useState } from 'react';
 import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, fmtTime, Chip } from '@/components/ui';
 import { Gauge, LineChart } from '@/components/charts';
+import { errMsg } from '@/lib/utils';
+
+interface AttachmentStateView {
+  anxiety: number;
+  avoidance: number;
+  style: string;
+  styleLabel: string;
+}
+
+interface AttachmentSeriesPoint {
+  t: string;
+  anxiety: number;
+  avoidance: number;
+}
+
+interface PendingSignal {
+  axis: string;
+  direction: string;
+  count: number;
+}
+
+interface AttachmentLog {
+  id: number;
+  old_anxiety: number;
+  new_anxiety: number;
+  old_avoidance: number;
+  new_avoidance: number;
+  created_at: string;
+  trigger: string;
+  reasoning: string | null;
+}
+
+interface AttachmentResponse {
+  state: AttachmentStateView;
+  styleMeaning: string;
+  logs: AttachmentLog[];
+  series: AttachmentSeriesPoint[];
+  pendingSignals: PendingSignal[];
+}
 
 const STYLE_INFO: Record<string, { desc: string; tone: string }> = {
   secure: { desc: '能稳定表达情感，也能接受分离；冲突后会主动修复。', tone: '安全的底色' },
@@ -12,12 +51,12 @@ const STYLE_INFO: Record<string, { desc: string; tone: string }> = {
 };
 
 export default function AttachmentPage() {
-  const { data, loading, error, reload } = useApi<any>('/api/attachment');
+  const { data, loading, error, reload } = useApi<AttachmentResponse>('/api/attachment');
   const [toast, setToast] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ anxiety: number; avoidance: number } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const post = async (body: any, msg?: string) => {
+  const post = async (body: Record<string, unknown>, msg?: string) => {
     setBusy(true);
     try {
       const r = await fetch('/api/attachment', {
@@ -30,8 +69,8 @@ export default function AttachmentPage() {
       if (msg) setToast(msg);
       await reload(); // 先刷新拿回新值，再清 draft，避免仪表数字闪烁
       setDraft(null);
-    } catch (e: any) {
-      setToast(e?.message || '操作失败');
+    } catch (e) {
+      setToast(errMsg(e) || '操作失败');
     } finally {
       setBusy(false);
     }
@@ -40,12 +79,12 @@ export default function AttachmentPage() {
   if (loading && !data) return <Loading text="正在读她的依恋状态…" />;
   if (error) return <ErrorBox message={error} onRetry={reload} />;
 
-  const st = data?.state || {};
+  const st: Partial<AttachmentStateView> = data?.state || {};
   const anxiety = draft?.anxiety ?? Number(st.anxiety ?? 30);
   const avoidance = draft?.avoidance ?? Number(st.avoidance ?? 30);
   const styleKey = st.style || 'secure';
-  const info = STYLE_INFO[styleKey] || STYLE_INFO.secure;
-  const series = (data?.series || []).map((p: any) => p);
+  const info = STYLE_INFO[styleKey] || STYLE_INFO.secure!;
+  const series = (data?.series || []).map((p) => p);
 
   return (
     <div className="pb-10">
@@ -69,7 +108,7 @@ export default function AttachmentPage() {
           <p className="text-sm leading-relaxed ink-2">{info.desc}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             <Chip tone="plain">{info.tone}</Chip>
-            {(data?.pendingSignals || []).map((p: any) => (
+            {(data?.pendingSignals || []).map((p) => (
               <Chip key={p.axis + p.direction} tone="plain">
                 {p.axis === 'anxiety' ? '焦虑轴' : '回避轴'} {p.direction === '+' ? '上升' : '下降'}信号 {p.count}/3
               </Chip>
@@ -130,8 +169,8 @@ export default function AttachmentPage() {
           ) : (
             <LineChart
               series={[
-                { name: '焦虑轴', color: '#F65C8A', points: series.map((p: any) => ({ t: p.t, v: p.anxiety })) },
-                { name: '回避轴', color: '#FF8F6B', points: series.map((p: any) => ({ t: p.t, v: p.avoidance })) },
+                { name: '焦虑轴', color: '#F65C8A', points: series.map((p) => ({ t: p.t, v: p.anxiety })) },
+                { name: '回避轴', color: '#FF8F6B', points: series.map((p) => ({ t: p.t, v: p.avoidance })) },
               ]}
               height={220}
             />
@@ -143,7 +182,7 @@ export default function AttachmentPage() {
         <Card title="变化日志（可追溯每次调整的触发原因）">
           {(data?.logs || []).length === 0 ? <p className="dim">还没有调整过。</p> : null}
           <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
-            {(data?.logs || []).map((l: any) => (
+            {(data?.logs || []).map((l) => (
               <div key={l.id} className="rounded-2xl border line surf px-3.5 py-2.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium ink-1">

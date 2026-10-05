@@ -9,9 +9,16 @@ import { getPersonalityRows } from '@/lib/personality';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/** attachment_signals 未应用信号的分组统计列 */
+interface PendingSignalRow {
+  axis: string;
+  direction: string;
+  c: number;
+}
+
 export async function GET() {
   const a = getAttachmentState();
-  const pending = dbAll<any>(
+  const pending = dbAll<PendingSignalRow>(
     'SELECT axis, direction, COUNT(*) AS c FROM attachment_signals WHERE user_id = ? AND applied = 0 GROUP BY axis, direction',
     DEFAULT_USER_ID
   );

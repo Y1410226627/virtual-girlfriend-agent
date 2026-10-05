@@ -1,14 +1,14 @@
 // 后台抽取流水线：每轮对话后调用 LLM 抽取记忆 / 关系变化 / 情感银行 / 冲突 / 性格信号 / 依恋信号
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, setCounter, boolSetting, numSetting, getSetting, customModeOn } from './db';
-import { clamp, nowIso, localDateStr, round1, truncate } from './utils';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getCounter, setCounter, boolSetting, getSetting, customModeOn } from './db';
+import { clamp, nowIso, localDateStr, round1, truncate, errMsg } from './utils';
 import { chat, chatJson } from './llm';
 import { buildAnalysisMessages, buildAttachmentAnalysisMessages, buildDailySummaryMessages } from './prompts';
 import { addMemory, forgetSweep, saveDailySummary, recentMessagesForSummary, applyMemoryCorrection } from './memory';
 import { applyRelationshipDelta, checkStageTransition, getRelationshipState, saveRelationshipState, logRelationship, agentName, userName } from './relationship';
 import { addBankEntry } from './emotionalBank';
-import { registerConflict, registerRepair, type ConflictType, type RepairQuality } from './conflict';
+import { registerConflict, registerRepair } from './conflict';
 import { addSignals, runConfirmLayer, saveWeeklySnapshot, signalProgress } from './personality';
-import { addAttachmentSignals, runAttachmentLayer, shouldRunAttachmentAnalysis, getAttachmentState } from './attachment';
+import { addAttachmentSignals, runAttachmentLayer, shouldRunAttachmentAnalysis } from './attachment';
 import { renderContentForModel } from './stickers';
 import {
   applyLifeDeltas,
@@ -25,7 +25,22 @@ import {
   applyInteractionEffects,
 } from './life';
 import { applyIntimacyDelta, startAftercare } from './intimacy';
-import type { AnalysisResult, AttachmentSignal, MemoryUpdate, PersonalitySignal, RelationshipDelta } from './types';
+import type { AnalysisResult, AttachmentSignal } from './types';
+import {
+  normalize,
+  parseMemoryCorrections,
+  pickEnum,
+  num,
+  transcript,
+  snapshotForUndo,
+  maxId,
+  type RawAnalysis,
+  type RawLocationChange,
+  type RawActivityChange,
+  type RawDailyEvent,
+  type RawSharedWorldUpdate,
+  type RawAttachmentAnalysis,
+} from './analysis-parse';
 
 /** 用户明确表达"喜欢/不喜欢这样的我"的句式（规则兜底，权重 3 倍）
  *  收紧：只认指向"她这个人/她的说话方式"的明确反馈，避免"说得好/别那么"这类泛化词一命中就把整轮信号 ×3 */
@@ -48,153 +63,6 @@ export interface AnalyzeOutcome {
     /** 本轮进入事后状态 */
     aftercare?: boolean;
   };
-}
-
-function emptyResult(): AnalysisResult {
-  return {
-    memory_updates: [],
-    relationship_delta: {
-      intimacy: 0,
-      trust: 0,
-      mood: getRelationshipState().mood,
-      emotional_balance_delta: 0,
-      unresolved_tension_delta: 0,
-      repair_credit_delta: 0,
-    },
-    personality_signals: [],
-    attachment_signals: { anxiety_delta: 0, avoidance_delta: 0, reasoning: '' },
-    conflict_detected: false,
-    conflict_type: 'none',
-    repair_attempt: false,
-    repair_quality: 'none',
-    relationship_confirmation: false,
-    next_check_in_minutes: 120,
-    next_relationship_talk: false,
-    reasoning: '',
-  };
-}
-
-function num(v: any, def = 0): number {
-  const n = Number(v);
-  return isFinite(n) ? n : def;
-}
-
-function normalize(raw: any): AnalysisResult {
-  const base = emptyResult();
-  if (!raw || typeof raw !== 'object') return base;
-
-  const rd = raw.relationship_delta || {};
-  const delta: RelationshipDelta = {
-    intimacy: clamp(num(rd.intimacy), -2, 2),
-    trust: clamp(num(rd.trust), -2, 2),
-    mood: typeof rd.mood === 'string' && rd.mood.trim() ? rd.mood.trim().slice(0, 12) : base.relationship_delta.mood,
-    emotional_balance_delta: clamp(num(rd.emotional_balance_delta), -5, 5),
-    unresolved_tension_delta: clamp(num(rd.unresolved_tension_delta), -20, 20),
-    repair_credit_delta: clamp(num(rd.repair_credit_delta), -10, 10),
-  };
-
-  const memories: MemoryUpdate[] = Array.isArray(raw.memory_updates)
-    ? raw.memory_updates
-        .filter((m: any) => m && typeof m.content === 'string' && m.content.trim().length > 1)
-        .slice(0, 6)
-        .map((m: any) => ({
-          type: ['semantic', 'episodic', 'emotional', 'relationship', 'attachment', 'personality'].includes(m.type)
-            ? m.type
-            : 'episodic',
-          content: String(m.content).trim().slice(0, 500),
-          importance: clamp(num(m.importance, 5), 0, 10),
-          emotion: m.emotion ? String(m.emotion).slice(0, 12) : null,
-          expires_at: m.expires_at || null,
-        }))
-    : [];
-
-  const signals: PersonalitySignal[] = Array.isArray(raw.personality_signals)
-    ? raw.personality_signals
-        .filter((s: any) => s && s.dimension)
-        // 方向白名单：模型用文字表达负向（negative/decrease/减少）时原来会被当成 '+'
-        .map((s: any) => {
-          const dRaw = String(s.direction ?? '').trim();
-          let dir: '+' | '-' | null = null;
-          if (/^(\+|pos|up|increase|增加|提升|正向)/i.test(dRaw)) dir = '+';
-          else if (/^(-|neg|down|decrease|减少|降低|负向)/i.test(dRaw)) dir = '-';
-          return { raw: s, dir };
-        })
-        .filter((x: any) => x.dir === '+' || x.dir === '-') // 方向不明就丢弃，别默认加成
-        .slice(0, 8)
-        .map((x: any): PersonalitySignal => ({
-          signal: String(x.raw.signal || '').slice(0, 200),
-          dimension: String(x.raw.dimension),
-          direction: x.dir,
-          strength: clamp(num(x.raw.strength, 0.5), 0, 1),
-          context: String(x.raw.context || '未知情境').slice(0, 120),
-          reasoning: x.raw.reasoning ? String(x.raw.reasoning).slice(0, 300) : undefined,
-          is_direct_feedback: !!x.raw.is_direct_feedback,
-        }))
-    : [];
-
-  const as = raw.attachment_signals || {};
-  const attachment: AttachmentSignal = {
-    anxiety_delta: clamp(num(as.anxiety_delta), -2, 2),
-    avoidance_delta: clamp(num(as.avoidance_delta), -2, 2),
-    reasoning: String(as.reasoning || '').slice(0, 500),
-    user_attachment_cues: Array.isArray(as.user_attachment_cues) ? as.user_attachment_cues.slice(0, 6).map(String) : [],
-  };
-
-  const conflictType: ConflictType = ['minor', 'major', 'boundary'].includes(raw.conflict_type)
-    ? raw.conflict_type
-    : 'none';
-  const repairQuality: RepairQuality = ['sincere', 'sweet', 'avoidant', 'none'].includes(raw.repair_quality)
-    ? raw.repair_quality
-    : 'none';
-
-  return {
-    memory_updates: memories,
-    relationship_delta: delta,
-    personality_signals: signals,
-    attachment_signals: attachment,
-    conflict_detected: !!raw.conflict_detected,
-    conflict_type: conflictType,
-    repair_attempt: !!raw.repair_attempt,
-    repair_quality: repairQuality,
-    relationship_confirmation: !!raw.relationship_confirmation,
-    next_check_in_minutes: clamp(
-      raw.next_check_in_minutes === null || raw.next_check_in_minutes === undefined || raw.next_check_in_minutes === ''
-        ? 120
-        : num(raw.next_check_in_minutes, 120),
-      5,
-      360
-    ),
-    next_relationship_talk: !!raw.next_relationship_talk,
-    scene: ['online', 'offline'].includes(String(raw.scene)) ? String(raw.scene) : 'keep',
-    scene_reason: String(raw.scene_reason || '').slice(0, 200),
-    reasoning: String(raw.reasoning || '').slice(0, 800),
-  };
-}
-
-/** 解析"记忆纠正"：只保留字段完整、语义有效的项，最多 2 条（字段缺失即视为无纠正） */
-function parseMemoryCorrections(raw: any): { old_hint: string; new_fact: string }[] {
-  const list = Array.isArray(raw?.memory_corrections) ? raw.memory_corrections : [];
-  return list
-    .filter((c: any) => c && typeof c.new_fact === 'string' && c.new_fact.trim().length > 1)
-    .slice(0, 2)
-    .map((c: any) => ({
-      old_hint: typeof c.old_hint === 'string' ? c.old_hint.trim().slice(0, 300) : '',
-      new_fact: String(c.new_fact).trim().slice(0, 500),
-    }));
-}
-
-/** 把一轮对话的上下文整理成文字（供分析使用） */
-function transcript(limit = 10): string {
-  const rows = dbAll<any>(
-    'SELECT role, content FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
-    DEFAULT_USER_ID,
-    limit
-  ).reverse();
-  const her = agentName();
-  const him = userName();
-  return rows
-    .map((r) => `${r.role === 'user' ? him : her}：${truncate(r.content, 300)}`)
-    .join('\n');
 }
 
 /**
@@ -227,7 +95,7 @@ export async function analyzeTurn(params: {
       turnCount: turn,
     });
 
-    const raw = await chatJson(messages, {
+    const raw = await chatJson<RawAnalysis>(messages, {
       maxTokens: 2600,
       temperature: 0.25,
       thinking: boolSetting('analysis_thinking', false),
@@ -253,7 +121,7 @@ export async function analyzeTurn(params: {
         await applyMemoryCorrection(c.old_hint, c.new_fact, params.userMessageId ?? null);
       }
     } catch (e) {
-      console.warn('[analysis] memory_corrections 处理失败:', (e as any)?.message || e);
+      console.warn('[analysis] memory_corrections 处理失败:', errMsg(e));
     }
 
     // 2) 关系数值（自定义模式跳过：数值由用户直控）
@@ -367,16 +235,16 @@ export async function analyzeTurn(params: {
 
     // 8.5) 世界模拟 + 亲密系统（都在这里落地）
     try {
-      const rawAny: any = raw;
+      const rawAny: RawAnalysis = raw;
       applyLifeDeltas({ health: rawAny.health_delta, psychology: rawAny.psychology_delta });
       // 字符串字段统一限长（原来这些直读 rawAny，模型偶发超长文本会直接落库并回注 Prompt）
-      const lc = rawAny.location_change || {};
+      const lc: RawLocationChange = rawAny.location_change || {};
       if (lc.new_location) applyLocationChange(String(lc.new_location).slice(0, 20), String(lc.reason || '').slice(0, 60));
-      const ac = rawAny.activity_change || {};
+      const ac: RawActivityChange = rawAny.activity_change || {};
       if (ac.new_activity) applyActivityChange(String(ac.new_activity).slice(0, 24), String(ac.expected_end || '').slice(0, 20));
-      const de = rawAny.daily_event || {};
+      const de: RawDailyEvent = rawAny.daily_event || {};
       if (de.content) addDailyEvent(String(de.type || '生活').slice(0, 12), String(de.content).slice(0, 200), String(de.impact || '').slice(0, 120));
-      const sw = rawAny.shared_world_update || {};
+      const sw: RawSharedWorldUpdate = rawAny.shared_world_update || {};
       if (sw.new_plan) addSharedPlan(String(sw.new_plan).slice(0, 80));
       if (sw.new_ritual) addSharedRitual(String(sw.new_ritual).slice(0, 80));
       if (sw.new_place) addSharedPlace(String(sw.new_place).slice(0, 60));
@@ -388,10 +256,10 @@ export async function analyzeTurn(params: {
         );
       }
       if (Array.isArray(rawAny.profile_reveal)) {
-        revealProfileFields(rawAny.profile_reveal.filter((x: any) => typeof x === 'string').slice(0, 6).map(String));
+        revealProfileFields(rawAny.profile_reveal.filter((x) => typeof x === 'string').slice(0, 6).map(String));
       }
       if (Array.isArray(rawAny.preference_reveal)) {
-        revealPreferences(rawAny.preference_reveal.filter((x: any) => typeof x === 'string').slice(0, 6).map(String));
+        revealPreferences(rawAny.preference_reveal.filter((x) => typeof x === 'string').slice(0, 6).map(String));
       }
       if (rawAny.cared_for_her) {
         careBoost('care');
@@ -401,12 +269,14 @@ export async function analyzeTurn(params: {
       if (!custom) applyInteractionEffects({ caredForHer: !!rawAny.cared_for_her });
       // 亲密系统（自定义模式跳过：数值由用户直控）
       if (!custom) {
-        const idelta = rawAny.intimacy_delta || {};
+        const idelta: Record<string, number> = rawAny.intimacy_delta || {};
         if (typeof idelta === 'object' && Object.keys(idelta).length) applyIntimacyDelta(idelta);
         if (rawAny.aftercare_needed) {
-          const quality = ['good', 'neutral', 'ignored'].includes(rawAny.aftercare_quality)
-            ? rawAny.aftercare_quality
-            : 'neutral';
+          const quality = pickEnum<'good' | 'neutral' | 'ignored'>(
+            rawAny.aftercare_quality,
+            ['good', 'neutral', 'ignored'],
+            'neutral'
+          );
           const aft = startAftercare(quality);
           if (aft) {
             outcome.applied.aftercare = true;
@@ -415,7 +285,7 @@ export async function analyzeTurn(params: {
         }
       }
     } catch (e) {
-      console.warn('[life/intimacy] apply failed:', (e as any)?.message || e);
+      console.warn('[life/intimacy] apply failed:', errMsg(e));
     }
 
     // 9) 三层机制：确认层 + 固化层（这是唯一真正修改性格的地方；自定义模式跳过）
@@ -427,7 +297,7 @@ export async function analyzeTurn(params: {
       const lastAttachmentTurn = getCounter('last_attachment_analysis_turn');
       if (shouldRunAttachmentAnalysis(turn, lastAttachmentTurn)) {
         try {
-          const attRaw = await chatJson(buildAttachmentAnalysisMessages(transcript(20), turn), {
+          const attRaw = await chatJson<RawAttachmentAnalysis>(buildAttachmentAnalysisMessages(transcript(20), turn), {
             maxTokens: 900,
             temperature: 0.2,
             thinking: boolSetting('analysis_thinking', false),
@@ -464,7 +334,7 @@ export async function analyzeTurn(params: {
     // 12) 记录本轮实际产生的影响（供"删除消息并撤销影响"使用）
     try {
       const after = snapshotForUndo();
-      const conflict = dbGet<any>(
+      const conflict = dbGet<{ id: number }>(
         'SELECT id FROM conflict_logs WHERE user_id = ? ORDER BY id DESC LIMIT 1',
         DEFAULT_USER_ID
       );
@@ -505,13 +375,13 @@ export async function analyzeTurn(params: {
         })
       );
     } catch (e) {
-      console.warn('[analysis] turn_effects 记录失败:', (e as any)?.message || e);
+      console.warn('[analysis] turn_effects 记录失败:', errMsg(e));
     }
 
     outcome.ok = true;
     return outcome;
-  } catch (e: any) {
-    outcome.error = e?.message || String(e);
+  } catch (e) {
+    outcome.error = errMsg(e);
     return outcome;
   }
 }
@@ -543,11 +413,11 @@ export async function maybeGenerateDailySummary(force = false): Promise<string |
   }
 
   const rows = recentMessagesForSummary(target);
-  const lifeEvents = dbAll<any>(
+  const lifeEvents = dbAll<{ event_type: string; content: string; created_at: string }>(
     "SELECT event_type, content, created_at FROM agent_daily_events WHERE user_id = ? AND date(created_at, 'localtime') = ? ORDER BY id ASC",
     DEFAULT_USER_ID, target
   );
-  const lifeLogs = dbAll<any>(
+  const lifeLogs = dbAll<{ field: string; new_value: string; reason: string | null; created_at: string }>(
     "SELECT field, new_value, reason, created_at FROM life_state_logs WHERE user_id = ? AND date(created_at, 'localtime') = ? AND field IN ('activity', 'illness', 'care', 'shared_plan', 'shared_ritual', 'shared_place', 'shared_item') ORDER BY id ASC",
     DEFAULT_USER_ID, target
   );
@@ -583,25 +453,4 @@ export async function maybeGenerateDailySummary(force = false): Promise<string |
 /** 供前端展示：当前累积层进度（性格页） */
 export function personalitySignalSnapshot() {
   return signalProgress();
-}
-
-/* ------------------------------------------------------------------ */
-/* 撤销支持：记录/回滚一轮对话造成的影响                                */
-/* ------------------------------------------------------------------ */
-function snapshotForUndo() {
-  const s = getRelationshipState();
-  return {
-    intimacy: round1(s.intimacy),
-    trust: round1(s.trust),
-    balance: round1(s.emotional_balance),
-    tension: round1(s.unresolved_tension),
-    repair: round1(s.repair_credit),
-    mood: s.mood,
-    stage: s.stage,
-  };
-}
-
-function maxId(table: string): number {
-  const row = dbGet<{ m: number | null }>(`SELECT MAX(id) AS m FROM ${table} WHERE user_id = ?`, DEFAULT_USER_ID);
-  return Number(row?.m || 0);
 }

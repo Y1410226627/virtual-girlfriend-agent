@@ -1,6 +1,6 @@
 // 聊天引擎：上下文组装 + 回复生成（流式）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, numSetting, getSetting } from './db';
-import { nowIso, localDateStr, truncate, humanTime, hoursSince } from './utils';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, numSetting, getSetting } from './db';
+import { nowIso, truncate, hoursSince, errMsg } from './utils';
 import { chat, chatStream, type ChatMessage } from './llm';
 import { buildReplyMessages, buildHints } from './prompts';
 import { retrieveMemories, formatMemoryBlock } from './memory';
@@ -27,7 +27,7 @@ export interface PreparedTurn {
 export function insertMessage(
   role: 'user' | 'assistant' | 'system',
   content: string,
-  opts: { isProactive?: boolean; emotion?: string; meta?: any } = {}
+  opts: { isProactive?: boolean; emotion?: string; meta?: unknown } = {}
 ): number {
   const { lastInsertRowid } = dbRun(
     `INSERT INTO messages (user_id, role, content, emotion, is_proactive, read_at, meta, created_at)
@@ -136,7 +136,7 @@ export function recentActionPhrases(limit = 10): string[] {
     const re = /[（(]([^）)]{2,80})[）)]/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
-      const a = m[1].trim();
+      const a = m[1]!.trim();
       if (a && !seen.includes(a)) seen.push(a);
       if (seen.length >= limit) return seen;
     }
@@ -162,8 +162,8 @@ export async function prepareTurn(
     // 事件已到期而用户先来消息：静默结束（她用"刚结束"的状态回复，这里就不再补一条提醒）
     const expired = getExpiredEvent();
     if (expired) settleExpiredEvent(expired, false);
-  } catch (e: any) {
-    console.warn('[life] advance failed:', e?.message || e);
+  } catch (e) {
+    console.warn('[life] advance failed:', errMsg(e));
   }
   touchInteraction();
 

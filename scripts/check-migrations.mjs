@@ -1,9 +1,9 @@
-// 迁移安全检查：扫描 src/lib/db.ts 的 MIGRATIONS，强制"只加表、加列"规则。
+// 迁移安全检查：扫描 src/lib/db-migrations.ts 的 MIGRATIONS，强制"只加表、加列"规则。
 // 破坏性操作（DROP TABLE / DELETE FROM / UPDATE 无 WHERE / DROP COLUMN）必须用 -- safe: <理由> 注释说明。
 // 用法：npm run check:migrations   （违规 → 退出码 1）
 import { readFileSync } from 'node:fs';
 
-const DB_FILE = 'src/lib/db.ts';
+const DB_FILE = 'src/lib/db-migrations.ts';
 const src = readFileSync(DB_FILE, 'utf8');
 
 // 提取 MIGRATIONS 数组里的每个 { version, name, sql: `...` } 条目

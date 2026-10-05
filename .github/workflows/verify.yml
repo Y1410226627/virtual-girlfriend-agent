@@ -1,0 +1,36 @@
+# CI：push / PR 时跑与本地完全一致的验证回路（npm run verify 的同一套门禁）。
+# 隐私说明：CI 只做静态检查与构建，仓库里没有任何用户数据（data/ 从不提交）。
+# 说明：npm scripts 里的 NEXT_TELEMETRY_DISABLED=1 是 Windows cmd 语法；
+#      在 CI（bash）上由下面的 env 统一关闭 Next.js 遥测，效果一致。
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: 安装依赖（锁文件精确安装）
+        run: npm ci
+      - name: 类型检查
+        run: npm run typecheck
+      - name: Lint（含 no-explicit-any / no-unused-vars 门禁）
+        run: npm run lint
+      - name: 单元测试（Node 原生 test runner）
+        run: npm run test
+      - name: 循环依赖检查
+        run: npm run check:cycles
+      - name: 迁移安全检查（只加不删）
+        run: npm run check:migrations
+      - name: 生产构建
+        run: npm run build

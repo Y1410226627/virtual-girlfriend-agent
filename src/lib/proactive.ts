@@ -1,6 +1,6 @@
 // 主动消息：定时任务检查是否该由她先开口（不骚扰、有节制、引用记忆、符合阶段）
-import { dbAll, dbGet, dbRun, getSetting, numSetting, getCounter, setCounter, bumpCounter, DEFAULT_USER_ID } from './db';
-import { hoursSince, localDateStr, localHour, minutesSince, truncate, nowIso } from './utils';
+import { dbAll, dbGet, dbRun, getSetting, getCounter, setCounter, bumpCounter, DEFAULT_USER_ID } from './db';
+import { hoursSince, localDateStr, localHour, minutesSince, nowIso, errMsg } from './utils';
 import { chat } from './llm';
 import { buildProactiveMessages } from './prompts';
 import { retrieveMemories, formatMemoryBlock } from './memory';
@@ -16,16 +16,38 @@ import { fadeTension } from './conflict';
 
 export type ProactiveKind = 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end';
 
+export interface ProactiveMessageRow {
+  id: number;
+  user_id: number;
+  kind: string;
+  content: string;
+  message_id: number | null;
+  created_at: string;
+}
+
+interface EventRow {
+  id: number;
+  user_id: number;
+  title: string;
+  event_date: string;
+  repeat_yearly: number;
+  kind: string;
+  description: string | null;
+  created_at: string;
+}
+
 /** 早安 / 晚安仪式：早 6-10 点、晚 21-23 点各最多一次 */
 function ritualSlotNow(): 'morning' | 'night' | null {
   const hour = localHour();
   const slot: 'morning' | 'night' | null = hour >= 6 && hour < 10 ? 'morning' : hour >= 21 && hour < 23 ? 'night' : null;
   if (!slot) return null;
   const w = getSharedWorld();
-  const hasRitual = (w.rituals || []).some((r: any) => /早安|晚安|早上|睡前/.test(String(r.content || r.title || '')));
+  const hasRitual = (w.rituals || []).some((r: { content?: string; title?: string }) =>
+    /早安|晚安|早上|睡前/.test(String(r.content || r.title || ''))
+  );
   if (!hasRitual) return null;
   const today = localDateStr();
-  const sent = dbAll<any>(
+  const sent = dbAll<{ created_at: string }>(
     "SELECT created_at FROM proactive_messages WHERE user_id = ? AND kind = 'ritual' AND date(created_at, 'localtime') = ?",
     DEFAULT_USER_ID,
     today
@@ -45,7 +67,7 @@ const FREQ_LIMITS: Record<string, { perDay: number; minGapHours: number }> = {
 
 function parseHm(hm: string): number {
   const [h, m] = String(hm || '0:0').split(':').map((x) => Number(x) || 0);
-  return h * 60 + m;
+  return h! * 60 + m!;
 }
 
 function inQuietHours(): boolean {
@@ -57,10 +79,10 @@ function inQuietHours(): boolean {
   return start < end ? cur >= start && cur < end : cur >= start || cur < end;
 }
 
-function todayEvent(): any | null {
+function todayEvent(): EventRow | null {
   const today = localDateStr();
   const md = today.slice(5); // MM-DD
-  const rows = dbAll<any>(
+  const rows = dbAll<EventRow>(
     'SELECT * FROM events WHERE user_id = ? ORDER BY event_date ASC',
     DEFAULT_USER_ID
   );
@@ -74,7 +96,7 @@ function todayEvent(): any | null {
 
 /** 最后一次用户消息之后是否有她的"主动搭话"没被回应（"她的事结束了"这类例行提醒不算） */
 function unansweredProactiveCount(): number {
-  const rows = dbAll<any>(
+  const rows = dbAll<{ message_id: number | null }>(
     "SELECT message_id FROM proactive_messages WHERE user_id = ? AND kind != 'event_end' ORDER BY id DESC LIMIT 3",
     DEFAULT_USER_ID
   );
@@ -109,7 +131,7 @@ export async function tickProactive(force = false): Promise<TickResult> {
 
   const rel = getRelationshipState();
   const freq = getSetting('proactive_frequency') || 'medium';
-  const limits = FREQ_LIMITS[freq] || FREQ_LIMITS.medium;
+  const limits = FREQ_LIMITS[freq] ?? FREQ_LIMITS.medium!;
 
   // 她的生活先推进到此刻（按流逝时间推导，幂等）
   ensureLife();
@@ -136,7 +158,7 @@ export async function tickProactive(force = false): Promise<TickResult> {
   if (expired) {
     const endMs = new Date(expired.expected_end_at || '').getTime();
     const lateMinutes = (Date.now() - endMs) / 60000;
-    const lastAnyMsg = dbGet<any>(
+    const lastAnyMsg = dbGet<{ created_at: string }>(
       'SELECT created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1',
       DEFAULT_USER_ID
     );
@@ -168,7 +190,7 @@ export async function tickProactive(force = false): Promise<TickResult> {
     if (rel.stage < 1) return skip('关系还在初识期，她不会先开口');
   }
 
-  const lastMsg = dbGet<any>(
+  const lastMsg = dbGet<{ created_at: string; role: string }>(
     'SELECT created_at, role FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1',
     DEFAULT_USER_ID
   );
@@ -245,8 +267,8 @@ export async function tickProactive(force = false): Promise<TickResult> {
   let content = '';
   try {
     content = await chat(messages, { maxTokens: 260, temperature: 0.95, thinking: false });
-  } catch (e: any) {
-    return skip(`生成失败：${e?.message || e}`);
+  } catch (e) {
+    return skip(`生成失败：${errMsg(e)}`);
   }
   const raw = String(content || '').trim();
   // 主动消息同样过人味层：清洗 AI 腔、控制长度、缺动作就补一个
@@ -303,8 +325,8 @@ export async function notifyEventEnd(evt: OngoingEventRow, interrupted = false):
   let content = '';
   try {
     content = await chat(messages, { maxTokens: 240, temperature: 0.95, thinking: false });
-  } catch (e: any) {
-    console.warn('[event_end] 生成失败:', e?.message || e);
+  } catch (e) {
+    console.warn('[event_end] 生成失败:', errMsg(e));
     return null;
   }
   const raw = String(content || '').trim();
@@ -334,9 +356,9 @@ export async function notifyEventEnd(evt: OngoingEventRow, interrupted = false):
 /** 供设置页展示当前主动消息状态 */
 export function proactiveStatus() {
   const freq = getSetting('proactive_frequency') || 'medium';
-  const limits = FREQ_LIMITS[freq] || FREQ_LIMITS.medium;
+  const limits = FREQ_LIMITS[freq] ?? FREQ_LIMITS.medium!;
   const dayKey = `proactive_count_${localDateStr()}`;
-  const rows = dbAll<any>(
+  const rows = dbAll<{ kind: string; content: string; created_at: string }>(
     'SELECT kind, content, created_at FROM proactive_messages WHERE user_id = ? ORDER BY id DESC LIMIT 10',
     DEFAULT_USER_ID
   );
@@ -356,7 +378,7 @@ export function proactiveStatus() {
 }
 
 export function listProactive(limit = 20) {
-  return dbAll<any>(
+  return dbAll<ProactiveMessageRow>(
     'SELECT * FROM proactive_messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
     DEFAULT_USER_ID,
     limit

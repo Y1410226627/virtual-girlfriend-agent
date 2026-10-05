@@ -4,6 +4,13 @@ import { clamp, nowIso, daysSince, round1, localDateStr } from './utils';
 import { STAGES, stageOf } from './stages';
 import type { RelationshipState, RelationshipDelta } from './types';
 
+interface PersonaRow {
+  agent_name: string | null;
+  age: string | null;
+  occupation: string | null;
+  self_story: string | null;
+}
+
 export function getRelationshipState(): RelationshipState {
   const s = dbGet<RelationshipState>('SELECT * FROM relationship_state WHERE user_id = ?', DEFAULT_USER_ID);
   if (!s) throw new Error('relationship_state 未初始化');
@@ -47,8 +54,8 @@ export function saveRelationshipState(s: RelationshipState): void {
 export function logRelationship(
   kind: string,
   summary: string,
-  oldValue?: any,
-  newValue?: any,
+  oldValue?: unknown,
+  newValue?: unknown,
   reason?: string
 ): void {
   dbRun(
@@ -159,7 +166,7 @@ export function checkStageTransition(relationshipConfirmation = false, reason = 
     saveRelationshipState(cur);
     logRelationship(
       'milestone',
-      `等待期已满足，${stageOf(cur.stage).name}期 → ${STAGES[cur.stage + 1].name}期：等待一次关系确认对话`,
+      `等待期已满足，${stageOf(cur.stage).name}期 → ${STAGES[cur.stage + 1]!.name}期：等待一次关系确认对话`,
       cur.stage,
       cur.stage + 1,
       reason
@@ -184,11 +191,11 @@ export function checkStageTransition(relationshipConfirmation = false, reason = 
     latest.pending_relationship_talk = 0;
     latest.mood = '心动';
     // 新阶段的亲密度从新阶段下限开始
-    latest.intimacy = clamp(latest.intimacy, STAGES[latest.stage].min, STAGES[latest.stage].max);
+    latest.intimacy = clamp(latest.intimacy, STAGES[latest.stage]!.min, STAGES[latest.stage]!.max);
     saveRelationshipState(latest);
     logRelationship(
       'stage_up',
-      `阶段跃迁：${STAGES[oldStage].name} → ${STAGES[latest.stage].name}`,
+      `阶段跃迁：${STAGES[oldStage]!.name} → ${STAGES[latest.stage]!.name}`,
       oldStage,
       latest.stage,
       reason || '关系确认对话完成'
@@ -210,11 +217,11 @@ export function checkStageTransition(relationshipConfirmation = false, reason = 
     st.pending_stage_confirm = 0;
     st.mood = '低落';
     // 回退后亲密度同步落到新阶段的合法区间（不能留着上一阶段的高值）
-    st.intimacy = clamp(st.intimacy, STAGES[st.stage].min, STAGES[st.stage].max);
+    st.intimacy = clamp(st.intimacy, STAGES[st.stage]!.min, STAGES[st.stage]!.max);
     saveRelationshipState(st);
     logRelationship(
       'stage_down',
-      `关系回退：${STAGES[oldStage].name} → ${STAGES[st.stage].name}`,
+      `关系回退：${STAGES[oldStage]!.name} → ${STAGES[st.stage]!.name}`,
       oldStage,
       st.stage,
       reason || (crisis ? '未解决的冷战持续' : '情感账户长期透支')
@@ -240,7 +247,7 @@ export function touchInteraction(): void {
 /* 昵称 / 纪念日 / 人设                                                */
 /* ------------------------------------------------------------------ */
 export function getPersona(): { agent_name: string | null; age: string | null; occupation: string | null; self_story: string | null } {
-  const p = dbGet<any>('SELECT * FROM personas WHERE user_id = ?', DEFAULT_USER_ID);
+  const p = dbGet<PersonaRow>('SELECT * FROM personas WHERE user_id = ?', DEFAULT_USER_ID);
   return {
     agent_name: p?.agent_name ?? null,
     age: p?.age ?? null,

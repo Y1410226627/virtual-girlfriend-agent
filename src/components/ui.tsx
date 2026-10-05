@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { errMsg } from '@/lib/utils';
 
 /* ---------------------- 数据请求 hook ---------------------- */
-export function useApi<T = any>(url: string | null) {
+export function useApi<T = unknown>(url: string | null) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!url);
@@ -21,9 +22,9 @@ export function useApi<T = any>(url: string | null) {
       if (reqId !== reqIdRef.current) return;
       setData(j);
       setError(null);
-    } catch (e: any) {
+    } catch (e) {
       if (reqId !== reqIdRef.current) return;
-      setError(e?.message || String(e));
+      setError(errMsg(e));
     } finally {
       if (reqId === reqIdRef.current) setLoading(false);
     }
@@ -49,7 +50,7 @@ export function PageHeader({ title, desc, right }: { title: string; desc?: strin
   );
 }
 
-export function Card({ title, right, children, className = '' }: any) {
+export function Card({ title, right, children, className = '' }: { title?: React.ReactNode; right?: React.ReactNode; children?: React.ReactNode; className?: string }) {
   return (
     <section className={`card ${className}`}>
       {(title || right) && (
@@ -63,7 +64,7 @@ export function Card({ title, right, children, className = '' }: any) {
   );
 }
 
-export function Stat({ label, value, unit, tone = 'rose' }: { label: string; value: any; unit?: string; tone?: 'rose' | 'peach' | 'ink' }) {
+export function Stat({ label, value, unit, tone = 'rose' }: { label: string; value: React.ReactNode; unit?: string; tone?: 'rose' | 'peach' | 'ink' }) {
   const color = tone === 'peach' ? 'acc-2' : tone === 'ink' ? 'ink-2' : 'acc';
   return (
     <div className="rounded-2xl surf border line px-3.5 py-3">
@@ -91,7 +92,7 @@ export function Bar({ value, max = 100, min = 0, tone = 'rose', height = 8 }: { 
   );
 }
 
-export function Chip({ children, tone = 'rose' }: any) {
+export function Chip({ children, tone = 'rose' }: { children?: React.ReactNode; tone?: string }) {
   return <span className={tone === 'plain' ? 'chip-plain' : 'chip'}>{children}</span>;
 }
 
@@ -148,9 +149,16 @@ export function fmtDate(iso?: string | null) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** 表情包数据 */
+export interface Sticker {
+  id: string;
+  emoji?: React.ReactNode;
+  caption?: React.ReactNode;
+}
+
 /** 表情包卡片 */
-export function StickerCard({ id, stickers }: { id: string; stickers?: any[] }) {
-  const s = (stickers || []).find((x: any) => x.id === id);
+export function StickerCard({ id, stickers }: { id: string; stickers?: Sticker[] }) {
+  const s = (stickers || []).find((x: Sticker) => x.id === id);
   if (!s) {
     return <span className="italic ink-3">（表情包）</span>;
   }
@@ -175,7 +183,7 @@ export function RichText({
 }: {
   text: string;
   tone?: 'agent' | 'user';
-  stickers?: any[];
+  stickers?: Sticker[];
 }) {
   const actionCls = tone === 'user' ? 'italic text-white/75' : 'italic acc';
   const src = String(text || '');
@@ -207,7 +215,7 @@ export function RichText({
     if (m.index > last) pushText(src.slice(last, m.index));
     nodes.push(
       <span key={key++} className="block">
-        <StickerCard id={m[1]} stickers={stickers} />
+        <StickerCard id={m[1]!} stickers={stickers} />
       </span>
     );
     last = m.index + m[0].length;

@@ -3,6 +3,46 @@
 import { useState } from 'react';
 import { useApi, PageHeader, Card, Stat, Loading, ErrorBox, Toast, fmtTime, Chip } from '@/components/ui';
 import { Gauge } from '@/components/charts';
+import { errMsg } from '@/lib/utils';
+
+interface IntimacyState {
+  libido: number;
+  intimacyNeed: number;
+  sexualSatisfaction: number;
+  sexualStress: number;
+  lastIntimacyAt: string | null;
+  aftercareState: string | null;
+  aftercareUntil: string | null;
+  inAftercare: boolean;
+}
+
+interface IntimacyLevel {
+  level: number;
+  stageMax: number;
+  effective: number;
+}
+
+interface IntimacyPreference {
+  id: number;
+  type: string;
+  content: string;
+  revealed: boolean;
+}
+
+interface AftercareRecord {
+  id: number;
+  agent_state: string;
+  created_at: string;
+  aftercare_quality: string;
+  user_response: string | null;
+}
+
+interface IntimacyResponse {
+  state: IntimacyState;
+  level: IntimacyLevel;
+  preferences: IntimacyPreference[];
+  aftercare: AftercareRecord[];
+}
 
 const LEVELS = [
   { v: 0, label: '关闭', desc: '亲密表达只到日常程度：牵手、拥抱、亲额头、靠着、说想你。不展开性话题。' },
@@ -12,12 +52,12 @@ const LEVELS = [
 ];
 
 export default function IntimacyPage() {
-  const { data, loading, error, reload } = useApi<any>('/api/intimacy');
+  const { data, loading, error, reload } = useApi<IntimacyResponse>('/api/intimacy');
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newPref, setNewPref] = useState({ type: 'custom', content: '' });
 
-  const post = async (body: any, msg?: string) => {
+  const post = async (body: Record<string, unknown>, msg?: string) => {
     setBusy(true);
     try {
       const r = await fetch('/api/intimacy', {
@@ -30,8 +70,8 @@ export default function IntimacyPage() {
       if (msg) setToast(msg);
       await reload();
       return j;
-    } catch (e: any) {
-      setToast(e?.message || '操作失败');
+    } catch (e) {
+      setToast(errMsg(e) || '操作失败');
       return null;
     } finally {
       setBusy(false);
@@ -41,8 +81,8 @@ export default function IntimacyPage() {
   if (loading && !data) return <Loading text="正在读亲密状态…" />;
   if (error) return <ErrorBox message={error} onRetry={reload} />;
 
-  const s = data.state;
-  const lv = data.level;
+  const s = data!.state;
+  const lv = data!.level;
 
   return (
     <div className="pb-10">
@@ -100,7 +140,7 @@ export default function IntimacyPage() {
       <div className="px-5 pt-4 md:px-8">
         <Card title="她的偏好（会随关系变深逐渐透露）">
           <div className="space-y-2">
-            {data.preferences.map((p: any) => (
+            {data!.preferences.map((p) => (
               <div key={p.id} className="flex items-start justify-between gap-2 rounded-2xl border line surf px-3.5 py-2.5">
                 <div className="min-w-0">
                   <div className="text-xs font-medium ink-2">{p.type}</div>
@@ -153,9 +193,9 @@ export default function IntimacyPage() {
 
       <div className="px-5 pt-4 md:px-8">
         <Card title="事后关怀记录">
-          {data.aftercare?.length ? (
+          {data!.aftercare?.length ? (
             <div className="space-y-2">
-              {data.aftercare.map((a: any) => (
+              {data!.aftercare.map((a) => (
                 <div key={a.id} className="flex items-center justify-between rounded-2xl border line surf px-3.5 py-2.5">
                   <div>
                     <div className="text-xs ink-1">{a.agent_state}</div>

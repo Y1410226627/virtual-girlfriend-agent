@@ -192,7 +192,7 @@ function cleanSentences(text: string, userName: string): { text: string; notes: 
     }
     // 替用户说话：出现"用户名："之后的内容整段截掉（半角冒号同样要拦）
     if (userName && new RegExp(`${userName}[：:]`).test(cur)) {
-      cur = cur.split(new RegExp(`${userName}[：:]`))[0];
+      cur = cur.split(new RegExp(`${userName}[：:]`))[0]!;
       notes.push('截掉替用户发言');
       if (!cur.trim()) continue;
     }

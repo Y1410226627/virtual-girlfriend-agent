@@ -1,19 +1,20 @@
 // Prompt 模板库：回复生成 / 记忆与状态抽取 / 每日摘要 / 依恋分析 / 主动消息
 import type { ChatMessage } from './llm';
 import { stageOf, STAGE_CONFIRM_HINT, RELATIONSHIP_TALK_HINT, type StageDef } from './stages';
-import { personalityPromptBlock, personalityMap } from './personality';
+import { personalityPromptBlock } from './personality';
 import { attachmentPromptBlock, getAttachmentState } from './attachment';
 import { getRelationshipState, agentName, userName, getPersona } from './relationship';
 import { bankEffectGuide, tensionEffectGuide, repairCreditGuide } from './emotionalBank';
 import { conflictBehaviorGuide, openConflictCount } from './conflict';
-import { formatMemoryBlock, memoriesByType, stableFacts, dailySummaryBlock } from './memory';
+import { memoriesByType, stableFacts, dailySummaryBlock } from './memory';
 import { ATTACHMENT_STYLES, attachmentStyleOf } from './types';
 import { round1, humanTime, hoursSince, localTimeStr, localDateStr } from './utils';
-import { dbAll, DEFAULT_USER_ID, getSetting, customModeOn } from './db';
+import { dbAll, DEFAULT_USER_ID, getSetting } from './db';
 import { sceneBlock, type Scene } from './scene';
 import { stickerPromptBlock } from './stickers';
-import { lifePromptBlock, profilePromptBlock, preferencePromptBlock, getCast, getActiveArc } from './life';
-import { intimacyPromptBlock, getIntimacy } from './intimacy';
+import { lifePromptBlock, profilePromptBlock, preferencePromptBlock } from './life';
+import { intimacyPromptBlock } from './intimacy';
+import { ph, customModeBlock, castBlock, lifeArcBlock } from './prompt-blocks';
 
 export interface ReplyContext {
   stageDef: StageDef;
@@ -38,8 +39,6 @@ export function buildReplySystemPrompt(
   const persona = getPersona();
   const her = agentName();
   const him = userName();
-  const att = getAttachmentState();
-  const style = attachmentStyleOf(Number(att.anxiety), Number(att.avoidance));
 
   const sinceLast = hoursSince(rel.last_interaction_at);
   // 用 humanTime 说人话（原来会注入"大约 37 小时前"这种生硬表述）
@@ -50,7 +49,7 @@ export function buildReplySystemPrompt(
         ? `现在是 ${localDateStr()} ${localTimeStr()}，你们上次说话是${humanTime(rel.last_interaction_at)}。`
         : `现在是 ${localDateStr()} ${localTimeStr()}，你们正在连续聊天。`;
 
-  const events = dbAll<any>(
+  const events = dbAll<{ event_date: string; kind: string; title: string }>(
     'SELECT * FROM events WHERE user_id = ? AND (event_date >= ? OR repeat_yearly = 1) ORDER BY event_date ASC LIMIT 5',
     DEFAULT_USER_ID,
     localDateStr()
@@ -195,55 +194,6 @@ ${recentActions.length
   ? `\n【最近回复里你已经用过（禁止再用）】\n${recentActions.slice(0, 4).map((a) => `（${a}）`).join('、')}\n【更早用过的（尽量避免）】\n${recentActions.slice(4).map((a) => `（${a}）`).join('、') || '（无）'}`
   : ''}
 ${hints.length ? `\n【本轮特别提示】\n${hints.join('\n')}` : ''}`;
-}
-
-function ph(s: string): string {
-  return s === '她' ? '' : s;
-}
-
-/** 自定义模式（数值直控）注入块：让用户设定的数值在对话中"明显可感" */
-function customModeBlock(): string {
-  if (!customModeOn()) return '';
-  try {
-    const rel = getRelationshipState();
-    const att = getAttachmentState();
-    const s = getIntimacy();
-    const p = personalityMap();
-    const him = userName();
-    return `\n【数值直控模式（自定义模式已开启 · 最高优先级设定）】
-以下数值由${him}直接设定、且**不会自动变化**。你必须在对话中**明显、不打折扣**地体现它们的效果：数值高就外放地表现（更主动、更黏、更甜、更直接、更亲密），数值低就明显地收敛（更淡、更防备、更疏离、句子更短、少主动）。
-**注意：这些数值可能刚刚被修改过——如果它们与你们之前对话的气氛不一致，以当前数值为准，立刻切换到对应的状态，不要顺着旧气氛的惯性走。**
-- 亲密度 ${round1(rel.intimacy)}/100 · 信任 ${round1(rel.trust)}/100 · 情感余额 ${round1(rel.emotional_balance)}（-100~100）· 未解决张力 ${round1(rel.unresolved_tension)} · 修复信用 ${round1(rel.repair_credit)} · 当前心情「${rel.mood}」
-- 性格（0-100）：温柔 ${p.warmth} · 俏皮 ${p.playfulness} · 浪漫 ${p.romance} · 直接 ${p.directness} · 独立 ${p.independence} · 情绪强度 ${p.emotional_intensity}
-- 依恋倾向（0-100）：焦虑 ${round1(att.anxiety)} · 回避 ${round1(att.avoidance)}
-- 亲密状态（0-100）：性欲 ${round1(s.libido)} · 亲密需求 ${round1(s.intimacy_need)} · 性满意度 ${round1(s.sexual_satisfaction)} · 性压力 ${round1(s.sexual_stress)}`;
-  } catch {
-    return '';
-  }
-}
-
-/** 她身边的人（具名社会关系）注入块 */
-function castBlock(): string {
-  try {
-    const cast = getCast();
-    if (!cast.length) return '';
-    const parts = cast.map((c) => `你的${c.role || '朋友'}叫${c.name}${c.note ? `（${c.note}）` : ''}`);
-    return `【你身边的人】${parts.join('；')}。聊天时可以自然提起她们（她们有自己的事，不总围着你转），但别每轮都提。`;
-  } catch {
-    return '';
-  }
-}
-
-/** 她最近的生活线（跨天剧情）注入块 */
-function lifeArcBlock(): string {
-  try {
-    const arc = getActiveArc();
-    if (!arc) return '';
-    const day = Math.min(arc.planned_days || 1, (arc.progress || 0) + 1);
-    return `【你最近的生活线】你正在「${arc.title}」：${arc.description}（第 ${day} 天 / 计划 ${arc.planned_days} 天）。聊到相关话题可以自然提起，但不要每轮汇报、不要念台词。`;
-  } catch {
-    return '';
-  }
 }
 
 /** 组装本轮对话的完整 messages */
@@ -486,7 +436,6 @@ export function buildProactiveMessages(payload: {
 }): ChatMessage[] {
   const rel = getRelationshipState();
   const stage = stageOf(rel.stage);
-  const her = agentName();
   const him = userName();
   const persona = getPersona();
 

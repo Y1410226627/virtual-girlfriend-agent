@@ -17,6 +17,7 @@ data/
 
 # misc
 _probe.mjs
+_sanitize_for_github.mjs
 *.log
 .DS_Store
 Thumbs.db

@@ -1,6 +1,7 @@
 // 环境自检接口：模型连通性 / 数据库 / 向量模式
-import { dbGet, dbRun, llmConfig, getSetting, DEFAULT_USER_ID } from '@/lib/db';
+import { dbGet, llmConfig, getSetting } from '@/lib/db';
 import { chat, embeddingMode, embed, lastUsedTarget, routePreview } from '@/lib/llm';
+import { errMsg } from '@/lib/utils';
 import { messageCount } from '@/lib/engine';
 import { getRelationshipState } from '@/lib/relationship';
 import { listProfiles, activeProfile, isCooling } from '@/lib/profiles';
@@ -9,7 +10,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const checks: Record<string, any> = {};
+  const checks: Record<string, unknown> = {};
   const cfg = llmConfig();
 
   checks.config = {
@@ -26,8 +27,8 @@ export async function GET() {
       defaults: dbGet('SELECT 1 AS ok'),
       counters: dbGet('SELECT value FROM counters ORDER BY rowid LIMIT 1'),
     };
-  } catch (e: any) {
-    checks.database = { ok: false, error: e?.message || String(e) };
+  } catch (e) {
+    checks.database = { ok: false, error: errMsg(e) };
   }
 
   try {
@@ -39,8 +40,8 @@ export async function GET() {
       timeoutMs: 15000,
     });
     checks.llm = { ok: true, ms: Date.now() - t0, reply: reply.slice(0, 60), used: lastUsedTarget() };
-  } catch (e: any) {
-    checks.llm = { ok: false, error: e?.message || String(e) };
+  } catch (e) {
+    checks.llm = { ok: false, error: errMsg(e) };
   }
 
   try {
@@ -70,8 +71,8 @@ export async function GET() {
         ? `当前向量维度 ${vecs[0]?.length || 0} 与已有记忆的维度 ${dimMismatch} 不一致：请在设置页点"重算全部记忆向量"，否则旧记忆检索不到`
         : undefined,
     };
-  } catch (e: any) {
-    checks.embedding = { ok: false, error: e?.message || String(e) };
+  } catch (e) {
+    checks.embedding = { ok: false, error: errMsg(e) };
   }
 
   try {
@@ -84,8 +85,8 @@ export async function GET() {
       scene: rel.scene || 'online',
       sceneMode: getSetting('scene_mode') || 'auto',
     };
-  } catch (e: any) {
-    checks.state = { ok: false, error: e?.message || String(e) };
+  } catch (e) {
+    checks.state = { ok: false, error: errMsg(e) };
   }
 
   try {
@@ -101,8 +102,8 @@ export async function GET() {
       })),
       lastUsed: lastUsedTarget(),
     };
-  } catch (e: any) {
-    checks.profiles = { error: e?.message || String(e) };
+  } catch (e) {
+    checks.profiles = { error: errMsg(e) };
   }
 
   // 实际路由：验证"分析模型"配置有没有真的接上
@@ -115,8 +116,8 @@ export async function GET() {
       configuredAnalysisModel: cfg.analysisModel || null,
       analysisModelWired: !!cfg.analysisModel && (routes.analysis[0] || '').includes(cfg.analysisModel),
     };
-  } catch (e: any) {
-    checks.routing = { error: e?.message || String(e) };
+  } catch (e) {
+    checks.routing = { error: errMsg(e) };
   }
 
   return Response.json(checks);

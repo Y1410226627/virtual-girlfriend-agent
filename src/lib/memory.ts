@@ -1,19 +1,12 @@
 // 记忆系统：向量检索 + 关键词/重要度/新鲜度/阶段相关度评分 + 去重 + 遗忘 + 摘要
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, numSetting, llmConfig } from './db';
-import { cosine, nowIso, hoursSince, daysSince, clamp, round1, safeJson, truncate } from './utils';
-import { embed, embedOne } from './llm';
-import type { MemoryRow, MemoryUpdate } from './types';
+import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, numSetting } from './db';
+import { cosine, nowIso, daysSince, clamp, safeJson, truncate } from './utils';
+import { embedOne } from './llm';
+import type { MemoryRow, MessageRow, MemoryUpdate } from './types';
 import { getRelationshipState } from './relationship';
+import { embedModelTag } from './memory-embedding';
 
-/** 当前向量模型标识：换模型/换接口后，旧向量会被识别出来并重新计算 */
-function embedModelTag(): string {
-  try {
-    const cfg = llmConfig();
-    return cfg.embeddingModel ? `api:${cfg.embeddingModel}@${cfg.embeddingBaseUrl || ''}` : 'local';
-  } catch {
-    return 'local';
-  }
-}
+export { backfillEmbeddings, refreshMemoryEmbedding } from './memory-embedding';
 
 const TYPE_LABELS: Record<string, string> = {
   semantic: '事实',
@@ -27,6 +20,15 @@ const TYPE_LABELS: Record<string, string> = {
 
 export function typeLabel(t: string): string {
   return TYPE_LABELS[t] || t;
+}
+
+interface DailySummaryRow {
+  id: number;
+  user_id: number;
+  date: string;
+  summary: string;
+  meta: string | null;
+  created_at: string;
 }
 
 /* ---------------------- 写入 ---------------------- */
@@ -408,57 +410,8 @@ export function createMemoryManually(type: string, content: string, importance =
   return lastInsertRowid;
 }
 
-/** 补齐缺失向量；换过向量模型/接口时，旧向量也会被识别出来并重算 */
-export async function backfillEmbeddings(batch = 50): Promise<number> {
-  const tag = embedModelTag();
-  const rows = dbAll<any>(
-    `SELECT m.id, m.content FROM memories m
-     LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE m.user_id = ? AND m.status = 'active'
-       AND (e.memory_id IS NULL OR e.model IS NULL OR e.model != ?)
-     ORDER BY m.id DESC LIMIT ?`,
-    DEFAULT_USER_ID,
-    tag,
-    batch
-  );
-  if (!rows.length) return 0;
-  const vecs = await embed(rows.map((r) => r.content));
-  let ok = 0;
-  rows.forEach((r, i) => {
-    const v = vecs[i];
-    // 逐条校验：部分失败时长度不足会让 vecs[i].length 直接抛 TypeError 中断整批
-    if (!Array.isArray(v) || !v.length) return;
-    dbRun(
-      `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
-      r.id,
-      tag,
-      v.length,
-      JSON.stringify(v.map((x) => Math.round(x * 10000) / 10000)),
-      nowIso()
-    );
-    ok++;
-  });
-  return ok;
-}
-
-/** 单条记忆内容被编辑后：同步重算它的向量 */
-export async function refreshMemoryEmbedding(id: number): Promise<boolean> {
-  const row = dbGet<any>('SELECT id, content FROM memories WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
-  if (!row) return false;
-  const vec = await embedOne(String(row.content || ''));
-  dbRun(
-    `INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)`,
-    id,
-    embedModelTag(),
-    vec.length,
-    JSON.stringify(vec.map((x) => Math.round(x * 10000) / 10000)),
-    nowIso()
-  );
-  return true;
-}
-
 /* ---------------------- 每日摘要 ---------------------- */
-export function saveDailySummary(date: string, summary: string, meta?: any): void {
+export function saveDailySummary(date: string, summary: string, meta?: unknown): void {
   dbRun(
     `INSERT INTO daily_summaries (user_id, date, summary, meta, created_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(user_id, date) DO UPDATE SET summary = excluded.summary, meta = excluded.meta, created_at = excluded.created_at`,
@@ -471,7 +424,7 @@ export function saveDailySummary(date: string, summary: string, meta?: any): voi
 }
 
 export function listDailySummaries(limit = 60) {
-  return dbAll<any>(
+  return dbAll<DailySummaryRow>(
     'SELECT * FROM daily_summaries WHERE user_id = ? ORDER BY date DESC LIMIT ?',
     DEFAULT_USER_ID,
     limit
@@ -480,7 +433,7 @@ export function listDailySummaries(limit = 60) {
 
 /** 最近几天的回顾（每日摘要）→ 注入 Prompt，让她真的"记得"这些日子 */
 export function dailySummaryBlock(days = 2): string {
-  const rows = dbAll<any>(
+  const rows = dbAll<{ date: string; summary: string; created_at: string }>(
     'SELECT date, summary, created_at FROM daily_summaries WHERE user_id = ? ORDER BY date DESC LIMIT ?',
     DEFAULT_USER_ID,
     days
@@ -491,7 +444,7 @@ export function dailySummaryBlock(days = 2): string {
 }
 
 export function recentMessagesForSummary(date: string) {
-  return dbAll<any>(
+  return dbAll<MessageRow & { agent_name: string | null }>(
     `SELECT m.*, p.agent_name FROM messages m LEFT JOIN personas p ON p.user_id = m.user_id
      WHERE m.user_id = ? AND date(m.created_at, 'localtime') = ? ORDER BY m.id ASC`,
     DEFAULT_USER_ID,

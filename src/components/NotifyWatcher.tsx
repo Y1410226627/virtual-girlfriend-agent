@@ -10,6 +10,12 @@ import { useEffect } from 'react';
 const POLL_MS = 60_000; // 每 60 秒轮询一次
 const MAX_LEN = 60; // 通知正文最大字数
 
+interface MessageRow {
+  id?: number | string;
+  role?: string;
+  content?: string;
+}
+
 // 去掉 [[sticker:xx]] 标记、压缩空白，并截断到 60 字
 function cleanText(raw: string): string {
   const s = String(raw || '')
@@ -34,7 +40,6 @@ export default function NotifyWatcher() {
     }
 
     let stopped = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
 
     const readLastId = (): number => {
       try {
@@ -76,7 +81,7 @@ export default function NotifyWatcher() {
 
     const poll = async () => {
       const lastId = readLastId();
-      let rows: any[] = [];
+      let rows: MessageRow[] = [];
       try {
         const r = await fetch(`/api/messages?afterId=${lastId}&limit=20`, { cache: 'no-store' });
         if (!r.ok) return;
@@ -88,11 +93,11 @@ export default function NotifyWatcher() {
       if (stopped) return;
 
       // 只看在游标之后、她（assistant）发来的新消息
-      const hers = rows.filter((m: any) => m && m.role === 'assistant' && Number(m.id) > lastId);
+      const hers = rows.filter((m) => m && m.role === 'assistant' && Number(m.id) > lastId);
       if (hers.length === 0) return;
 
       let maxId = lastId;
-      let latest = hers[0];
+      let latest = hers[0]!;
       for (const m of hers) {
         const id = Number(m.id) || 0;
         if (id > maxId) maxId = id;
@@ -118,7 +123,7 @@ export default function NotifyWatcher() {
     };
 
     void poll(); // 首次加载立即跑一次
-    timer = setInterval(() => void poll(), POLL_MS);
+    const timer = setInterval(() => void poll(), POLL_MS);
 
     return () => {
       stopped = true;

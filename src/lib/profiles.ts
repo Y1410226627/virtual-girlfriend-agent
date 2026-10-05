@@ -236,8 +236,8 @@ export function moveProfile(id: number, dir: -1 | 1): void {
   const swap = idx + dir;
   if (swap < 0 || swap >= list.length) return;
   tx(() => {
-    dbRun('UPDATE model_profiles SET sort_order = ? WHERE id = ?', list[swap].sort_order, list[idx].id);
-    dbRun('UPDATE model_profiles SET sort_order = ? WHERE id = ?', list[idx].sort_order, list[swap].id);
+    dbRun('UPDATE model_profiles SET sort_order = ? WHERE id = ?', list[swap]!.sort_order, list[idx]!.id);
+    dbRun('UPDATE model_profiles SET sort_order = ? WHERE id = ?', list[idx]!.sort_order, list[swap]!.id);
   });
 }
 
@@ -262,7 +262,7 @@ interface Health {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __gfModelHealth: Map<string, Health> | undefined;
 }
 
@@ -302,8 +302,8 @@ export function isCooling(key: string): boolean {
   return healthOf(key).cooldownUntil > Date.now();
 }
 
-export function healthSnapshot() {
-  const out: Record<string, any> = {};
+export function healthSnapshot(): Record<string, Health & { cooling: boolean; cooldownLeftSec: number }> {
+  const out: Record<string, Health & { cooling: boolean; cooldownLeftSec: number }> = {};
   for (const [k, v] of healthMap()) {
     out[k] = { ...v, cooling: v.cooldownUntil > Date.now(), cooldownLeftSec: Math.max(0, Math.round((v.cooldownUntil - Date.now()) / 1000)) };
   }

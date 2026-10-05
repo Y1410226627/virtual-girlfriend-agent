@@ -1,8 +1,15 @@
 // 纪念册：把你们之间的大事件聚合成时间轴 + 她的日记（只读）
 import { dbAll, DEFAULT_USER_ID } from '@/lib/db';
+import { errMsg } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/** agent_diaries 只读列（该表可能尚未迁移，查询需容错） */
+interface AgentDiaryRow {
+  date: string;
+  content: string;
+}
 
 export async function GET() {
   try {
@@ -46,9 +53,9 @@ export async function GET() {
     );
 
     // 她的日记：agent_diaries 表由另一批次负责迁移，此刻可能还不存在——必须容错，绝不能 500
-    let diaries: any[] = [];
+    let diaries: AgentDiaryRow[] = [];
     try {
-      diaries = dbAll(
+      diaries = dbAll<AgentDiaryRow>(
         `SELECT date, content
          FROM agent_diaries
          WHERE user_id = ?
@@ -61,7 +68,7 @@ export async function GET() {
     }
 
     return Response.json({ milestones, bigBank, events, summaries, diaries });
-  } catch (e: any) {
-    return Response.json({ error: String(e?.message || e) }, { status: 500 });
+  } catch (e) {
+    return Response.json({ error: errMsg(e) }, { status: 500 });
   }
 }

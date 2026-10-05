@@ -2,17 +2,24 @@
 // 由 API 路由首次被访问时启动（避免 instrumentation 在 edge 构建下引入 node 模块）
 import { tickProactive } from './proactive';
 import { seedProfilesIfEmpty } from './profiles';
+import { errMsg } from './utils';
+
+interface SchedulerGlobal {
+  __gfSchedulerStarted?: boolean;
+  __gfTimer1?: ReturnType<typeof setTimeout> | null;
+  __gfTimer2?: ReturnType<typeof setInterval> | null;
+}
 
 export function ensureScheduler(): void {
-  const g = globalThis as any;
+  const g = globalThis as typeof globalThis & SchedulerGlobal;
   if (g.__gfSchedulerStarted) return;
   g.__gfSchedulerStarted = true;
 
   // 首次运行时把当前模型配置存成"模型档案"，方便随时切换
   try {
     seedProfilesIfEmpty();
-  } catch (e: any) {
-    console.warn('[profiles] seed failed:', e?.message || e);
+  } catch (e) {
+    console.warn('[profiles] seed failed:', errMsg(e));
   }
 
   let running = false; // 上一次 tick 还没跑完就不再叠一次（tickProactive 里有模型调用，可能超过 5 分钟）
@@ -30,13 +37,13 @@ export function ensureScheduler(): void {
       // 跨天剧情线 + 她的日记（内部有节流、失败静默，不会阻塞主流程）
       await tickLifeArc();
       await ensureDailyDiaries();
-    } catch (e: any) {
-      console.warn('[life] advance failed:', e?.message || e);
+    } catch (e) {
+      console.warn('[life] advance failed:', errMsg(e));
     }
     try {
       await tickProactive(force);
-    } catch (e: any) {
-      console.warn('[proactive] tick failed:', e?.message || e);
+    } catch (e) {
+      console.warn('[proactive] tick failed:', errMsg(e));
     } finally {
       running = false;
     }
@@ -51,7 +58,7 @@ export function ensureScheduler(): void {
 
 /** 停止调度（进程退出/测试用） */
 export function stopScheduler(): void {
-  const g = globalThis as any;
+  const g = globalThis as typeof globalThis & SchedulerGlobal;
   if (g.__gfTimer1) clearTimeout(g.__gfTimer1);
   if (g.__gfTimer2) clearInterval(g.__gfTimer2);
   g.__gfTimer1 = null;

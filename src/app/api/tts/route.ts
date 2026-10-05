@@ -45,8 +45,9 @@ export async function POST(req: Request) {
     return new Response(res.body, {
       headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' },
     });
-  } catch (e: any) {
-    const msg = e?.name === 'AbortError' ? '语音服务超时（30 秒）' : e?.message || '语音合成失败';
+  } catch (e) {
+    const eo = e as { name?: string; message?: string };
+    const msg = eo?.name === 'AbortError' ? '语音服务超时（30 秒）' : eo?.message || '语音合成失败';
     return Response.json({ error: msg }, { status: 502 });
   } finally {
     clearTimeout(timer);

@@ -1,8 +1,49 @@
 // 单条消息删除：可选"同时撤销这条消息产生的影响"
 // 影响范围：记忆 / 性格信号与调整 / 依恋信号与调整 / 情感银行流水与余额 / 关系数值 / 冲突记录 / 关系日志
 import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
-import { clamp, nowIso, round1 } from './utils';
+import { clamp, nowIso, round1, errMsg } from './utils';
 import { getRelationshipState, saveRelationshipState } from './relationship';
+
+interface TurnEffectRow {
+  id: number;
+  message_id: number | null;
+  user_message_id: number | null;
+  intimacy_delta: number;
+  trust_delta: number;
+  balance_delta: number;
+  tension_delta: number;
+  repair_delta: number;
+  rel_log_from: number | null;
+  rel_log_to: number | null;
+  att_log_from: number | null;
+  att_log_to: number | null;
+  conflict_id: number | null;
+  created_at: string;
+  meta: string | null;
+}
+
+interface PersonalityLogRow {
+  dimension: string;
+  old_value: number;
+  new_value: number;
+}
+
+interface AttachmentLogRow {
+  old_anxiety: number;
+  new_anxiety: number;
+  old_avoidance: number;
+  new_avoidance: number;
+}
+
+interface TurnSnapshot {
+  intimacy?: number;
+  trust?: number;
+  balance?: number;
+  tension?: number;
+  repair?: number;
+  mood?: string;
+  stage?: number;
+}
 
 export interface DeleteReport {
   ok: boolean;
@@ -45,7 +86,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
     notes: [],
   };
 
-  const msg = dbGet<any>('SELECT * FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  const msg = dbGet<{ id: number }>('SELECT * FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
   if (!msg) {
     report.error = '这条消息不存在';
     return report;
@@ -62,7 +103,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
   try {
     tx(() => {
       // 找到这一轮的影响记录（用户消息或她的回复都能定位）
-      const eff = dbGet<any>(
+      const eff = dbGet<TurnEffectRow>(
         'SELECT * FROM turn_effects WHERE user_id = ? AND (message_id = ? OR user_message_id = ?) ORDER BY id DESC LIMIT 1',
         DEFAULT_USER_ID,
         id,
@@ -96,7 +137,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
       );
       report.removed.personalitySignals = sigDel.changes;
 
-      const pLogs = dbAll<any>(
+      const pLogs = dbAll<PersonalityLogRow>(
         `SELECT * FROM personality_logs WHERE user_id = ? AND message_id IN (${ph})`,
         DEFAULT_USER_ID,
         ...uniq
@@ -133,7 +174,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
       report.removed.attachmentSignals = attSigDel.changes;
 
       if (eff?.att_log_from && eff?.att_log_to && Number(eff.att_log_to) > Number(eff.att_log_from)) {
-        const attLogs = dbAll<any>(
+        const attLogs = dbAll<AttachmentLogRow>(
           'SELECT * FROM attachment_logs WHERE user_id = ? AND id > ? AND id <= ? ORDER BY id DESC',
           DEFAULT_USER_ID,
           Number(eff.att_log_from),
@@ -168,7 +209,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
       }
 
       /* 4) 情感银行：撤销这一轮的流水，并把余额调回去 */
-      const bankRows = dbAll<any>(
+      const bankRows = dbAll<{ id: number; delta: number }>(
         `SELECT id, delta FROM emotional_bank WHERE user_id = ? AND message_id IN (${ph})`,
         DEFAULT_USER_ID,
         ...uniq
@@ -197,9 +238,9 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
         const isLatest = Number(latest?.id || 0) === Number(eff.id);
         const s = getRelationshipState();
         if (isLatest) {
-          let before: any = null;
+          let before: TurnSnapshot | null = null;
           try {
-            before = JSON.parse(eff.meta || '{}')?.before || null;
+            before = (JSON.parse(eff.meta || '{}') as { before?: TurnSnapshot | null }).before || null;
           } catch {
             before = null;
           }
@@ -248,7 +289,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
 
         /* 7) 冲突：这一轮新建且仍未修复的冲突 → 删除；这一轮修复掉的 → 重新打开 */
         if (eff.conflict_id) {
-          const c = dbGet<any>('SELECT * FROM conflict_logs WHERE id = ? AND user_id = ?', Number(eff.conflict_id), DEFAULT_USER_ID);
+          const c = dbGet<{ id: number; status: string }>('SELECT * FROM conflict_logs WHERE id = ? AND user_id = ?', Number(eff.conflict_id), DEFAULT_USER_ID);
           if (c && c.status === 'open') {
             dbRun('DELETE FROM conflict_logs WHERE id = ? AND user_id = ?', c.id, DEFAULT_USER_ID);
             report.removed.conflicts += 1;
@@ -256,7 +297,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
         }
         const startAt = (() => {
           const um = eff.user_message_id
-            ? dbGet<any>('SELECT created_at FROM messages WHERE id = ?', Number(eff.user_message_id))
+            ? dbGet<{ created_at: string }>('SELECT created_at FROM messages WHERE id = ?', Number(eff.user_message_id))
             : null;
           return um?.created_at || eff.created_at;
         })();
@@ -288,8 +329,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
 
     report.ok = true;
     return report;
-  } catch (e: any) {
-    report.error = e?.message || String(e);
+  } catch (e) {
+    report.error = errMsg(e);
     return report;
   }
 }

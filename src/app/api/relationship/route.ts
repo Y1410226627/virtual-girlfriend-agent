@@ -5,11 +5,16 @@ import { getRelationshipState, saveRelationshipState, logRelationship, getPerson
 import { listConflicts } from '@/lib/conflict';
 import { stageOf, stageListForUi } from '@/lib/stages';
 import { listBankEntries, bankStats } from '@/lib/emotionalBank';
-import { nowIso, round1, daysSince, localDateStr, cnDate } from '@/lib/utils';
+import { nowIso, round1, daysSince } from '@/lib/utils';
 import { listDailySummaries } from '@/lib/memory';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/** messages 表只读列 */
+interface MessageRow {
+  content: string | null;
+}
 
 export async function GET() {
   const rel = getRelationshipState();
@@ -116,7 +121,7 @@ export async function POST(req: Request) {
       s.scene_updated_at = nowIso();
     } else {
       // 切回自动：立刻用最后一条消息重新判断一次，避免标签停留在旧的手动值
-      const last = dbGet<any>(
+      const last = dbGet<MessageRow>(
         "SELECT content FROM messages WHERE user_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
         DEFAULT_USER_ID
       );
@@ -140,7 +145,7 @@ export async function POST(req: Request) {
     if (!title || !date) return Response.json({ error: '标题和日期不能为空' }, { status: 400 });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return Response.json({ error: '日期格式应为 YYYY-MM-DD' }, { status: 400 });
     const KIND_WHITELIST = ['anniversary', 'birthday', 'plan'] as const;
-    const kind: 'anniversary' | 'birthday' | 'plan' | 'custom' = KIND_WHITELIST.includes(body.kind as any) ? (body.kind as 'anniversary' | 'birthday' | 'plan') : 'custom';
+    const kind: 'anniversary' | 'birthday' | 'plan' | 'custom' = KIND_WHITELIST.includes(body.kind) ? (body.kind as 'anniversary' | 'birthday' | 'plan') : 'custom';
     const description = body.description ? String(body.description).slice(0, 200) : null;
     addEvent({ title, event_date: date, repeat_yearly: !!body.repeat_yearly, kind, description });
     return Response.json({ ok: true });

@@ -4,6 +4,11 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
+interface MessageRow {
+  id?: number | string;
+  role?: string;
+}
+
 const ITEMS = [
   { href: '/', label: '聊天', icon: '💬' },
   { href: '/world', label: '世界', icon: '🌤' },
@@ -33,7 +38,7 @@ export default function Nav() {
         const lastRead = Number(window.localStorage.getItem('lastReadMsgId') || 0);
         const r = await fetch(`/api/messages?afterId=${lastRead}&limit=20`, { cache: 'no-store' });
         const j = await r.json();
-        const n = (j?.messages || []).filter((m: any) => m.role === 'assistant' && Number(m.id) > lastRead).length;
+        const n = (j?.messages || []).filter((m: MessageRow) => m.role === 'assistant' && Number(m.id) > lastRead).length;
         if (!stopped) setUnread(n);
       } catch {
         /* ignore */

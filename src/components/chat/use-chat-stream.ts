@@ -1,0 +1,416 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { errMsg } from '@/lib/utils';
+import type { Msg, AppState, ChatEvent, ChatRequest } from '@/components/chat/shared';
+
+/* 消息流：消息加载/轮询、/api/chat SSE 消费与流式渲染、发送/重新生成/撤回（原 page.tsx 逻辑原样搬移） */
+export function useChatStream(params: {
+  state: AppState | null;
+  loadState: () => Promise<void>;
+  setToast: (v: string | null) => void;
+  input: string;
+  setInput: Dispatch<SetStateAction<string>>;
+}) {
+  const { state, loadState, setToast, input, setInput } = params;
+
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [sending, setSending] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [busyNote, setBusyNote] = useState<string | null>(null); // 她忙时"正在输入"处的小字提示（在场闸门）
+  const [recalling, setRecalling] = useState(false);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  const listRef = useRef<HTMLDivElement>(null);
+  const lastIdRef = useRef(0);
+  const sendingRef = useRef(false);
+  const analysisTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /* 卸载时清掉分析轮询定时器（避免路由切换后还在跑、对已卸载组件 setState） */
+  useEffect(() => {
+    return () => {
+      if (analysisTimerRef.current) {
+        clearInterval(analysisTimerRef.current);
+        analysisTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const scrollToBottom = useCallback((smooth = false, force = false) => {
+    const el = listRef.current;
+    if (!el) return;
+    // 用户正在上滑看历史时不要把他拽回底部（除非是"我自己刚发了一条"这种必须跟随的情况）
+    if (!force && el.scrollHeight - el.scrollTop - el.clientHeight > 80) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  }, []);
+
+  /* 把完整文本切成 2~3 段（换行 / 句末标点为界；表情包 token 不切断；含代码块不切） */
+  const splitIntoSegments = (text: string): string[] => {
+    const t = text;
+    if (t.includes('```')) return [t];
+    if (t.trim().length < 30) return [t];
+    if ((t.match(/[。！？…]/g) || []).length < 2) return [t];
+    const pieces: string[] = [];
+    let cur = '';
+    for (const ch of t) {
+      cur += ch;
+      if (ch === '\n' || '。！？…'.includes(ch)) {
+        pieces.push(cur);
+        cur = '';
+      }
+    }
+    if (cur) pieces.push(cur);
+    if (pieces.length <= 1) return [t];
+    const groups = pieces.length >= 4 ? 3 : 2;
+    const per = Math.ceil(pieces.length / groups);
+    const out: string[] = [];
+    for (let i = 0; i < pieces.length; i += per) out.push(pieces.slice(i, i + per).join(''));
+    return out.length > 1 ? out : [t];
+  };
+
+  /* 逐段追加到同一个气泡（段间 300~900ms 停顿，停顿期间重新显示"正在输入…"） */
+  const appendInSegments = async (streamId: number, add: string) => {
+    const segs = splitIntoSegments(add);
+    if (segs.length <= 1) {
+      setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: m.content + add } : m)));
+      scrollToBottom();
+      return;
+    }
+    for (let i = 0; i < segs.length; i++) {
+      if (i > 0) {
+        setTyping(true);
+        await new Promise((r) => setTimeout(r, 300 + Math.random() * 600));
+        setTyping(false);
+      }
+      const piece = segs[i];
+      setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: m.content + piece } : m)));
+      scrollToBottom();
+    }
+  };
+
+  /* 发起 /api/chat 并把 SSE 逐条回调（正常回复与重新生成共用，避免复制粘贴读流代码） */
+  const consumeChatStream = async (body: ChatRequest, onEvt: (evt: ChatEvent) => void | Promise<void>) => {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok || !res.body) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j?.error || `请求失败 ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop() || '';
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        let evt: ChatEvent;
+        try {
+          evt = JSON.parse(line.slice(5).trim());
+        } catch {
+          continue;
+        }
+        await onEvt(evt);
+      }
+    }
+  };
+
+  /* 标准流式渲染：把她的回复落到一个流式气泡上，收敛后返回 {text, ids, error} */
+  const renderChatStream = async (body: ChatRequest, streamId: number) => {
+    const st: { text: string; ids: ChatEvent | null; started: boolean; error: unknown } = {
+      text: '',
+      ids: null,
+      started: false,
+      error: null,
+    };
+    try {
+      await consumeChatStream(body, async (evt: ChatEvent) => {
+        if (evt.type === 'delta') {
+          st.text += evt.text;
+          if (!st.started) {
+            st.started = true;
+            setTyping(false);
+            setMessages((prev) => [
+              ...prev,
+              { id: streamId, role: 'assistant', content: st.text, created_at: new Date().toISOString(), streaming: true },
+            ]);
+          } else {
+            setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: st.text } : m)));
+          }
+          scrollToBottom();
+        } else if (evt.type === 'final') {
+          const fin = String(evt.text || '');
+          const prevText = st.text;
+          st.text = fin;
+          if (!st.started) {
+            st.started = true;
+            setTyping(false);
+            setMessages((prev) => [
+              ...prev,
+              { id: streamId, role: 'assistant', content: '', created_at: new Date().toISOString(), streaming: true },
+            ]);
+            await appendInSegments(streamId, fin);
+          } else if (fin.startsWith(prevText)) {
+            // 能接上的增量：只把新增部分分句追加（短文本仍是一次性）
+            await appendInSegments(streamId, fin.slice(prevText.length));
+          } else {
+            // 人味层改动过大：整段重排，长文本分句出现
+            setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: '' } : m)));
+            await appendInSegments(streamId, fin);
+          }
+        } else if (evt.type === 'done') {
+          st.ids = evt;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === streamId ? { ...m, id: evt.assistantMessageId ?? m.id, streaming: false } : m))
+          );
+          lastIdRef.current = Math.max(lastIdRef.current, evt.assistantMessageId || 0);
+        } else if (evt.type === 'error') {
+          throw new Error(evt.message);
+        }
+      });
+    } catch (e) {
+      st.error = e;
+    }
+    return st;
+  };
+
+  /* 在场闸门：按她当前状态放大"真人打字感"延迟，并给出"正在输入"处的小字提示 */
+  const presenceGate = (): { ms: number; note: string | null } => {
+    const et = String(state?.life?.ongoingEvent?.eventType || state?.life?.activityType || '');
+    if (et === 'sleep') return { ms: 2500 + Math.random() * 2500, note: '（她好像正睡着，迷迷糊糊地回你）' };
+    if (et === 'class' || et === 'study' || et === 'work')
+      return { ms: 1500 + Math.random() * 2000, note: '（她正忙着，悄悄回你一句）' };
+    if (et === 'shower' || et === 'commute' || et === 'out')
+      return { ms: 800 + Math.random() * 1000, note: '（她正忙着，抽空瞄了眼手机）' };
+    return { ms: 250 + Math.random() * 500, note: null };
+  };
+
+  const loadMessages = useCallback(async () => {
+    try {
+      const r = await fetch('/api/messages?limit=80', { cache: 'no-store' });
+      const j = await r.json();
+      if (j?.messages) {
+        setMessages(j.messages);
+        lastIdRef.current = j.messages.length ? j.messages[j.messages.length - 1].id : 0;
+        // 记录已读位置，供导航栏未读红点使用
+        if (j.messages.length) {
+          try {
+            window.localStorage.setItem('lastReadMsgId', String(j.messages[j.messages.length - 1].id));
+          } catch {
+            /* ignore */
+          }
+        }
+        setTimeout(() => scrollToBottom(), 30);
+      }
+    } catch (e) {
+      setLoadErr(errMsg(e));
+    }
+  }, [scrollToBottom]);
+
+  useEffect(() => {
+    loadMessages();
+    loadState();
+  }, [loadMessages, loadState]);
+
+  /* 轮询新消息（她会主动发消息） */
+  useEffect(() => {
+    const t = setInterval(async () => {
+      if (sendingRef.current) return;
+      try {
+        const r = await fetch(`/api/messages?afterId=${lastIdRef.current}`, { cache: 'no-store' });
+        const j = await r.json();
+        if (j?.messages?.length) {
+          setMessages((prev) => {
+            const exists = new Set(prev.map((m) => m.id));
+            const add = j.messages.filter((m: Msg) => !exists.has(m.id));
+            if (!add.length) return prev;
+            return [...prev, ...add];
+          });
+          lastIdRef.current = j.messages[j.messages.length - 1].id;
+          try {
+            window.localStorage.setItem('lastReadMsgId', String(j.messages[j.messages.length - 1].id));
+          } catch {
+            /* ignore */
+          }
+          setTimeout(() => scrollToBottom(true), 60);
+        }
+        loadState();
+      } catch {
+        /* ignore */
+      }
+    }, 15000);
+    return () => clearInterval(t);
+  }, [loadState, scrollToBottom]);
+
+  const send = async (override?: string) => {
+    const text = (override ?? input).trim();
+    if (!text || sendingRef.current) return; // 用 ref 判定，避免慢设备/输入法下连发两条
+    setInput('');
+    setSending(true);
+    sendingRef.current = true;
+    setTyping(true);
+
+    // 先把自己的消息显示出来
+    const tempId = -Date.now();
+    setMessages((prev) => [
+      ...prev,
+      { id: tempId, role: 'user', content: text, created_at: new Date().toISOString() },
+    ]);
+    setTimeout(() => scrollToBottom(true, true), 30);
+
+    // 在场闸门：她忙时回复更慢，"正在输入…"处显示一行状态小字
+    const gate = presenceGate();
+    if (gate.note) setBusyNote(gate.note);
+    await new Promise((r) => setTimeout(r, gate.ms));
+    setBusyNote(null);
+
+    const streamId = -Date.now() - 1;
+    let assistantText = '';
+    let ids: ChatEvent | null = null;
+
+    try {
+      const st = await renderChatStream({ content: text }, streamId);
+      if (st.error) throw st.error;
+      if (!st.text) throw new Error('她这次没说话，再试一次吧');
+      assistantText = st.text;
+      ids = st.ids;
+
+      // 没收到 done（连接被中断 / 服务端异常）：也要收敛——复位流式状态，并用服务端数据兜底拿真实 id
+      // （否则光标常闪，且 15s 轮询会把同一条落库消息当成新消息再追加一次，出现重复气泡）
+      if (!ids) {
+        await loadMessages().catch(() => null);
+      }
+
+      // 关键：回复一结束就解锁输入框，归档记忆 / 调整性格全部丢到后台
+      setSending(false);
+      sendingRef.current = false;
+      setTyping(false);
+
+      // 后台分析（记忆/关系/性格信号/依恋信号）——入队即返回，完全不阻塞你打字
+      setRecalling(true);
+      const enqueueAt = Date.now();
+      fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userMessage: text,
+          assistantMessage: assistantText,
+          userMessageId: ids?.userMessageId,
+          assistantMessageId: ids?.assistantMessageId,
+        }),
+      }).catch(() => {
+        /* 分析失败不影响聊天 */
+      });
+
+      // 轮询后台进度：跑完了再刷新状态、给一个小提示
+      if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
+      const timer = setInterval(async () => {
+        try {
+          const st = await (await fetch('/api/analyze', { cache: 'no-store' })).json();
+          const done = !st?.busy && Number(st?.lastFinishedAt || 0) > enqueueAt;
+          // 分析失败：真实错误在 st.last.error（旧代码看的 st.error 并不存在）
+          const failed = !!st?.last && st.last.ok === false && Number(st.lastFinishedAt || 0) > enqueueAt;
+          if (failed || st?.error || Date.now() - enqueueAt > 120000) {
+            if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
+            analysisTimerRef.current = null;
+            setRecalling(false);
+            return;
+          }
+          if (!done) return;
+          if (analysisTimerRef.current) clearInterval(analysisTimerRef.current);
+          analysisTimerRef.current = null;
+          setRecalling(false);
+          const last = st.last;
+          if (last?.ok) {
+            const u = st.updated || {};
+            const bits: string[] = [];
+            if (u.mood) bits.push(`心情：${u.mood}`);
+            if (last.applied?.memories) bits.push(`记住 ${last.applied.memories} 条`);
+            if (last.applied?.personalitySignals) bits.push(`性格信号 +${last.applied.personalitySignals}`);
+            if (last.applied?.conflict) bits.push('出现了小摩擦');
+            if (last.applied?.repaired) bits.push('关系修复了');
+            if (last.applied?.stageChanged) bits.push('关系阶段提升');
+            if (bits.length) setToast(bits.join(' · '));
+          }
+          loadState();
+        } catch {
+          /* 继续轮询 */
+        }
+      }, 2500);
+      analysisTimerRef.current = timer;
+    } catch (e) {
+      setTyping(false);
+      setToast(`发送失败：${errMsg(e)}`);
+      // 连自己那条临时消息一起撤掉（服务端失败时也会删掉落库的那条，刷新不会"复活"）
+      setMessages((prev) => prev.filter((m) => m.id !== streamId && m.id !== tempId));
+      // 把刚打的字还回去（除非用户已经在输入框里写了新内容）
+      setInput((cur) => (cur.trim() ? cur : text));
+    } finally {
+      setSending(false);
+      sendingRef.current = false;
+      setTyping(false);
+      setBusyNote(null);
+    }
+  };
+
+  /* 重新生成她最后一条回复（服务端删除后重跑，客户端复用同一套流式渲染） */
+  const regenerate = async () => {
+    if (sendingRef.current) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'assistant' || last.streaming) return;
+    setSending(true);
+    sendingRef.current = true;
+    // 先撤掉旧气泡，新的会以流式重新出现
+    setMessages((prev) => prev.filter((m) => m.id !== last.id));
+    const streamId = -Date.now() - 1;
+    try {
+      const st = await renderChatStream({ regenerate: true }, streamId);
+      if (st.error) throw st.error;
+      if (!st.text) throw new Error('她这次没说话，再试一次吧');
+      if (!st.ids) await loadMessages().catch(() => null);
+    } catch (e) {
+      setToast(`重新生成失败：${errMsg(e)}`);
+      await loadMessages().catch(() => null); // 旧的已被服务端删除，拉回真实状态
+    } finally {
+      setSending(false);
+      sendingRef.current = false;
+      setTyping(false);
+    }
+  };
+
+  /* 撤回她最后一条回复（只删这一条，不撤销记忆与影响） */
+  const withdraw = async (m: Msg) => {
+    if (sendingRef.current) return;
+    try {
+      const r = await fetch(`/api/messages?id=${m.id}&cascade=0`, { method: 'DELETE' });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j?.error || '撤回失败');
+      await loadMessages();
+      setToast('已撤回她这条回复');
+    } catch (e) {
+      setToast(`撤回失败：${errMsg(e)}`);
+    }
+  };
+
+  return {
+    messages,
+    setMessages,
+    sending,
+    typing,
+    busyNote,
+    recalling,
+    loadErr,
+    listRef,
+    loadMessages,
+    send,
+    regenerate,
+    withdraw,
+  };
+}

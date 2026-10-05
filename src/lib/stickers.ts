@@ -60,7 +60,7 @@ export function hasSticker(text: string): boolean {
 export function firstStickerId(text: string): string | null {
   TOKEN_RE.lastIndex = 0;
   const m = TOKEN_RE.exec(String(text || ''));
-  return m ? m[1].toLowerCase() : null;
+  return m ? m[1]!.toLowerCase() : null;
 }
 
 /** 把表情包 token 换成给模型看的自然语言描述（她"看懂"你发的表情包） */

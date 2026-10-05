@@ -1,55 +1,35 @@
 // 动态性格系统：累积层 → 确认层 → 固化层 三层机制
 // 关键原则：绝不在每轮对话里直接改性格。
-import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, getCounter, setCounter, bumpCounter, numSetting, tx, customModeOn } from './db';
-import { clamp, nowIso, round1, localDateStr } from './utils';
+// 读取层与周快照已拆至 personality-core.ts / personality-snapshots.ts，本文件保留原有导出面。
+import { dbAll, dbRun, DEFAULT_USER_ID, getCounter, setCounter, numSetting, customModeOn, tx } from './db';
+import { clamp, nowIso, round1 } from './utils';
 import { stageOf } from './stages';
 import { getRelationshipState, logRelationship } from './relationship';
-import { attachmentStyleOf, DIMENSIONS, DIMENSION_ALIASES, type DimensionKey, type PersonalitySignal } from './types';
+import { DIMENSION_ALIASES, type PersonalitySignal } from './types';
+import { DIMENSION_KEYS, dimensionLabel, getPersonalityRows, consumeSignals, currentAttachmentStyle, unsolidify } from './personality-core';
+import { saveWeeklySnapshot } from './personality-snapshots';
 
-export const DIMENSION_KEYS: DimensionKey[] = DIMENSIONS.map((d) => d.key) as DimensionKey[];
+// 原 personality.ts 的导出面（读取层 + 快照，行为不变）
+export {
+  DIMENSION_KEYS,
+  dimensionLabel,
+  getPersonalityRows,
+  personalityMap,
+  personalityPromptBlock,
+  unsolidify,
+  manualAdjust,
+  listPersonalityLogs,
+  evolutionSeries,
+} from './personality-core';
+export type { PersonalityRow, PersonalityLogRow } from './personality-core';
+export { saveWeeklySnapshot, listSnapshots, rollbackToSnapshot } from './personality-snapshots';
+export type { PersonalitySnapshotRow } from './personality-snapshots';
 
-export function dimensionLabel(key: string): string {
-  return DIMENSIONS.find((d) => d.key === key)?.label || key;
-}
-
-export interface PersonalityRow {
-  user_id: number;
-  dimension: string;
-  value: number;
-  solidified: number;
-  last_adjusted_turn: number;
-  updated_at: string;
-}
-
-/* ---------------------- 读取 ---------------------- */
-export function getPersonalityRows(): PersonalityRow[] {
-  return dbAll<PersonalityRow>('SELECT * FROM personality_state WHERE user_id = ? ORDER BY rowid', DEFAULT_USER_ID);
-}
-
-export function personalityMap(): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const key of DIMENSION_KEYS) out[key] = 50;
-  for (const r of getPersonalityRows()) out[r.dimension] = round1(r.value);
-  return out;
-}
-
-export function personalityPromptBlock(): string {
-  const map = personalityMap();
-  const rows = DIMENSION_KEYS.map((k) => `- ${dimensionLabel(k)}：${map[k]}`).join('\n');
-  const hints: string[] = [];
-  if (map.warmth >= 60) hints.push('温柔度高：你会主动关心他、照顾他的情绪、说话软。');
-  if (map.warmth <= 40) hints.push('温柔度偏低：你表达关心更含蓄、更少用安慰性的套话。');
-  if (map.playfulness >= 60) hints.push('俏皮度高：你爱开玩笑、爱逗他、爱用轻松的语气词和表情。');
-  if (map.playfulness <= 40) hints.push('俏皮度偏低：你说话更认真、更少打闹调侃。');
-  if (map.romance >= 60) hints.push('浪漫表达高：你会自然地说想他、说喜欢，会制造小惊喜和暧昧。');
-  if (map.romance <= 40) hints.push('浪漫表达偏低：你不太主动说甜言蜜语，更偏向用行动和陪伴表达。');
-  if (map.directness >= 60) hints.push('直接性高：你说话直球，想要什么、不满什么都会说出来（玩笑也是直球）。');
-  if (map.directness <= 40) hints.push('直接性低：你含蓄，会用暗示、试探、撒娇式表达代替直接说。');
-  if (map.independence >= 60) hints.push('独立性强：你有自己的生活和兴趣，不会频繁追问他的行踪，也会说"我在忙自己的事"。');
-  if (map.independence <= 40) hints.push('独立性偏弱：你比较粘他，会主动找他、在意他回消息的速度。');
-  if (map.emotional_intensity >= 60) hints.push('情绪强度高：你的开心委屈生气都很外放，会有明显的情绪起伏和语气词。');
-  if (map.emotional_intensity <= 40) hints.push('情绪强度低：你情绪表达平静克制，不太会大起大落。');
-  return `你的当前性格参数（0-100，会随相处慢慢变化）：\n${rows}\n${hints.join('\n')}`;
+/** personality_signals 里做统计用到的列 */
+interface SignalRow {
+  strength: number | null;
+  weight: number | null;
+  context: string | null;
 }
 
 /* ---------------------- 第一层：累积 ---------------------- */
@@ -116,7 +96,7 @@ export function signalProgress(): SignalProgress[] {
     const rateTurns = row?.solidified ? 30 : stage.changeRateTurns;
     const cooldownTurns = row ? Math.max(0, rateTurns - (turn - Number(row.last_adjusted_turn || 0))) : 0;
     for (const direction of ['+', '-'] as const) {
-      const rows = dbAll<any>(
+      const rows = dbAll<SignalRow>(
         `SELECT strength, weight, context FROM personality_signals
          WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0`,
         DEFAULT_USER_ID,
@@ -171,7 +151,7 @@ export function runConfirmLayer(messageId?: number | null): void {
     // 固化不是"长死"：反向信号攒到 1.5 倍阈值时自动解除固化，让长期陪伴下性格还能回退
     if (row.solidified) {
       const oppDir = Number(row.value) >= 50 ? '-' : '+';
-      const oppRows = dbAll<any>(
+      const oppRows = dbAll<SignalRow>(
         `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0`,
         DEFAULT_USER_ID,
         dim,
@@ -185,18 +165,18 @@ export function runConfirmLayer(messageId?: number | null): void {
       }
     }
 
-    const pos = dbAll<any>(
+    const pos = dbAll<SignalRow>(
       `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
       DEFAULT_USER_ID,
       dim
     );
-    const neg = dbAll<any>(
+    const neg = dbAll<SignalRow>(
       `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '-' AND consumed = 0`,
       DEFAULT_USER_ID,
       dim
     );
 
-    const stat = (rows: any[]) => ({
+    const stat = (rows: SignalRow[]) => ({
       weighted: rows.reduce((s, r) => s + Number(r.weight || 1), 0),
       contexts: new Set(rows.map((r) => String(r.context || ''))).size,
       avg: rows.length ? rows.reduce((s, r) => s + Number(r.strength || 0), 0) / rows.length : 0,
@@ -216,7 +196,7 @@ export function runConfirmLayer(messageId?: number | null): void {
       // 消解后重新取信号再判定
       pos.length = 0;
       pos.push(
-        ...dbAll<any>(
+        ...dbAll<SignalRow>(
           `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
           DEFAULT_USER_ID,
           dim
@@ -224,7 +204,7 @@ export function runConfirmLayer(messageId?: number | null): void {
       );
       neg.length = 0;
       neg.push(
-        ...dbAll<any>(
+        ...dbAll<SignalRow>(
           `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '-' AND consumed = 0`,
           DEFAULT_USER_ID,
           dim
@@ -245,7 +225,7 @@ export function runConfirmLayer(messageId?: number | null): void {
       continue;
     }
 
-    const ctxSamples = dbAll<any>(
+    const ctxSamples = dbAll<{ context: string | null }>(
       `SELECT context FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0 LIMIT 3`,
       DEFAULT_USER_ID,
       dim,
@@ -288,23 +268,6 @@ export function runConfirmLayer(messageId?: number | null): void {
   }
 }
 
-function consumeSignals(dim: string, direction: string) {
-  dbRun(
-    'UPDATE personality_signals SET consumed = 1 WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0',
-    DEFAULT_USER_ID,
-    dim,
-    direction
-  );
-}
-
-function currentAttachmentStyle(): string {
-  const a = dbGet<{ anxiety: number; avoidance: number }>(
-    'SELECT anxiety, avoidance FROM attachment_state WHERE user_id = ?',
-    DEFAULT_USER_ID
-  );
-  return attachmentStyleOf(Number(a?.anxiety ?? 30), Number(a?.avoidance ?? 30));
-}
-
 /* ---------------------- 第三层：固化 ---------------------- */
 /** 连续 15 次同方向确认 → 半固化，变化速率降到每 30 轮 ±1 */
 function bumpSolidifyStreak(dim: string, direction: '+' | '-') {
@@ -337,124 +300,4 @@ function bumpSolidifyStreak(dim: string, direction: '+' | '-') {
       );
     }
   }
-}
-
-export function unsolidify(dim: string): void {
-  dbRun(
-    'UPDATE personality_state SET solidified = 0, updated_at = ? WHERE user_id = ? AND dimension = ?',
-    nowIso(),
-    DEFAULT_USER_ID,
-    dim
-  );
-  setCounter(`solidify_streak_${dim}`, 0);
-  dbRun(
-    `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
-     SELECT ?, NULL, dimension, value, value, 0, NULL, '用户手动解除固化', ?, ?, 'manual', ? FROM personality_state WHERE user_id = ? AND dimension = ?`,
-    DEFAULT_USER_ID,
-    getRelationshipState().stage,
-    currentAttachmentStyle(),
-    nowIso(),
-    DEFAULT_USER_ID,
-    dim
-  );
-}
-
-/* ---------------------- 手动微调 / 回滚 ---------------------- */
-export function manualAdjust(dim: string, value: number, reason = '用户手动微调'): void {
-  const row = getPersonalityRows().find((r) => r.dimension === dim);
-  if (!row) return;
-  const oldValue = Number(row.value);
-  const newValue = clamp(value, 0, 100);
-  dbRun(
-    'UPDATE personality_state SET value = ?, updated_at = ? WHERE user_id = ? AND dimension = ?',
-    newValue,
-    nowIso(),
-    DEFAULT_USER_ID,
-    dim
-  );
-  dbRun(
-    `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
-     VALUES (?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, 'manual', ?)`,
-    DEFAULT_USER_ID,
-    dim,
-    oldValue,
-    newValue,
-    round1(newValue - oldValue),
-    reason,
-    getRelationshipState().stage,
-    currentAttachmentStyle(),
-    nowIso()
-  );
-}
-
-export function listPersonalityLogs(limit = 100) {
-  return dbAll<any>(
-    'SELECT * FROM personality_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?',
-    DEFAULT_USER_ID,
-    limit
-  );
-}
-
-/** 每个维度的演化曲线数据 */
-export function evolutionSeries() {
-  const logs = dbAll<any>(
-    'SELECT dimension, old_value, new_value, created_at FROM personality_logs WHERE user_id = ? ORDER BY id ASC',
-    DEFAULT_USER_ID
-  );
-  const series: Record<string, { t: string; v: number }[]> = {};
-  for (const dim of DIMENSION_KEYS) series[dim] = [];
-  for (const l of logs) {
-    if (!series[l.dimension]) continue;
-    series[l.dimension].push({ t: l.created_at, v: Number(l.new_value) });
-  }
-  return series;
-}
-
-/* ---------------------- 周快照 ---------------------- */
-function weekKey(d = new Date()): string {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const dayNum = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
-}
-
-export function saveWeeklySnapshot(): void {
-  const week = weekKey();
-  // 同一周存在则更新（UPSERT），保证周内多次调整后快照反映最新状态
-  dbRun(
-    `INSERT INTO personality_snapshots (user_id, week, values_json, created_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(user_id, week) DO UPDATE SET values_json = excluded.values_json`,
-    DEFAULT_USER_ID,
-    week,
-    JSON.stringify(personalityMap()),
-    nowIso()
-  );
-}
-
-export function listSnapshots(limit = 30) {
-  return dbAll<any>(
-    'SELECT * FROM personality_snapshots WHERE user_id = ? ORDER BY week DESC LIMIT ?',
-    DEFAULT_USER_ID,
-    limit
-  );
-}
-
-export function rollbackToSnapshot(snapshotId: number): boolean {
-  const snap = dbGet<any>('SELECT * FROM personality_snapshots WHERE id = ? AND user_id = ?', snapshotId, DEFAULT_USER_ID);
-  if (!snap) return false;
-  const values = JSON.parse(snap.values_json) as Record<string, number>;
-  for (const [dim, v] of Object.entries(values)) {
-    manualAdjust(dim, Number(v), `回滚到 ${snap.week} 的性格快照`);
-    // 回滚同时重置固化状态与变化速率计时，否则旧值上仍挂着"半固化"
-    dbRun(
-      'UPDATE personality_state SET solidified = 0, last_adjusted_turn = 0, updated_at = ? WHERE user_id = ? AND dimension = ?',
-      nowIso(),
-      DEFAULT_USER_ID,
-      dim
-    );
-    setCounter(`solidify_streak_${dim}`, 0);
-  }
-  return true;
 }

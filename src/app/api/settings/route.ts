@@ -134,7 +134,7 @@ export async function PUT(req: Request) {
       // 数值型键：越界钳制，非数字跳过
       const n = Number(v);
       if (!isFinite(n)) continue;
-      value = String(clamp(n, RANGE[k][0], RANGE[k][1]));
+      value = String(clamp(n, RANGE[k]![0], RANGE[k]![1]));
     } else if (k === 'quiet_start' || k === 'quiet_end') {
       const s = String(v ?? '');
       if (!/^\d{1,2}:\d{2}$/.test(s)) continue;
@@ -255,8 +255,8 @@ export async function POST(req: Request) {
     // 只有开启自定义模式才允许数值直控
     if (!customModeOn()) return Response.json({ error: '先打开自定义模式' }, { status: 400 });
     // 自定义模式：数值直控（全部钳制到合法范围；不改动任何开关与配置）
-    const v = (body.values && typeof body.values === 'object' ? body.values : {}) as Record<string, any>;
-    const numOr = (x: any, d: number) => {
+    const v = (body.values && typeof body.values === 'object' ? body.values : {}) as Record<string, unknown>;
+    const numOr = (x: unknown, d: number) => {
       const n = Number(x);
       return isFinite(n) ? n : d;
     };
@@ -277,11 +277,11 @@ export async function POST(req: Request) {
         rel.pending_relationship_talk = 0;
       }
       // 阶段与亲密度区间保持一致：把亲密度钳制到目标阶段 [min,max]
-      rel.intimacy = clamp(Number(rel.intimacy), STAGES[st].min, STAGES[st].max);
+      rel.intimacy = clamp(Number(rel.intimacy), STAGES[st]!.min, STAGES[st]!.max);
     }
     saveRelationshipState(rel);
 
-    const pv = (v.personality && typeof v.personality === 'object' ? v.personality : {}) as Record<string, any>;
+    const pv = (v.personality && typeof v.personality === 'object' ? v.personality : {}) as Record<string, unknown>;
     for (const dim of ['warmth', 'playfulness', 'romance', 'directness', 'independence', 'emotional_intensity']) {
       if (pv[dim] !== undefined) manualAdjust(dim, numOr(pv[dim], 50), '自定义模式：数值直控');
     }
@@ -297,7 +297,7 @@ export async function POST(req: Request) {
     }
 
     if (v.libido !== undefined || v.intimacy_need !== undefined || v.sexual_satisfaction !== undefined || v.sexual_stress !== undefined) {
-      setIntimacyState(v);
+      setIntimacyState(v as Parameters<typeof setIntimacyState>[0]);
     }
 
     logRelationship('milestone', '自定义模式：数值已按设定更新', null, null, '用户在设置页直控');
@@ -312,7 +312,7 @@ export async function POST(req: Request) {
   }
 
   if (action === 'export') {
-    const data: Record<string, any> = {
+    const data: Record<string, unknown> = {
       schema_version: 1,
       exported_at: new Date().toISOString(),
       persona: getPersona(),

@@ -104,7 +104,7 @@ export const STAGES: StageDef[] = [
 
 export function stageOf(id: number): StageDef {
   // clamp 后索引一定落在合法范围内，无需再回退到 STAGES[0]
-  return STAGES[Math.max(0, Math.min(STAGES.length - 1, Math.round(id)))];
+  return STAGES[Math.max(0, Math.min(STAGES.length - 1, Math.round(id)))]!;
 }
 
 /** 阶段跃迁时的提示（注入回复 Prompt，让她主动发起关系确认） */

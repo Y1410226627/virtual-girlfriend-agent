@@ -12,12 +12,16 @@ import {
 import { chat } from '@/lib/llm';
 import { humanizeReply } from '@/lib/humanize';
 import { detectEventFromConversation } from '@/lib/life';
+import { errMsg } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/** 请求体：regenerate=重新生成；content=用户消息 */
+type ReqBody = { regenerate?: boolean; content?: string };
+
 export async function POST(req: Request) {
-  let body: any = {};
+  let body: ReqBody = {};
   try {
     body = await req.json();
   } catch {
@@ -42,8 +46,8 @@ export async function POST(req: Request) {
     let prepared: PreparedTurn;
     try {
       prepared = await prepareTurn(content, { insertUserMessage: false, userMessageId: userMsg.id });
-    } catch (e: any) {
-      return Response.json({ error: `准备上下文失败：${e?.message || e}` }, { status: 500 });
+    } catch (e) {
+      return Response.json({ error: `准备上下文失败：${errMsg(e)}` }, { status: 500 });
     }
     // 重新生成失败时不能把他那条用户消息删掉
     return buildChatStream(req, prepared, content, { cleanupUserOnError: false });
@@ -56,8 +60,8 @@ export async function POST(req: Request) {
   let prepared: PreparedTurn;
   try {
     prepared = await prepareTurn(content);
-  } catch (e: any) {
-    return Response.json({ error: `准备上下文失败：${e?.message || e}` }, { status: 500 });
+  } catch (e) {
+    return Response.json({ error: `准备上下文失败：${errMsg(e)}` }, { status: 500 });
   }
 
   return buildChatStream(req, prepared, content, { cleanupUserOnError: true });
@@ -79,7 +83,7 @@ function buildChatStream(
 
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (obj: any) => {
+      const send = (obj: Record<string, unknown>) => {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
         } catch {
@@ -132,7 +136,7 @@ function buildChatStream(
           notes: h.notes.slice(0, 3),
         });
         send({ type: 'done', assistantMessageId, userMessageId: prepared.userMessageId, fullText: h.text });
-      } catch (e: any) {
+      } catch (e) {
         // 整轮失败：把刚落库的用户消息撤掉，避免刷新后"复活"一条没人回应的消息
         // （重新生成时不能删，那是他之前发的那条）
         if (!assistantSaved && opts.cleanupUserOnError && prepared.userMessageId) {
@@ -142,7 +146,7 @@ function buildChatStream(
             /* 删除失败不影响错误上报 */
           }
         }
-        send({ type: 'error', message: e?.message || String(e) });
+        send({ type: 'error', message: errMsg(e) });
         send({ type: 'done', assistantMessageId, userMessageId: prepared.userMessageId, fullText: full });
       } finally {
         controller.close();

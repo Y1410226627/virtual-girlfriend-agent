@@ -144,7 +144,7 @@ export function pickAction(opts: PickActionOptions): { text: string; tag: Action
       const v = Number(personality[dim] ?? 50);
       weight += v > 50 ? ((v - 50) / 25) * Number(w) : -(((50 - v) / 25) * Number(w)) * 0.6;
     }
-    if (a.style && a.style.includes(attachmentStyle as any)) weight += 1.4;
+    if (a.style && (a.style as string[]).includes(attachmentStyle)) weight += 1.4;
     if (a.mood && a.mood.length) {
       // 带情绪标签的动作：情境命中才加分，没命中重罚（避免"赌气转身"配安慰的话）
       const hit = mood ? a.mood.some((m) => mood.includes(m)) : false;
@@ -159,7 +159,7 @@ export function pickAction(opts: PickActionOptions): { text: string; tag: Action
     r -= s.weight;
     if (r <= 0) return { text: s.a.text, tag: s.a.tag };
   }
-  return { text: scored[scored.length - 1].a.text, tag: scored[scored.length - 1].a.tag };
+  return { text: scored[scored.length - 1]!.a.text, tag: scored[scored.length - 1]!.a.tag };
 }
 
 /** 推断一段话最后用过的动作类型（用于避免连续同类型） */

@@ -9,6 +9,14 @@ import { round1 } from '@/lib/utils';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/** 请求体：对话内容与可选消息 id */
+type ReqBody = {
+  userMessage?: unknown;
+  assistantMessage?: unknown;
+  userMessageId?: unknown;
+  assistantMessageId?: unknown;
+};
+
 /** 当前状态快照（给前端提示用） */
 function snapshot() {
   const rel = getRelationshipState();
@@ -34,7 +42,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  let body: any = {};
+  let body: ReqBody = {};
   try {
     body = await req.json();
   } catch {

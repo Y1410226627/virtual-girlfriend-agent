@@ -4,13 +4,67 @@ import { useEffect, useRef, useState } from 'react';
 import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, fmtTime, Chip, Bar } from '@/components/ui';
 import { RadarChart, LineChart } from '@/components/charts';
 import { STAGES } from '@/lib/stages';
+import { errMsg } from '@/lib/utils';
 
 const COLORS = ['#F65C8A', '#FF8F6B', '#C084FC', '#38BDF8', '#34D399', '#FBBF24'];
 
+interface DimState {
+  key: string;
+  label: string;
+  value: number;
+  desc?: string;
+  solidified?: boolean;
+}
+
+interface Signal {
+  dimension: string;
+  direction: string;
+  label: string;
+  weightedCount: number;
+  thresholdCount: number;
+  contexts: number;
+  thresholdContexts: number;
+  avgStrength: number;
+  ready?: boolean;
+  cooldownTurns?: number;
+}
+
+interface LogRow {
+  id: number;
+  dimension: string;
+  delta: number;
+  old_value: number;
+  new_value: number;
+  created_at: string;
+  layer: string;
+  stage_at_time: number | null;
+  signal_context?: string | null;
+  reasoning?: string | null;
+}
+
+interface SnapshotRow {
+  id: number;
+  week: string;
+  values_json: string;
+}
+
+interface SeriesPoint {
+  t: string;
+  v: number;
+}
+
+interface PersonalityData {
+  state: DimState[];
+  series: Record<string, SeriesPoint[]>;
+  signals: Signal[];
+  logs: LogRow[];
+  snapshots: SnapshotRow[];
+}
+
 /** 安全解析 JSON（脏数据兜底为空对象） */
-function safeParse(raw: any): Record<string, any> {
+function safeParse(raw: unknown): Record<string, unknown> {
   try {
-    const v = raw ? JSON.parse(raw) : {};
+    const v = raw ? JSON.parse(raw as string) : {};
     return v && typeof v === 'object' ? v : {};
   } catch {
     return {};
@@ -48,12 +102,12 @@ function SliderRow({ value, label, onCommit }: { value: number; label: string; o
 }
 
 export default function PersonalityPage() {
-  const { data, loading, error, reload } = useApi<any>('/api/personality');
+  const { data, loading, error, reload } = useApi<PersonalityData>('/api/personality');
   const [toast, setToast] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const post = async (body: any, msg?: string) => {
+  const post = async (body: Record<string, unknown>, msg?: string) => {
     setSaving(true);
     try {
       const r = await fetch('/api/personality', {
@@ -65,8 +119,8 @@ export default function PersonalityPage() {
       if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
       if (msg) setToast(msg);
       await reload();
-    } catch (e: any) {
-      setToast(e?.message || '操作失败');
+    } catch (e) {
+      setToast(errMsg(e) || '操作失败');
     } finally {
       setSaving(false);
     }
@@ -90,19 +144,19 @@ export default function PersonalityPage() {
   if (error) return <ErrorBox message={error} onRetry={reload} />;
 
   const state = data?.state || [];
-  const radar = state.map((s: any) => ({ label: s.label.replace('/', '/\n'), value: s.value }));
+  const radar = state.map((s) => ({ label: s.label.replace('/', '/\n'), value: s.value }));
   const series = data?.series || {};
-  const focusKeys = focus ? [focus] : state.map((s: any) => s.key);
+  const focusKeys = focus ? [focus] : state.map((s) => s.key);
   const chartSeries = focusKeys
-    .map((k: string, i: number) => {
-      const item = state.find((s: any) => s.key === k);
+    .map((k: string) => {
+      const item = state.find((s) => s.key === k);
       return {
         name: item?.label || k,
-        color: COLORS[state.findIndex((s: any) => s.key === k) % COLORS.length],
-        points: (series[k] || []).map((p: any) => ({ t: p.t, v: p.v })),
+        color: COLORS[state.findIndex((s) => s.key === k) % COLORS.length]!,
+        points: (series[k] || []).map((p) => ({ t: p.t, v: p.v })),
       };
     })
-    .filter((s: any) => s.points.length > 0);
+    .filter((s) => s.points.length > 0);
 
   return (
     <div className="pb-10">
@@ -128,9 +182,9 @@ export default function PersonalityPage() {
           </p>
           <div className="space-y-2.5 max-h-[320px] overflow-y-auto pr-1">
             {(data?.signals || [])
-              .filter((s: any) => s.weightedCount > 0)
-              .sort((a: any, b: any) => b.weightedCount - a.weightedCount)
-              .map((s: any) => (
+              .filter((s) => s.weightedCount > 0)
+              .sort((a, b) => b.weightedCount - a.weightedCount)
+              .map((s) => (
                 <div key={s.dimension + s.direction} className="rounded-2xl border line surf px-3.5 py-2.5">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium ink-1">
@@ -154,13 +208,13 @@ export default function PersonalityPage() {
                       : s.weightedCount >= s.thresholdCount &&
                           s.contexts >= s.thresholdContexts &&
                           s.avgStrength >= 0.5 &&
-                          s.cooldownTurns > 0
+                          (s.cooldownTurns ?? 0) > 0
                         ? ` · 已达阈值，冷却中（剩 ${s.cooldownTurns} 轮）`
                         : ''}
                   </div>
                 </div>
               ))}
-            {(data?.signals || []).filter((s: any) => s.weightedCount > 0).length === 0 ? (
+            {(data?.signals || []).filter((s) => s.weightedCount > 0).length === 0 ? (
               <p className="dim">还没有累积中的信号，多聊聊看。</p>
             ) : null}
           </div>
@@ -173,7 +227,7 @@ export default function PersonalityPage() {
           right={<span className="dim">{saving ? '保存中…' : ''}</span>}
         >
           <div className="grid gap-3 md:grid-cols-2">
-            {state.map((s: any, i: number) => (
+            {state.map((s, i) => (
               <div key={s.key} className="rounded-2xl border line surf px-4 py-3">
                 <div className="flex items-center justify-between">
                   <div>
@@ -207,7 +261,7 @@ export default function PersonalityPage() {
           right={
             <select className="input !w-auto !py-1.5 text-xs" value={focus || ''} onChange={(e) => setFocus(e.target.value || null)}>
               <option value="">全部维度</option>
-              {state.map((s: any) => (
+              {state.map((s) => (
                 <option key={s.key} value={s.key}>
                   {s.label}
                 </option>
@@ -223,11 +277,11 @@ export default function PersonalityPage() {
         <Card title="演化日志">
           <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
             {(data?.logs || []).length === 0 ? <p className="dim">还没有发生过性格调整。</p> : null}
-            {(data?.logs || []).map((l: any) => (
+            {(data?.logs || []).map((l) => (
               <div key={l.id} className="rounded-2xl border line surf px-3.5 py-2.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium ink-1">
-                    {state.find((s: any) => s.key === l.dimension)?.label || l.dimension}
+                    {state.find((s) => s.key === l.dimension)?.label || l.dimension}
                     <span className={l.delta >= 0 ? ' acc' : ' text-sky-500'}>
                       {' '}{l.old_value} → {l.new_value}
                     </span>
@@ -250,13 +304,13 @@ export default function PersonalityPage() {
         <Card title="每周快照（可回滚）">
           {(data?.snapshots || []).length === 0 ? <p className="dim">还没有快照。</p> : null}
           <div className="space-y-2">
-            {(data?.snapshots || []).map((s: any) => (
+            {(data?.snapshots || []).map((s) => (
               <div key={s.id} className="flex items-center justify-between rounded-2xl border line surf px-3.5 py-2.5">
                 <div>
                   <div className="text-xs font-medium ink-1">{s.week}</div>
                   <div className="dim mt-0.5">
                     {Object.entries(safeParse(s.values_json))
-                      .map(([k, v]) => `${state.find((x: any) => x.key === k)?.label || k} ${v}`)
+                      .map(([k, v]) => `${state.find((x) => x.key === k)?.label || k} ${v}`)
                       .join(' · ')}
                   </div>
                 </div>

@@ -1,6 +1,6 @@
 // 她的世界：健康 / 心理 / 位置 / 活动 / 日常事件 / 档案里逐步揭露的信息 / 共享世界
 import { dbAll, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
-import { localDateStr, round1, clamp } from '@/lib/utils';
+import { round1, clamp } from '@/lib/utils';
 import {
   ensureLife,
   advanceLife,
@@ -49,6 +49,13 @@ const PROFILE_FIELDS = [
   'nickname', 'age', 'birthday', 'hometown', 'city', 'family',
   'education', 'job', 'hobbies', 'habits', 'catchphrases', 'fears', 'dreams', 'secrets',
 ];
+
+/** world_weekly_snapshots 只读列（对照 db.ts 建表 SQL） */
+interface WeeklySnapshotRow {
+  week: string;
+  state_json: string;
+  created_at: string;
+}
 
 export async function GET() {
   ensureScheduler();
@@ -132,7 +139,7 @@ export async function GET() {
           }
         : null;
     })(),
-    weeklySnapshots: dbAll<any>('SELECT week, state_json, created_at FROM world_weekly_snapshots WHERE user_id = ? ORDER BY week DESC LIMIT 8', DEFAULT_USER_ID),
+    weeklySnapshots: dbAll<WeeklySnapshotRow>('SELECT week, state_json, created_at FROM world_weekly_snapshots WHERE user_id = ? ORDER BY week DESC LIMIT 8', DEFAULT_USER_ID),
     settings: {
       lifeEnabled: getSetting('life_enabled') === 'true',
       cycleEnabled: getSetting('cycle_enabled') === 'true',
@@ -154,8 +161,8 @@ export async function POST(req: Request) {
 
   if (action === 'set_states') {
     // 手动直控：她此刻的身体 / 心理数值（你自己设定，立刻生效；之后仍会自然变化）
-    const hIn = (body.health && typeof body.health === 'object' ? body.health : {}) as Record<string, any>;
-    const pIn = (body.psychology && typeof body.psychology === 'object' ? body.psychology : {}) as Record<string, any>;
+    const hIn = (body.health && typeof body.health === 'object' ? body.health : {}) as Parameters<typeof setHealthStates>[0];
+    const pIn = (body.psychology && typeof body.psychology === 'object' ? body.psychology : {}) as Parameters<typeof setPsychologyStates>[0];
     setHealthStates(hIn);
     setPsychologyStates(pIn);
     logLife('manual', '', '手动调整状态数值', '你在「她的世界」页直接设定了她的身体/心理数值');
@@ -244,7 +251,7 @@ export async function POST(req: Request) {
     const mode = String(body.mode || 'immediate');
     const evt = getActiveEvent();
     if (!evt) return Response.json({ ok: false, error: '现在没有进行中的事件' });
-    const shape = (e: any) =>
+    const shape = (e: ReturnType<typeof setEventExpectedEnd>) =>
       e ? { id: e.id, activity: e.activity, eventType: e.event_type, startedAt: e.started_at, expectedEnd: e.expected_end_at, mode: e.duration_mode } : null;
 
     if (mode === 'immediate') {

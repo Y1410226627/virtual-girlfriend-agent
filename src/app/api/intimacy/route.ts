@@ -1,6 +1,6 @@
 // 亲密系统：状态 / 内容分级 / 偏好 / 事后关怀
 import { tx } from '@/lib/db';
-import { round1 } from '@/lib/utils';
+import { round1, errMsg } from '@/lib/utils';
 import {
   getIntimacy,
   getLevel,
@@ -34,7 +34,7 @@ export async function GET() {
       inAftercare: inAftercare(),
     },
     level: lv,
-    preferences: listPreferences(true).map((p: any) => ({
+    preferences: listPreferences(true).map((p) => ({
       id: p.id,
       type: p.preference_type,
       content: p.content,
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
     }
 
     return Response.json({ error: '未知操作' }, { status: 400 });
-  } catch (e: any) {
-    return Response.json({ error: e?.message || String(e) }, { status: 500 });
+  } catch (e) {
+    return Response.json({ error: errMsg(e) }, { status: 500 });
   }
 }

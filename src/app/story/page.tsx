@@ -3,6 +3,43 @@
 import { useMemo, useState } from 'react';
 import { useApi, PageHeader, Card, Loading, ErrorBox, fmtTime, Chip } from '@/components/ui';
 
+interface Milestone {
+  kind: string;
+  summary: string;
+  created_at: string;
+}
+
+interface BigBank {
+  delta: number;
+  behavior: string | null;
+  reason: string | null;
+  created_at: string;
+}
+
+interface StoryEvent {
+  title: string;
+  event_date: string;
+  repeat_yearly: boolean | number;
+}
+
+interface DailySummary {
+  date: string;
+  summary: string;
+}
+
+interface Diary {
+  date: string;
+  content: string;
+}
+
+interface StoryResponse {
+  milestones: Milestone[];
+  bigBank: BigBank[];
+  events: StoryEvent[];
+  summaries: DailySummary[];
+  diaries: Diary[];
+}
+
 /** 时间轴上每个节点按 kind 给不同的小图标与颜色 */
 function kindStyle(kind: string, delta = 0) {
   switch (kind) {
@@ -25,7 +62,7 @@ function kindStyle(kind: string, delta = 0) {
 }
 
 /** 她的日记列表：长文本可折叠 / 展开 */
-function DiaryList({ diaries }: { diaries: any[] }) {
+function DiaryList({ diaries }: { diaries: Diary[] }) {
   const [open, setOpen] = useState<Record<number, boolean>>({});
 
   if (diaries.length === 0) {
@@ -34,7 +71,7 @@ function DiaryList({ diaries }: { diaries: any[] }) {
 
   return (
     <div className="space-y-3">
-      {diaries.map((d: any, i: number) => {
+      {diaries.map((d, i) => {
         const text = String(d.content || '');
         const isOpen = !!open[i];
         const long = text.length > 140;
@@ -60,18 +97,18 @@ function DiaryList({ diaries }: { diaries: any[] }) {
 }
 
 export default function StoryPage() {
-  const { data, loading, error, reload } = useApi<any>('/api/story');
+  const { data, loading, error, reload } = useApi<StoryResponse>('/api/story');
 
   // 里程碑 + 大额情感流水，按时间倒序合并成一条时间轴
   const timeline = useMemo(() => {
-    const a = (data?.milestones || []).map((m: any) => ({
+    const a = (data?.milestones || []).map((m) => ({
       key: `m-${m.created_at}-${m.summary}`,
       kind: String(m.kind || ''),
       delta: 0,
       at: m.created_at,
       summary: String(m.summary || ''),
     }));
-    const b = (data?.bigBank || []).map((e: any) => {
+    const b = (data?.bigBank || []).map((e) => {
       const delta = Number(e.delta) || 0;
       return {
         key: `b-${e.created_at}-${delta}`,
@@ -137,7 +174,7 @@ export default function StoryPage() {
             <p className="dim">还没有记下的日子。去「关系」页添加属于你们的纪念日吧。</p>
           ) : (
             <div className="space-y-2">
-              {events.map((e: any, i: number) => (
+              {events.map((e, i) => (
                 <div
                   key={`${e.event_date}-${e.title}-${i}`}
                   className="flex items-center justify-between gap-3 rounded-2xl border line surf px-3.5 py-2.5"
@@ -159,7 +196,7 @@ export default function StoryPage() {
             <p className="dim">还没有摘要。等你们聊过一整天，第二天就会自动生成。</p>
           ) : (
             <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
-              {summaries.map((s: any, i: number) => (
+              {summaries.map((s, i) => (
                 <div key={`${s.date}-${i}`} className="rounded-2xl accent-soft px-3.5 py-2.5">
                   <Chip tone="plain">{s.date}</Chip>
                   <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed ink-2">{s.summary}</p>

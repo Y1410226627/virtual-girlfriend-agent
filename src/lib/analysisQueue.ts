@@ -1,5 +1,6 @@
 // 后台分析队列：串行执行，保证不阻塞聊天、也不并发写坏关系状态
 import { analyzeTurn, type AnalyzeOutcome } from './analysis';
+import { errMsg } from './utils';
 
 interface Job {
   userMessage: string;
@@ -19,7 +20,7 @@ interface QueueState {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __gfAnalysisQueue: QueueState | undefined;
 }
 
@@ -93,8 +94,8 @@ async function drain(): Promise<void> {
         const out = await withTimeout(analyzeTurn(job), ANALYZE_TIMEOUT_MS);
         st.last = { ok: out.ok, error: out.error, applied: out.applied };
         job.resolve(out);
-      } catch (e: any) {
-        const error = e?.message || String(e);
+      } catch (e) {
+        const error = errMsg(e);
         st.last = { ok: false, error, applied: emptyApplied() };
         job.resolve({ ok: false, error, applied: emptyApplied() });
       }

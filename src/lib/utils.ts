@@ -77,14 +77,20 @@ export function safeJson<T>(s: string | null | undefined, fallback: T): T {
   }
 }
 
+/** 从 unknown 异常里取可读的消息（catch 块统一用它代替 `e: any`） */
+export function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return typeof e === 'string' ? e : String(e);
+}
+
 /** 从 LLM 输出里稳健地抽取 JSON 对象（含多种修复策略） */
-export function parseJsonLoose(text: string): any | null {
+export function parseJsonLoose(text: string): unknown {
   if (!text) return null;
   let t = String(text).trim();
 
   // ```json ... ``` 包裹
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) t = fence[1].trim();
+  if (fence) t = fence[1]!.trim();
 
   const candidates: string[] = [];
   candidates.push(t);
@@ -173,9 +179,9 @@ export function cosine(a: number[], b: number[]): number {
   if (!a || !b || a.length !== b.length) return 0;
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+    dot += a[i]! * b[i]!;
+    na += a[i]! * a[i]!;
+    nb += b[i]! * b[i]!;
   }
   if (na === 0 || nb === 0) return 0;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));

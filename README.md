@@ -130,7 +130,7 @@
 
 ### 数据库迁移
 
-- 表结构写在 [db.ts](src/lib/db.ts) 的 `MIGRATIONS` 数组里，**应用启动时自动执行**，已执行的版本记录在 `schema_migrations`，不会重复执行。
+- 表结构写在 [db-migrations.ts](src/lib/db-migrations.ts) 的 `MIGRATIONS` 数组里，**应用启动时自动执行**，已执行的版本记录在 `schema_migrations`，不会重复执行。
 - 当前版本：v1 建全部表；v2 增加 `turn_effects` 与消息归因列；v3 增加模型档案与场景字段；v4 增加世界模拟和亲密状态表；v5-v6 是边界/同意日志表的历史迁移；v7 增加亲密偏好揭露阶段与每周世界快照；v8 移除安全词、边界、年龄确认和同意事件存储；v9 增加可控事件表 `ongoing_events`（她睡觉/吃饭/洗澡这类事情的时长控制与到期提醒）；v10 为高频查询补索引（冲突 / 关系 / 性格 / 依恋日志与消息、记忆检索）；v11 增加具名社会关系 `cast_json` 列、生活剧情线 `life_arcs` 与她的日记 `agent_diaries`。
 - 要改结构：在数组末尾**追加**一条 `{ version: N+1, name: '...', sql: '...' }`，重启即可。不要修改历史条目。
 - 想彻底重来：删掉 `data/girlfriend.db*` 三个文件，重启会自动重建；或在「设置」页点「恢复出厂状态」。
@@ -159,8 +159,8 @@
     │   ├── page.tsx(聊天)  layout.tsx  globals.css
     │   ├── world/ relationship/ intimacy/ personality/ attachment/ memories/ story/ settings/   ← 8 个页面（另有首页聊天）
     │   └── api/                            ← 全部接口（聊天 / 抽取 / 状态 / 记忆 / 性格 / 依恋 / 关系 / 亲密 / 世界 / 设置 / 摘要 / 主动消息 / 环境自检）
-    ├── components/                         ← 导航 / 通用 UI / 图表 / 启动动画（纯 SVG）
-    └── lib/                                ← 引擎与各系统（数据库、LLM、Prompt、关系/性格/依恋/冲突/情感银行/记忆/亲密/世界模拟/人味层 等）
+    ├── components/                         ← 导航 / 通用 UI / 图表 / 启动动画，以及 chat·settings·world 等页面私有组件
+    └── lib/                                ← 引擎与各系统（数据库、LLM、Prompt、关系/性格/依恋/冲突/情感银行/记忆/亲密/世界模拟/人味层 等；大模块为「桶 + 子模块」结构）
 ```
 
 ---
@@ -354,6 +354,12 @@ npm run dev          # http://localhost:3000
 ```bash
 npm run build
 npm start            # http://localhost:3000
+```
+
+### 改代码后的自检（改完必须全绿）
+
+```bash
+npm run verify   # 类型检查 + ESLint + 单元测试 + 循环依赖/迁移安全检查 + 生产构建（退出码即结论）
 ```
 
 ### 部署到服务器 / 云主机

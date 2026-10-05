@@ -18,6 +18,16 @@ export interface IntimacyRow {
   updated_at: string;
 }
 
+interface IntimacyAftercareRow {
+  id: number;
+  user_id: number;
+  session_id: string | null;
+  aftercare_quality: string | null;
+  user_response: string | null;
+  agent_state: string | null;
+  created_at: string;
+}
+
 export function getIntimacy(): IntimacyRow {
   dbRun('INSERT OR IGNORE INTO intimacy_state (user_id, updated_at) VALUES (?, ?)', DEFAULT_USER_ID, nowIso());
   return dbGet<IntimacyRow>('SELECT * FROM intimacy_state WHERE user_id = ?', DEFAULT_USER_ID)!;
@@ -37,7 +47,7 @@ export function stageMaxLevel(stage: number): Level {
 }
 
 export function getLevel(): { level: Level; stageMax: Level; effective: Level } {
-  const row = dbGet<any>('SELECT * FROM intimacy_content_level WHERE user_id = ?', DEFAULT_USER_ID);
+  const row = dbGet<{ level: number }>('SELECT * FROM intimacy_content_level WHERE user_id = ?', DEFAULT_USER_ID);
   const raw = Number(row?.level ?? Number(getSetting('intimacy_level') || 0));
   const level = (clamp(raw, 0, 3) | 0) as Level;
   const stage = getRelationshipState().stage;
@@ -71,7 +81,7 @@ export function startAftercare(quality: 'good' | 'neutral' | 'ignored' = 'neutra
     avoidant: '需要一点自己的空间，别当成不爱他',
     fearful: '先想靠近、又想缩回去',
   };
-  const state = stateMap[att] || stateMap.secure;
+  const state = stateMap[att] || stateMap.secure!;
   const s = getIntimacy();
   dbRun(
     'UPDATE intimacy_state SET aftercare_until = ?, aftercare_state = ?, last_intimacy_at = ?, sexual_satisfaction = ?, sexual_stress = ?, libido = ?, intimacy_need = ?, updated_at = ? WHERE user_id = ?',
@@ -114,7 +124,7 @@ export function inAftercare(): boolean {
 }
 
 export function listAftercare(limit = 20) {
-  return dbAll<any>('SELECT * FROM intimacy_aftercare WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
+  return dbAll<IntimacyAftercareRow>('SELECT * FROM intimacy_aftercare WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
 }
 
 /* ------------------------------------------------------------------ */
@@ -260,7 +270,7 @@ export function logAftercareResponse(id: number, response: string): boolean {
 /** 手动设定亲密数值（自定义模式用，绝对值 clamp 0-100） */
 export function setIntimacyState(v: Partial<{ libido: number; intimacy_need: number; sexual_satisfaction: number; sexual_stress: number }>): void {
   const cur = getIntimacy();
-  const numOr = (x: any, fallback: number) => {
+  const numOr = (x: unknown, fallback: number) => {
     const n = Number(x);
     return isFinite(n) ? n : fallback;
   };

@@ -3,6 +3,7 @@
 import { getSetting, boolSetting } from '@/lib/db';
 import { ensureLife, getActivity, getLocation, getHealth } from '@/lib/life';
 import { getPersona } from '@/lib/relationship';
+import { errMsg } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,7 +56,7 @@ function buildCaption(): { caption: string; activity: string; location: string }
 
 /** 组织一段"她身份 + 当前场景 + 日常自拍、柔和真实"的生成提示词 */
 function buildPrompt(opts: { activity: string; location: string }): string {
-  const persona: any = (() => {
+  const persona = (() => {
     try {
       return getPersona();
     } catch {
@@ -108,7 +109,7 @@ export async function POST() {
       console.warn('[photo] 图片服务返回', res.status, detail.slice(0, 160));
       return Response.json({ fallback: true, image: FALLBACK_IMG, caption: '（她今天不太想拍照…）' });
     }
-    const json: any = await res.json().catch(() => null);
+    const json: { data?: Array<{ b64_json?: string; url?: string }> } | null = await res.json().catch(() => null);
     const item = json?.data?.[0];
     // 兼容只返回 url 的情况
     if (item?.b64_json) {
@@ -118,8 +119,8 @@ export async function POST() {
       return Response.json({ ok: true, imageUrl: String(item.url), caption });
     }
     return Response.json({ fallback: true, image: FALLBACK_IMG, caption: '（她今天不太想拍照…）' });
-  } catch (e: any) {
-    console.warn('[photo] 生成失败', e?.message || e);
+  } catch (e) {
+    console.warn('[photo] 生成失败', errMsg(e));
     return Response.json({ fallback: true, image: FALLBACK_IMG, caption: '（她今天不太想拍照…）' });
   } finally {
     clearTimeout(timer);
