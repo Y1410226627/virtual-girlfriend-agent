@@ -115,6 +115,7 @@ export default function ChatPage() {
         scene={scene}
         sceneMode={sceneMode}
         state={state}
+        typing={typing}
         onOpenPhoto={openPhoto}
         onSetSceneMode={setSceneMode}
       >

@@ -119,6 +119,142 @@ function unansweredProactiveCount(): number {
 }
 
 /* ================================================================== */
+/* 回应率（她懂得分寸）：记得自己主动后他有没有回，长期不回就温柔收敛     */
+/* —— 只自然收敛、不惩罚、不撒娇式讨债，更绝不因此完全停发。            */
+/* ================================================================== */
+/** 判定窗口：主动消息发出满 12 小时才计入样本（避免"刚发出就判死"） */
+export const PROACTIVE_RESPONSE_MATURITY_HOURS = 12;
+/** counters 里存放平滑后回应率的键 */
+const RESPONSE_RATE_KEY = 'proactive_response_rate';
+/** 低回应率阈值：低于它 → 温柔收敛 */
+const LOW_RESPONSE_RATE = 0.3;
+/** 样本不足时一律按中性处理（不调整） */
+const MIN_SAMPLES = 3;
+
+export interface ProactiveResponseSample {
+  proactiveId: number;
+  /** 其后 12 小时内他回复用了多少小时（null = 未回/超窗） */
+  repliedWithinHours: number | null;
+  /** 这条消息发出至今多少小时（可选：缺省视为已过判定窗口，兼容旧调用） */
+  sentHoursAgo?: number;
+}
+
+export interface ProactiveResponseRate {
+  rate: number;
+  samples: number;
+  answered: number;
+}
+
+/**
+ * 纯函数：由样本算出回应率。
+ * 只对"发出去超过 12 小时"的主动消息计入样本（未到 12 小时、又还没回的，无法判定，不算——
+ * 他可能只是还没看到）；answered = 已回且回复耗时 <= 12 小时。
+ */
+export function computeProactiveResponseRate(rows: ProactiveResponseSample[]): ProactiveResponseRate {
+  let samples = 0;
+  let answered = 0;
+  for (const r of rows) {
+    const replied = r.repliedWithinHours !== null && r.repliedWithinHours <= PROACTIVE_RESPONSE_MATURITY_HOURS;
+    // 已回=结论明确；未回时只有"发出满 12 小时"才算数，否则是样本未成熟
+    const mature = replied || r.sentHoursAgo === undefined || r.sentHoursAgo >= PROACTIVE_RESPONSE_MATURITY_HOURS;
+    if (!mature) continue;
+    samples++;
+    if (replied) answered++;
+  }
+  const rate = samples > 0 ? answered / samples : 0;
+  return { rate, samples, answered };
+}
+
+/**
+ * 纯函数：温柔收敛后的最小间隔。
+ * 低回应率且样本足够 → 在配置基础上放宽 1.5 倍；rate >= 0.3（含 0.3~0.6 中性、> 0.6 恢复正常）
+ * 或样本不足 → 维持配置值。
+ */
+export function adjustedGapHours(base: number, rate: number, samples: number): number {
+  if (samples < MIN_SAMPLES) return base;
+  if (rate < LOW_RESPONSE_RATE) return base * 1.5;
+  return base;
+}
+
+/** 纯函数：温柔收敛后的每日额度。低回应率时 -1（下限 1，绝不因低回应率完全停发） */
+export function adjustedDailyBudget(base: number, rate: number, samples: number): number {
+  if (base <= 0) return base; // 主动消息已关闭时不反向开启
+  if (samples < MIN_SAMPLES) return base;
+  if (rate < LOW_RESPONSE_RATE) return Math.max(1, base - 1);
+  return base;
+}
+
+/** 纯函数：是否需要为主动消息加一句很轻的语境（低回应率时加；正常/样本不足不加） */
+export function shouldAddGentleContext(rate: number, samples: number): boolean {
+  return samples >= MIN_SAMPLES && rate < LOW_RESPONSE_RATE;
+}
+
+/** 轻语境文案：只谈"他自己忙"，不是抱怨、不是情感绑架 */
+export const GENTLE_CONTEXT_HINT = '他最近好像挺忙的，别太频繁打扰他；消息可以更简短自然一点。';
+
+/** 取最近 N 条主动消息，逐条判定"其后 12 小时内是否有他的回复" */
+export function loadProactiveResponseSamples(limit = 10, now: Date = new Date()): ProactiveResponseSample[] {
+  // 与 unansweredProactiveCount 口径一致："她的事结束了"这类例行提醒不需要他回应，不计入样本
+  const rows = dbAll<{ id: number; created_at: string }>(
+    "SELECT id, created_at FROM proactive_messages WHERE user_id = ? AND kind != 'event_end' ORDER BY id DESC LIMIT ?",
+    DEFAULT_USER_ID,
+    limit
+  );
+  const nowMs = now.getTime();
+  const out: ProactiveResponseSample[] = [];
+  for (const r of rows) {
+    const sentMs = new Date(r.created_at).getTime();
+    if (!Number.isFinite(sentMs)) {
+      out.push({ proactiveId: r.id, repliedWithinHours: null });
+      continue;
+    }
+    const endIso = new Date(sentMs + PROACTIVE_RESPONSE_MATURITY_HOURS * 3600000).toISOString();
+    const reply = dbGet<{ created_at: string }>(
+      "SELECT created_at FROM messages WHERE user_id = ? AND role = 'user' AND created_at > ? AND created_at <= ? ORDER BY created_at ASC LIMIT 1",
+      DEFAULT_USER_ID,
+      r.created_at,
+      endIso
+    );
+    let repliedWithinHours: number | null = null;
+    if (reply) {
+      const h = (new Date(reply.created_at).getTime() - sentMs) / 3600000;
+      if (Number.isFinite(h) && h <= PROACTIVE_RESPONSE_MATURITY_HOURS) repliedWithinHours = Math.round(h * 100) / 100;
+    }
+    out.push({ proactiveId: r.id, repliedWithinHours, sentHoursAgo: (nowMs - sentMs) / 3600000 });
+  }
+  return out;
+}
+
+/**
+ * 计算并把回应率做指数平滑后写入 counters（新值 = 旧值*0.6 + 本次*0.4；首次直接取本次）。
+ * 返回平滑后的值供闸门使用。样本为 0 时不写入，避免用"无数据"覆盖已有判断。
+ */
+export function refreshProactiveResponseRate(limit = 10, now: Date = new Date()): ProactiveResponseRate {
+  const current = computeProactiveResponseRate(loadProactiveResponseSamples(limit, now));
+  const stored = dbGet<{ value: number }>('SELECT value FROM counters WHERE key = ?', RESPONSE_RATE_KEY);
+  const storedVal = stored && Number.isFinite(Number(stored.value)) ? Number(stored.value) : null;
+  if (current.samples === 0) {
+    return { rate: storedVal ?? 0, samples: 0, answered: 0 };
+  }
+  const prev = storedVal ?? current.rate; // 首次直接取本次
+  const smoothed = prev * 0.6 + current.rate * 0.4;
+  setCounter(RESPONSE_RATE_KEY, smoothed);
+  return { rate: smoothed, samples: current.samples, answered: current.answered };
+}
+
+/** 把轻语境拼进 system 素材（只在需要时加，不改 prompts.ts） */
+function appendGentleContext(
+  messages: ReturnType<typeof buildProactiveMessages>
+): ReturnType<typeof buildProactiveMessages> {
+  const first = messages[0];
+  if (!first || first.role !== 'system') return messages;
+  return [
+    { ...first, content: `${first.content}\n\n【分寸感】${GENTLE_CONTEXT_HINT}` },
+    ...messages.slice(1),
+  ];
+}
+
+/* ================================================================== */
 /* 主动消息资格判定（纯逻辑：给定状态 + 时间 → 各类型独立判定）           */
 /* 各类型有自己的触发条件与最小间隔，不再让所有类型共享同一个全局 gap。   */
 /* ================================================================== */
@@ -142,6 +278,10 @@ export interface ProactiveState {
   perDay: number;
   baseMinGapHours: number;
   unanswered: number;
+  /** 温柔收敛：低回应率时最小间隔的放大系数（缺省 1，不影响旧行为） */
+  gapScale?: number;
+  /** 温柔收敛：低回应率时扣减的每日额度（缺省 0） */
+  budgetPenalty?: number;
   // 开关 / 场景
   frequencyOff: boolean;
   dnd: boolean;
@@ -227,7 +367,10 @@ export function evaluateProactiveKind(kind: ProactiveKind, st: ProactiveState): 
   const rule = PROACTIVE_RULES[kind];
   if (!rule.wants(st)) return { eligible: false, reason: '不满足该类型的触发条件' };
   if (st.force) return { eligible: true, reason: '' };
-  const waitGap = Math.max(rule.minGapHours, rule.usesGlobalGap ? st.baseMinGapHours : 0);
+  // 温柔收敛（低回应率）：放宽最小间隔 / 扣减每日额度；仪式与特殊日子（生日/纪念日）照常，不受影响
+  const exempt = kind === 'ritual' || kind === 'event';
+  const scale = !exempt && st.gapScale && st.gapScale > 1 ? st.gapScale : 1;
+  const waitGap = Math.max(rule.minGapHours * scale, rule.usesGlobalGap ? st.baseMinGapHours * scale : 0);
   if (st.hoursSinceLastProactive < waitGap) {
     return { eligible: false, reason: `距上次主动才 ${st.hoursSinceLastProactive.toFixed(1)} 小时（需 ${waitGap}）` };
   }
@@ -236,7 +379,8 @@ export function evaluateProactiveKind(kind: ProactiveKind, st: ProactiveState): 
   if (st.hoursSinceLastMessage < chatGap) {
     return { eligible: false, reason: `上次聊天才 ${st.hoursSinceLastMessage.toFixed(1)} 小时前（需 ${chatGap}）` };
   }
-  if (rule.usesDailyBudget && st.todayCount >= st.perDay) {
+  const budget = st.perDay - (!exempt ? st.budgetPenalty ?? 0 : 0);
+  if (rule.usesDailyBudget && st.todayCount >= budget) {
     return { eligible: false, reason: `今天她已经主动 ${st.todayCount} 次了` };
   }
   return { eligible: true, reason: '' };
@@ -325,6 +469,9 @@ export async function tickProactive(force = false): Promise<TickResult> {
   advanceLife();
   advanceIntimacy();
 
+  // 她懂得分寸：统计"她主动后他回没回"（指数平滑进 counters），低回应率时在下方闸门上温柔收敛
+  const responseRate = refreshProactiveResponseRate();
+
   // 张力自然衰减：每天最多一次（很慢）
   try {
     const fadeKey = `tension_fade_${localDateStr(now)}`;
@@ -400,6 +547,9 @@ export async function tickProactive(force = false): Promise<TickResult> {
     todayCount: getCounter(dayKey),
     perDay: limits.perDay,
     baseMinGapHours: limits.minGapHours,
+    // 低回应率 → 放宽最小间隔 1.5 倍、每日额度 -1（adjustedGapHours(1,...) 返回 1 或 1.5）
+    gapScale: adjustedGapHours(1, responseRate.rate, responseRate.samples),
+    budgetPenalty: limits.perDay - adjustedDailyBudget(limits.perDay, responseRate.rate, responseRate.samples),
     unanswered: unansweredProactiveCount(),
     frequencyOff: limits.perDay === 0,
     dnd: getSetting('dnd') === 'true',
@@ -456,9 +606,13 @@ export async function tickProactive(force = false): Promise<TickResult> {
     recentActions: recentActionPhrases(6),
     whyNow,
   });
+  // 分寸感：低回应率时补一句很轻的语境（仪式与特殊日子照常，不加）
+  const gentle =
+    kind !== 'ritual' && kind !== 'event' && shouldAddGentleContext(responseRate.rate, responseRate.samples);
+  const promptMessages = gentle ? appendGentleContext(messages) : messages;
   let content = '';
   try {
-    content = await chat(messages, { maxTokens: 260, temperature: 0.95, thinking: false });
+    content = await chat(promptMessages, { maxTokens: 260, temperature: 0.95, thinking: false });
   } catch (e) {
     return skip(`生成失败：${errMsg(e)}`);
   }

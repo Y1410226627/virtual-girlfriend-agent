@@ -1,6 +1,7 @@
 // 生活系统 · 模拟推进层：主推进 advanceLife / 状态增量 / 互动康复 / 周快照
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbRun, DEFAULT_USER_ID, getCounter, boolSetting, customModeOn } from './db';
+import { dbAll, dbRun, DEFAULT_USER_ID, getCounter, bumpCounter, boolSetting, customModeOn } from './db';
+import { shouldApplyPokeEffect } from './interactions';
 import { clamp, nowIso, localDateStr, round1 } from './utils';
 import { getRelationshipState, logRelationship } from './relationship';
 import { attachmentStyle, getAttachmentState } from './attachment';
@@ -540,6 +541,47 @@ export function applyInteractionEffects(_opts: { caredForHer?: boolean }): void 
     round1(clamp(psy.missing_user - 3, 0, 100)),
     nowIso(), DEFAULT_USER_ID
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* 触摸互动：照片 / 头像上的"摸头 / 戳脸 / 牵手 / 抱抱"的轻效果          */
+/* ------------------------------------------------------------------ */
+/** 一次互动的数值效果（很小，只为"真实感"，不刷数值） */
+const POKE_EFFECT: Record<string, { security: number; loneliness: number; label: string }> = {
+  pat: { security: 1.5, loneliness: -2, label: '摸头' },
+  poke_cheek: { security: 1, loneliness: -2, label: '戳脸颊' },
+  hold_hand: { security: 2, loneliness: -2.5, label: '牵手' },
+  hug: { security: 2, loneliness: -3, label: '抱抱' },
+};
+
+export interface PokeEffectResult {
+  applied: boolean;
+  reason: 'ok' | 'custom' | 'cap' | 'unknown';
+}
+
+/**
+ * 触摸互动的小效果：孤独↓、安全感↑，量级很小。
+ * 自定义模式冻结数值、超过每日上限 → 只回文案不改数值；数值一律 clamp 到 0..100。
+ */
+export function applyPokeEffect(kind: string): PokeEffectResult {
+  const eff = POKE_EFFECT[kind];
+  if (!eff) return { applied: false, reason: 'unknown' };
+  // 每天记一次（跨天自动重置，key 带本地日期）
+  const used = getCounter(`poke_daily_${localDateStr()}`);
+  bumpCounter(`poke_daily_${localDateStr()}`);
+  const custom = customModeOn();
+  if (!shouldApplyPokeEffect(used, custom)) {
+    return { applied: false, reason: custom ? 'custom' : 'cap' };
+  }
+  const p = getPsychology();
+  const security = clamp(p.security + eff.security, 0, 100);
+  const loneliness = clamp(p.loneliness + eff.loneliness, 0, 100);
+  dbRun(
+    'UPDATE agent_psychology SET security = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
+    round1(security), round1(loneliness), nowIso(), DEFAULT_USER_ID
+  );
+  logRelationship('interaction', `被你${eff.label}`, round1(p.loneliness), round1(loneliness), '触摸互动');
+  return { applied: true, reason: 'ok' };
 }
 
 /* ------------------------------------------------------------------ */

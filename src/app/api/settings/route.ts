@@ -65,19 +65,24 @@ const EDITABLE = new Set([
   'img_base_url',
   'img_api_key',
   'img_model',
+  // 语音输入（ASR：你说话转文字）
+  'asr_enabled',
+  'asr_base_url',
+  'asr_api_key',
+  'asr_model',
 ]);
 
-// 需要"掩码值不回写"保护的敏感键（db 里只登记了模型的，这里补上语音/图片的）
-const SECRET_KEYS = [...SECRET_SETTING_KEYS, 'tts_api_key', 'img_api_key'];
+// 需要"掩码值不回写"保护的敏感键（db 里只登记了模型的，这里补上语音/图片/语音输入的）
+const SECRET_KEYS = [...SECRET_SETTING_KEYS, 'tts_api_key', 'img_api_key', 'asr_api_key'];
 
 // 显式"清除已保存 Key"的哨兵值：把某个 Key 传成它（或放进 body.clear_keys）即表示
 // "删除已保存的 Key、回退到环境变量"。单独的空串仍然表示"保持不变"（防误清空丢失明文）。
 const CLEAR_TOKEN = '__clear__';
 
-// 对外返回设置：模型 Key 走 db 的掩码，语音/图片 Key 在这里补打码
+// 对外返回设置：模型 Key 走 db 的掩码，语音/图片/语音输入 Key 在这里补打码
 const maskedSettings = (settings: Record<string, string>) => {
   const out = maskSettingsForClient(settings);
-  for (const k of ['tts_api_key', 'img_api_key']) {
+  for (const k of ['tts_api_key', 'img_api_key', 'asr_api_key']) {
     if (out[k]) out[k] = maskSecret(out[k]);
   }
   return out;
@@ -171,8 +176,8 @@ export async function PUT(req: Request) {
       const s = String(v ?? '').trim();
       if (!/^https?:\/\//.test(s)) continue;
       value = s;
-    } else if (k === 'tts_base_url' || k === 'img_base_url') {
-      // 语音/图片接口地址：允许留空（= 关闭该功能，走优雅降级），填了才校验协议
+    } else if (k === 'tts_base_url' || k === 'img_base_url' || k === 'asr_base_url') {
+      // 语音/图片/语音输入接口地址：允许留空（= 关闭该功能，走优雅降级），填了才校验协议
       const s = String(v ?? '').trim();
       if (s && !/^https?:\/\//.test(s)) continue;
       value = s;

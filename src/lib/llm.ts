@@ -21,7 +21,8 @@ import {
 import { cleanContent } from './llm-stream';
 
 // 对外保持原样：类型与子模块导出的函数仍可从 '@/lib/llm' 取得
-export type { ChatMessage, ChatOptions } from './llm-core';
+export type { ChatMessage, ChatOptions, MessageContentPart, TextContentPart, ImageUrlContentPart } from './llm-core';
+export { contentText, hasImageParts, stripImagesToText, IMAGE_PLACEHOLDER } from './llm-core';
 export { chatStream, filterThinkDelta } from './llm-stream';
 export type { ThinkDeltaState } from './llm-stream';
 export { localEmbedding, embed, embedOne, embeddingMode } from './llm-embedding';

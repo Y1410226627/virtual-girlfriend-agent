@@ -35,8 +35,13 @@ export interface LifeState {
 
 export interface RelationshipState {
   mood?: string;
+  stage?: number;
   stageName?: string;
   intimacy?: number;
+  trust?: number;
+  emotional_balance?: number;
+  unresolved_tension?: number;
+  repair_credit?: number;
   scene?: string;
   sceneMode?: string;
   conflict_state?: string;

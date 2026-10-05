@@ -66,6 +66,7 @@
 - ✅ **回合/生成/操作账本落地**（2026-10-06，ADR-0005）：新增 conversation_turns / message_generations / analysis_jobs / turn_operations 四表（v12）；服务端会话锁 `withConversationLock`；`prepareTurn` 去副作用、成功后才 `commitTurn`；重新生成 = 同 turn 新 generation；分析任务落库持久化 + generation 版本校验（取消"队列满静默丢弃"）；删除/撤回优先按账本精确回滚（旧数据保留推断式兜底）。**改聊天链路前先读 `src/lib/turn.ts` 与 ADR-0005**。
 - ✅ **质量层落地**（2026-10-06）：回复校验层（低分自动重答一次，`src/lib/reply-validator.ts`）；记忆事实键 `memories.fact_key` 主判 + 向量辅助；`affect_state`（此刻情绪）与长期指标分家；主动消息做自我暴露抽取（她自己的话进她自己的记忆/计划）；提示词分层 + 数据块 `<DATA>` 包裹。
 - ✅ **本地安全边界**（2026-10-06，ADR-0005）：dev/start 默认只监听 `127.0.0.1`；设置 `ACCESS_PIN` 才启用 middleware 门禁；已保存 Key 绑定保存时 host（换地址不携带旧 Key）；GET 路由只读化，后台推进走 `POST /api/tick` + scheduler。
+- ✅ **多模态与陪伴感**（2026-10-06，参考开源同类项目补全）：语音输入（自配 OpenAI 兼容 ASR，`/api/asr`）、发图给她看（多模态消息 + `data/uploads` + 视觉不可用自动降级，`/api/uploads/[name]`）、触摸互动（`/api/interact` + `src/lib/interactions.ts`，冷却与每日上限）、心动指数（`src/lib/doki.ts`）、主动消息回应率分寸感（`proactive.ts`，仪式/纪念日豁免）。上传图片属用户隐私：`data/uploads/` 已加入 .gitignore，且 `data/` 整体不参与任何同步。
 - ⏳ **共享世界规范化拆表**：事务化读改写已消除丢更新；若未来需要逐条查询/统计再拆表，必须走"双写过渡"。
 - ⏳ **事件驱动架构（Turn/Event → projections）**：账本已提供事实源；各模块目前仍以"读当前状态"为主，按需演进。
 - ⏳ **对话质量自动评测基准**：现有单测覆盖行为正确性；100~300 场景的对话质量回归（topic/intent/emotion 命中）留待专项。

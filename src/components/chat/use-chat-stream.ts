@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { errMsg } from '@/lib/utils';
+import { composerAttachments } from '@/components/chat/Composer';
 import type { Msg, AppState, ChatEvent, ChatRequest } from '@/components/chat/shared';
+
+/** /api/chat 请求体：在既有协议上扩展 images（随消息附带的图片 dataURL） */
+type ChatRequestBody = ChatRequest & { images?: string[] };
+/** 消息在运行时还带着服务端 meta 列（Msg 类型未声明） */
+type MsgWithMeta = Msg & { meta?: string | null };
 
 /* 消息流：消息加载/轮询、/api/chat SSE 消费与流式渲染、发送/重新生成/撤回（原 page.tsx 逻辑原样搬移） */
 export function useChatStream(params: {
@@ -101,7 +107,7 @@ export function useChatStream(params: {
   };
 
   /* 发起 /api/chat 并把 SSE 逐条回调（正常回复与重新生成共用，避免复制粘贴读流代码） */
-  const consumeChatStream = async (body: ChatRequest, onEvt: (evt: ChatEvent) => void | Promise<void>) => {
+  const consumeChatStream = async (body: ChatRequestBody, onEvt: (evt: ChatEvent) => void | Promise<void>) => {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -135,7 +141,7 @@ export function useChatStream(params: {
   };
 
   /* 标准流式渲染：把她的回复落到一个流式气泡上，收敛后返回 {text, ids, error} */
-  const renderChatStream = async (body: ChatRequest, streamId: number, userTempId?: number) => {
+  const renderChatStream = async (body: ChatRequestBody, streamId: number, userTempId?: number) => {
     const st: { text: string; ids: ChatEvent | null; started: boolean; error: unknown } = {
       text: '',
       ids: null,
@@ -159,6 +165,12 @@ export function useChatStream(params: {
           scrollToBottom();
         } else if (evt.type === 'final') {
           const fin = String(evt.text || '');
+          // 服务端在 notes 里标注的降级（如"她暂时看不懂图片"）用现有 toast 提示一下
+          const notes = (evt as ChatEvent & { notes?: unknown }).notes;
+          if (Array.isArray(notes)) {
+            const note = notes.find((n): n is string => typeof n === 'string' && n.includes('看不懂图片'));
+            if (note) setToast(note);
+          }
           const prevText = st.text;
           st.text = fin;
           if (!st.started) {
@@ -318,18 +330,25 @@ export function useChatStream(params: {
 
   const send = async (override?: string) => {
     const text = (override ?? input).trim();
-    if (!text || sendingRef.current) return; // 用 ref 判定，避免慢设备/输入法下连发两条
+    // 本轮附带的图片（Composer 压缩后的 dataURL）；必须在任何 await 之前同步取走
+    const images = composerAttachments.images.slice(0, 2);
+    // 用 ref 判定，避免慢设备/输入法下连发两条；文字与图片至少要有一个
+    if ((!text && images.length === 0) || sendingRef.current) return;
     setInput('');
     setSending(true);
     sendingRef.current = true;
     setTyping(true);
 
-    // 先把自己的消息显示出来
+    // 先把自己的消息显示出来（带图时把 dataURL 写进 meta，气泡立即能显示缩略图）
     const tempId = -Date.now();
-    setMessages((prev) => [
-      ...prev,
-      { id: tempId, role: 'user', content: text, created_at: new Date().toISOString() },
-    ]);
+    const optimistic: MsgWithMeta = {
+      id: tempId,
+      role: 'user',
+      content: text,
+      created_at: new Date().toISOString(),
+      meta: images.length ? JSON.stringify({ images }) : null,
+    };
+    setMessages((prev) => [...prev, optimistic]);
     setTimeout(() => scrollToBottom(true, true), 30);
 
     // 在场闸门：她忙时回复更慢，"正在输入…"处显示一行状态小字
@@ -343,7 +362,7 @@ export function useChatStream(params: {
     let ids: ChatEvent | null = null;
 
     try {
-      const st = await renderChatStream({ content: text }, streamId, tempId);
+      const st = await renderChatStream(images.length ? { content: text, images } : { content: text }, streamId, tempId);
       if (st.error) throw st.error;
       if (!st.text) throw new Error('她这次没说话，再试一次吧');
       assistantText = st.text;

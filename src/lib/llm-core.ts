@@ -5,9 +5,52 @@ import { llmConfig, getSetting, setSetting, setCounter, bumpCounter } from './db
 import { listProfiles, isCooling, keyHostFor, hostOf } from './profiles';
 import { localDateStr } from './utils';
 
+/** 多模态消息的文本片段（OpenAI content parts 协议） */
+export interface TextContentPart {
+  type: 'text';
+  text: string;
+}
+/** 多模态消息的图片片段：url 接受 dataURL（data:image/...;base64,...） */
+export interface ImageUrlContentPart {
+  type: 'image_url';
+  image_url: { url: string };
+}
+export type MessageContentPart = TextContentPart | ImageUrlContentPart;
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  /** 纯文本（绝大多数消息）；附图片时为本轮用户消息的 content parts 数组 */
+  content: string | MessageContentPart[];
+}
+
+/** 取消息的纯文本：多模态消息拼出其中的文本片段（供检索 / 日志 / 降级使用） */
+export function contentText(content: ChatMessage['content']): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((p): p is TextContentPart => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n');
+}
+
+/** 消息里是否含图片片段 */
+export function hasImageParts(messages: ChatMessage[]): boolean {
+  return messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+}
+
+/** 图片消息退化为纯文本的占位说明（历史上下文 / 视觉不可用降级共用） */
+export const IMAGE_PLACEHOLDER = '［他发来一张图片］';
+
+/**
+ * 去掉所有图片片段、退回纯文本：模型不支持视觉（调用报错）时的降级重试用。
+ * 含图片的消息在文本后补一句占位，保留这段对话的语义。
+ */
+export function stripImagesToText(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => {
+    if (typeof m.content === 'string') return m;
+    const text = contentText(m.content);
+    const hadImage = m.content.some((p) => p.type === 'image_url');
+    return { role: m.role, content: hadImage ? `${text} ${IMAGE_PLACEHOLDER}`.trim() : text };
+  });
 }
 
 export interface ChatOptions {

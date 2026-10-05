@@ -1,8 +1,9 @@
 // 聊天引擎：上下文组装 + 回复生成（流式）
 import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, numSetting, getSetting } from './db';
 import { nowIso, truncateMiddle, hoursSince, errMsg } from './utils';
-import { chat, chatStream, type ChatMessage } from './llm';
+import { chat, chatStream, contentText, IMAGE_PLACEHOLDER, type ChatMessage, type MessageContentPart } from './llm';
 import { buildReplyMessages, buildHints } from './prompts';
+import { loadImageDataUrls, parseMetaImages } from './uploads';
 import { retrieveMemories, formatMemoryBlock } from './memory';
 import { touchInteraction, agentName, userName, getRelationshipState, saveRelationshipState } from './relationship';
 import { personalityMap } from './personality';
@@ -37,6 +38,12 @@ export interface PrepareTurnOptions {
   /** 重新生成时由调用方（chat 路由）传入的既有 turn/generation */
   turnId?: number | null;
   generationId?: number | null;
+  /**
+   * 本轮用户消息附带的图片（已落盘的相对路径，如 uploads/xxx.jpg）。
+   * 落进消息 meta.images，并在组装 Prompt 时以多模态 content parts 附在本轮用户消息上；
+   * 重新生成时省略此参数，会自动从用户消息已存的 meta 里读回。
+   */
+  images?: string[];
 }
 
 /* ---------------------- 消息读写 ---------------------- */
@@ -124,14 +131,18 @@ export function markAssistantMessagesRead(): void {
   );
 }
 
-/** 最近 N 轮对话 → LLM messages（工作记忆）。表情包会转换成她看得懂的描述 */
+/**
+ * 最近 N 轮对话 → LLM messages（工作记忆）。表情包会转换成她看得懂的描述。
+ * 历史里"他发过图片"的消息**不再附原图**（避免上下文与体积爆炸），统一降级为一行文字占位；
+ * 只有本轮用户消息会由 prepareTurn 真正附上图片（多模态 content parts）。
+ */
 export function recentMessagesForPrompt(limit?: number): ChatMessage[] {
   const n = limit ?? Math.max(4, numSetting('context_size', 20));
   // 先多取候选（limit*3，上限 120），过滤出 user/assistant 后再取最近 limit 条：
   // 主动消息 / 系统消息不再挤占额度，保证拿到的是真实对话轮。
   const candidateLimit = Math.min(120, Math.max(n * 3, n));
   const rows = dbAll<MessageRow>(
-    'SELECT role, content, is_proactive, created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
+    'SELECT role, content, is_proactive, meta, created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
     DEFAULT_USER_ID,
     candidateLimit
   );
@@ -139,11 +150,59 @@ export function recentMessagesForPrompt(limit?: number): ChatMessage[] {
     .filter((r) => r.role === 'user' || r.role === 'assistant')
     .slice(0, n)
     .reverse()
-    .map((r) => ({
-      role: r.role as 'user' | 'assistant',
+    .map((r) => {
       // 长消息头尾保留（约 40% 头 + 60% 尾）：既见铺垫，也见结论
-      content: truncateMiddle(renderContentForModel(String(r.content || '')), 800),
-    }));
+      const text = truncateMiddle(renderContentForModel(String(r.content || '')), 800);
+      const hadImage = r.role === 'user' && parseMetaImages(r.meta).length > 0;
+      return {
+        role: r.role as 'user' | 'assistant',
+        content: hadImage ? `${text} ${IMAGE_PLACEHOLDER}`.trim() : text,
+      };
+    });
+}
+
+/** 读取某条用户消息 meta 里记录的图片相对路径（重新生成时用它还原图片上下文） */
+function readUserMessageImages(userMessageId: number | null | undefined): string[] {
+  if (!userMessageId) return [];
+  const row = dbGet<{ meta: string | null }>(
+    'SELECT meta FROM messages WHERE id = ? AND user_id = ?',
+    userMessageId,
+    DEFAULT_USER_ID
+  );
+  return parseMetaImages(row?.meta);
+}
+
+/**
+ * 把图片以 OpenAI 多模态格式附在**最后一条用户消息**上（原消息为纯文本时升级为 content parts）。
+ * - 无图片：原样返回（向后兼容，content 仍是字符串）
+ * - 有图片但图已丢失（dataUrls 为空）：退化为纯文本（用 text，避免历史占位残留）
+ * 纯函数，便于单测。
+ */
+export function withImagesOnLastUserMessage(
+  messages: ChatMessage[],
+  text: string,
+  imageDataUrls: string[]
+): ChatMessage[] {
+  let idx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === 'user') {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return messages;
+  const out = messages.slice();
+  const textPart = text && text.trim() ? text : IMAGE_PLACEHOLDER;
+  if (!imageDataUrls.length) {
+    out[idx] = { role: 'user', content: textPart };
+    return out;
+  }
+  const parts: MessageContentPart[] = [
+    { type: 'text', text: textPart },
+    ...imageDataUrls.map((url): MessageContentPart => ({ type: 'image_url', image_url: { url } })),
+  ];
+  out[idx] = { role: 'user', content: parts };
+  return out;
 }
 
 /** 从她最近说过的话里，抽出用过的括号动作，避免反复用同一批描写（最近的排在最前） */
@@ -177,8 +236,12 @@ export function recentActionPhrases(limit = 10): string[] {
 export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {}): Promise<PreparedTurn> {
   const text = String(userText || '').trim();
   const insertUser = opts.insertUserMessage !== false;
+  // 本轮图片：正常发送时来自调用方（已落盘的相对路径）；重新生成时从既有消息 meta 读回
+  const images = insertUser ? opts.images ?? [] : readUserMessageImages(opts.userMessageId);
   // 重新生成时不再重复保存用户消息，直接复用他已存在的那一条
-  const userMessageId = insertUser ? insertMessage('user', text) : opts.userMessageId ?? null;
+  const userMessageId = insertUser
+    ? insertMessage('user', text, images.length ? { meta: { images } } : {})
+    : opts.userMessageId ?? null;
 
   // 新用户消息 → 建 turn（sequence 递增）→ beginGeneration（generation_no 递增、置为当前）
   let turnId = opts.turnId ?? null;
@@ -211,7 +274,7 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
   const extraQueries = recent
     .filter((m) => m.role === 'user')
     .slice(-3, -1)
-    .map((m) => m.content)
+    .map((m) => contentText(m.content))
     .filter((s) => s && s !== text)
     .slice(-2);
   const memoryRows = await retrieveMemories(text, { extraQueries });
@@ -230,7 +293,11 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
   }
 
   const actions = recentActionPhrases(10);
-  const messages = buildReplyMessages(recent, memoryBlock, hints, actions);
+  const baseMessages = buildReplyMessages(recent, memoryBlock, hints, actions);
+  // 本轮带图：把图片以多模态 content parts 附在最后一条用户消息上（历史图片已在 recent 里降级为占位）
+  const messages = images.length
+    ? withImagesOnLastUserMessage(baseMessages, text, loadImageDataUrls(images))
+    : baseMessages;
 
   const rel = getRelationshipState();
   const humanize: HumanizeContext = {

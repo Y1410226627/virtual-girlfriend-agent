@@ -10,7 +10,8 @@ import {
   deleteProactiveMessagesByMessageId,
   type PreparedTurn,
 } from '@/lib/engine';
-import { chat, cleanContent } from '@/lib/llm';
+import { chat, cleanContent, hasImageParts, stripImagesToText, type ChatMessage } from '@/lib/llm';
+import { saveUpload, validateImageDataUrl, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_BODY_BYTES } from '@/lib/uploads';
 import { humanizeReply } from '@/lib/humanize';
 import { validateReply, RETRY_SCORE_THRESHOLD } from '@/lib/reply-validator';
 import { detectEventFromConversation } from '@/lib/life';
@@ -34,10 +35,41 @@ import { rollbackOperationsForGeneration } from '@/lib/turnOps';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** 请求体：regenerate=重新生成；content=用户消息 */
-type ReqBody = { regenerate?: boolean; content?: string };
+/** 请求体：regenerate=重新生成；content=用户消息；images=随消息附带的图片（dataURL，最多 2 张） */
+type ReqBody = { regenerate?: boolean; content?: string; images?: unknown };
+
+/**
+ * 校验并落盘请求体里的图片。
+ * 规则：最多 2 张、每张单图 ≤3MB、只收 data:image/ 前缀（白名单格式）、整包 ≤6MB。
+ * 返回已落盘的相对路径列表（uploads/xxx.jpg）。
+ */
+function persistIncomingImages(raw: unknown): { ok: true; images: string[] } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, images: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: '图片参数格式不正确' };
+  if (raw.length > MAX_IMAGES) return { ok: false, error: `最多只能发 ${MAX_IMAGES} 张图片` };
+  const images: string[] = [];
+  let total = 0;
+  for (const item of raw) {
+    const v = validateImageDataUrl(item);
+    if (!v.ok) return { ok: false, error: v.error };
+    total += v.bytes;
+    if (total > MAX_IMAGE_BYTES * MAX_IMAGES) return { ok: false, error: '图片总量超出上限' };
+    try {
+      images.push(saveUpload(String(item)));
+    } catch {
+      return { ok: false, error: '图片保存失败' };
+    }
+  }
+  return { ok: true, images };
+}
 
 export async function POST(req: Request) {
+  // 整包体积上限：请求头带 Content-Length 时先拦（避免把超大 body 读进内存）
+  const declared = Number(req.headers.get('content-length') || 0);
+  if (declared > MAX_BODY_BYTES) {
+    return Response.json({ error: '图片太大或太多（整包不超过 6MB）' }, { status: 413 });
+  }
+
   let body: ReqBody = {};
   try {
     body = await req.json();
@@ -51,10 +83,13 @@ export async function POST(req: Request) {
   }
 
   const content = String(body?.content || '').trim();
-  if (!content) return Response.json({ error: '消息不能为空' }, { status: 400 });
+  const parsed = persistIncomingImages(body?.images);
+  if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
+  // 允许"只发图不写字"：文字与图片至少要有一个
+  if (!content && parsed.images.length === 0) return Response.json({ error: '消息不能为空' }, { status: 400 });
   if (content.length > 4000) return Response.json({ error: '消息太长了（最多 4000 字）' }, { status: 400 });
 
-  return buildChatStream(req, { regenerate: false, content });
+  return buildChatStream(req, { regenerate: false, content, images: parsed.images });
 }
 
 /** 把非流式兜底的整段文本切成若干段（句末标点优先），让前端仍能"逐句浮现"，与流式体验一致 */
@@ -75,7 +110,10 @@ function splitForStream(text: string): string[] {
  * 整条生成链路（prepare → start → 生成 → 落库 → 提交回合 → 入队分析 → 出错清理）都在
  * 服务端会话锁内串行执行；流结束 / 取消 / 异常都会释放锁。
  */
-function buildChatStream(req: Request, params: { regenerate: boolean; content: string }): Response {
+function buildChatStream(
+  req: Request,
+  params: { regenerate: boolean; content: string; images?: string[] }
+): Response {
   const encoder = new TextEncoder();
   let full = '';
   let assistantSaved = false;
@@ -138,7 +176,7 @@ function buildChatStream(req: Request, params: { regenerate: boolean; content: s
               });
               cleanupUserOnError = false;
             } else {
-              prepared = await prepareTurn(content);
+              prepared = await prepareTurn(content, { images: params.images });
             }
           } catch (e) {
             send({ type: 'error', message: errMsg(e) });
@@ -148,20 +186,33 @@ function buildChatStream(req: Request, params: { regenerate: boolean; content: s
           // ---- 生成阶段 ----
           try {
             send({ type: 'start', userMessageId: prepared.userMessageId });
-            await chatStream(
-              prepared.messages,
-              (t) => {
-                full += t;
-                send({ type: 'delta', text: t });
-              },
-              { maxTokens: 1200, temperature: 0.9, thinking: false, signal: ac.signal }
-            );
+            // 本轮带图 → 多模态消息。若模型不支持视觉（调用报错且还没吐字），自动降级为纯文字重试一次，
+            // 绝不因此让整轮聊天失败；降级事实会记进 notes / 由前端 toast 提示"她暂时看不懂图片"。
+            let genMessages: ChatMessage[] = prepared.messages;
+            let textOnlyFallback = false;
+            const streamOnceWith = (msgs: ChatMessage[]) =>
+              chatStream(
+                msgs,
+                (t) => {
+                  full += t;
+                  send({ type: 'delta', text: t });
+                },
+                { maxTokens: 1200, temperature: 0.9, thinking: false, signal: ac.signal }
+              );
+            try {
+              await streamOnceWith(genMessages);
+            } catch (e) {
+              if (!hasImageParts(genMessages) || ac.signal.aborted || full.trim()) throw e;
+              textOnlyFallback = true;
+              genMessages = stripImagesToText(prepared.messages);
+              await streamOnceWith(genMessages);
+            }
 
             // 兜底一：模型什么都没产出（换成笨模型时常见）→ 追加一次更明确的指令重试
             if (!full.trim()) {
               const retry = await chat(
                 [
-                  ...prepared.messages,
+                  ...genMessages,
                   {
                     role: 'user',
                     content: '（直接说出你此刻想说的 1-3 句话，口语、短句，带上一个括号里的神态或动作，不要解释、不要拒绝）',
@@ -199,7 +250,7 @@ function buildChatStream(req: Request, params: { regenerate: boolean; content: s
                 try {
                   const retryRaw = await chat(
                     [
-                      ...prepared.messages,
+                      ...genMessages,
                       {
                         role: 'user',
                         content:
@@ -239,8 +290,10 @@ function buildChatStream(req: Request, params: { regenerate: boolean; content: s
             if (!params.regenerate) commitTurn(prepared);
             if (prepared.generationId) completeGeneration(prepared.generationId, savedAssistantId);
 
-            // 若触发过自动重答，在 notes 里标一下（放最前，避免被.slice(0,3)截掉）
-            const notes = (retried ? ['已自动重答一次'] : []).concat(h.notes);
+            // 若触发过自动重答 / 视觉降级，在 notes 里标一下（放最前，避免被.slice(0,3)截掉）
+            const notes = (retried ? ['已自动重答一次'] : [])
+              .concat(textOnlyFallback ? ['她暂时看不懂图片，已改用文字回复'] : [])
+              .concat(h.notes);
             send({
               type: 'final',
               text: h.text,
