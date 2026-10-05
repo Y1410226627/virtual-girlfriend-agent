@@ -70,7 +70,7 @@
 - ⏳ **事件驱动架构（Turn/Event → projections）**：账本已提供事实源；各模块目前仍以"读当前状态"为主，按需演进。
 - ⏳ **对话质量自动评测基准**：现有单测覆盖行为正确性；100~300 场景的对话质量回归（topic/intent/emotion 命中）留待专项。
 - ⏳ **prompt token 压缩**：上下文已分层并标注优先级，未做体积压缩。
-- ⏳ GitHub push：等网络稳定后由用户用 GitHub Desktop 点「Publish branch」（命令行无凭据）。CI 工作流文件已就位（`.github/workflows/verify.yml`），推送后自动生效。
+- ✅ **GitHub push 已打通**（2026-10-06）：`origin` 为 SSH（git@github.com），命令行 `git push` 可直接推送；推送后 CI（`.github/workflows/verify.yml`）自动跑与本地一致的全部门禁。若再遇网络阻断，优先检查代理/加速器，而不是改用其它通道。
 
 ## 7. 关键决策记录（ADR）
 - 位置：`docs/adr/`（格式与用法见其 README）。
