@@ -293,3 +293,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
     return report;
   }
 }
+
+/** 清空该用户全部聊天记录（消息列表页"清空聊天"用） */
+export function wipeAllMessages(): void {
+  dbRun('DELETE FROM messages WHERE user_id = ?', DEFAULT_USER_ID);
+}

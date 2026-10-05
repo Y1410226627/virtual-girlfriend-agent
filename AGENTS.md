@@ -25,6 +25,7 @@
 | `npm run doctor` | 环境自检（Node 版本 / 依赖 / .env / 端口） |
 | `npm run smoke` | 对运行中的服务做只读接口冒烟（默认 3000） |
 | `npm run check:cycles` | src/lib 模块循环依赖检查 |
+| `npm run check:migrations` | 迁移安全检查：破坏性操作（DROP/DELETE/UPDATE 无 WHERE）必须有 `-- safe:` 说明 |
 
 > 说明：npm scripts 里已用 `NEXT_TELEMETRY_DISABLED=1` 关闭 Next.js 的匿名遥测（本机隐私优先，见 ADR-0002）；请不要移除。
 
@@ -40,7 +41,7 @@
 ## 4. 架构与边界
 - 目录：`src/app`（页面 + API 路由）、`src/components`（通用 UI）、`src/lib`（引擎与各系统）。
 - 依赖方向：`app/components → lib`，禁止反向；lib 模块之间保持单向（`npm run check:cycles` 保证无环）。
-- `src/lib/db.ts` 是唯一数据库入口；**新增写操作必须走事务**（`tx()`）并尽量落在 lib 服务层——不要在新路由里直接写 SQL（历史遗留的裸 SQL 在逐步收敛，见「已知技术债」）。
+- `src/lib/db.ts` 是唯一数据库入口；**所有写操作必须走事务**（`tx()`）并落在 lib 服务层——API 路由不得直接写 SQL（已全部收敛，违反由 `npm run check:cycles` 与代码审查把关）。
 - 提示词中枢在 `src/lib/prompts.ts`；她的回复落库前必过 `src/lib/humanize.ts`（人味层）。
 - 页面经 `/api/*` 访问数据；组件不得直接 import db。
 
@@ -53,7 +54,7 @@
 
 ## 6. 已知技术债（允许存在，但不许恶化）
 - ESLint / Prettier 未引入（等网络环境允许后评估；当前门禁 = tsc + node:test + build）。
-- 部分 API 路由仍直接使用 dbRun/dbAll（约 20 处写操作）：收敛到服务层是 P1 待办。
+- API 路由写操作已全部收敛到 lib 服务层（2026-10-05 完成，18 处 dbRun → 服务函数）；路由层只剩 `tx()` 事务包裹与 `dbAll`/`dbGet` 只读查询。
 - `any` 使用约 280 处（多为页面组件的宽松类型）：新代码尽量写准确类型，老代码逐步替换。
 - 超长文件（>450 行）9 个：`src/app/page.tsx`、`src/lib/life.ts`、`src/app/settings/page.tsx`、`src/lib/db.ts`、`src/lib/llm.ts`、`src/app/world/page.tsx`、`src/lib/analysis.ts`、`src/lib/prompts.ts`、`src/lib/memory.ts`——列 P2 拆分清单，不强行一次拆完。
 - 时间/随机数使用点较多（可测性）：新代码优先把「现在时间」作为参数传入，便于测试。

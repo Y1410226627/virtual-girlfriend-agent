@@ -15,7 +15,8 @@
     "verify": "npm run typecheck && npm run test && npm run build",
     "doctor": "node scripts/doctor.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "check:cycles": "node scripts/check-cycles.mjs"
+    "check:cycles": "node scripts/check-cycles.mjs",
+    "check:migrations": "node scripts/check-migrations.mjs"
   },
   "dependencies": {
     "next": "^15.5.0",

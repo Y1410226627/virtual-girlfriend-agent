@@ -1,7 +1,7 @@
 // 关系页：状态 / 阶段 / 昵称 / 纪念日 / 事件 / 关系日志 / 冲突
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
+import { dbAll, dbGet, tx, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
 import { detectScene } from '@/lib/scene';
-import { getRelationshipState, saveRelationshipState, logRelationship, getPersona, setPersonaField, setUserName, checkStageTransition } from '@/lib/relationship';
+import { getRelationshipState, saveRelationshipState, logRelationship, getPersona, setPersonaField, setUserName, checkStageTransition, addEvent, deleteEvent } from '@/lib/relationship';
 import { listConflicts } from '@/lib/conflict';
 import { stageOf, stageListForUi } from '@/lib/stages';
 import { listBankEntries, bankStats } from '@/lib/emotionalBank';
@@ -139,27 +139,16 @@ export async function POST(req: Request) {
     const date = String(body.event_date || '').trim();
     if (!title || !date) return Response.json({ error: '标题和日期不能为空' }, { status: 400 });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return Response.json({ error: '日期格式应为 YYYY-MM-DD' }, { status: 400 });
-    const KIND_WHITELIST = ['anniversary', 'birthday', 'plan'];
-    const kind = KIND_WHITELIST.includes(String(body.kind)) ? String(body.kind) : 'custom';
+    const KIND_WHITELIST = ['anniversary', 'birthday', 'plan'] as const;
+    const kind: 'anniversary' | 'birthday' | 'plan' | 'custom' = KIND_WHITELIST.includes(body.kind as any) ? (body.kind as 'anniversary' | 'birthday' | 'plan') : 'custom';
     const description = body.description ? String(body.description).slice(0, 200) : null;
-    dbRun(
-      'INSERT INTO events (user_id, title, event_date, repeat_yearly, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      DEFAULT_USER_ID,
-      title,
-      date,
-      body.repeat_yearly ? 1 : 0,
-      kind,
-      description,
-      nowIso()
-    );
+    addEvent({ title, event_date: date, repeat_yearly: !!body.repeat_yearly, kind, description });
     return Response.json({ ok: true });
   }
 
   if (action === 'delete_event') {
     const id = Number(body.id);
-    if (!Number.isInteger(id) || id <= 0) return Response.json({ error: '参数错误' }, { status: 400 });
-    const r = dbRun('DELETE FROM events WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
-    return Response.json({ ok: r.changes > 0 });
+    return Response.json({ ok: deleteEvent(id) });
   }
 
   if (action === 'set_stage') {

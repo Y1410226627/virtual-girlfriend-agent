@@ -1,5 +1,5 @@
 // 设置：模型档案（随时切换 + 自动备用链）/ 主动频率 / 场景 / 隐私
-import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, dbRun, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient, customModeOn } from '@/lib/db';
+import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient, customModeOn } from '@/lib/db';
 import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState, logRelationship } from '@/lib/relationship';
 import { clamp } from '@/lib/utils';
 import { STAGES } from '@/lib/stages';
@@ -17,8 +17,9 @@ import {
 } from '@/lib/profiles';
 import { getPersonalityRows, manualAdjust } from '@/lib/personality';
 import { getAttachmentState, setAttachmentAxes } from '@/lib/attachment';
-import { getIntimacy } from '@/lib/intimacy';
+import { setIntimacyState } from '@/lib/intimacy';
 import { backfillEmbeddings } from '@/lib/memory';
+import { setCycleEnabled } from '@/lib/life';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -162,7 +163,7 @@ export async function PUT(req: Request) {
     bumpCounter('config_version', 1);
   }
   if ('cycle_enabled' in (incoming || {})) {
-    dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', String(incoming.cycle_enabled) === 'true' ? 1 : 0, DEFAULT_USER_ID);
+    setCycleEnabled(String(incoming.cycle_enabled) === 'true');
   }
   return Response.json({ ok: true, changed, settings: maskedSettings(getAllSettings()), profiles: listProfiles().map((p) => ({ ...p, api_key: maskSecret(p.api_key), embedding_api_key: maskSecret(p.embedding_api_key) })) });
 }
@@ -296,17 +297,7 @@ export async function POST(req: Request) {
     }
 
     if (v.libido !== undefined || v.intimacy_need !== undefined || v.sexual_satisfaction !== undefined || v.sexual_stress !== undefined) {
-      const s = getIntimacy();
-      const set01 = (x: any, d: number) => clamp(numOr(x, d), 0, 100);
-      dbRun(
-        'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_satisfaction = ?, sexual_stress = ?, updated_at = ? WHERE user_id = ?',
-        set01(v.libido, Number(s.libido)),
-        set01(v.intimacy_need, Number(s.intimacy_need)),
-        set01(v.sexual_satisfaction, Number(s.sexual_satisfaction)),
-        set01(v.sexual_stress, Number(s.sexual_stress)),
-        new Date().toISOString(),
-        DEFAULT_USER_ID
-      );
+      setIntimacyState(v);
     }
 
     logRelationship('milestone', '自定义模式：数值已按设定更新', null, null, '用户在设置页直控');

@@ -275,3 +275,34 @@ export function setUserName(name: string): void {
     dbRun('UPDATE users SET name = ? WHERE id = ?', name.trim(), DEFAULT_USER_ID);
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* 纪念日 / 事件（关系页的"重要日子"）                                    */
+/* ------------------------------------------------------------------ */
+
+/** 新增一条关系事件（纪念日/生日/计划） */
+export function addEvent(opts: {
+  title: string;
+  event_date: string;
+  repeat_yearly: boolean;
+  kind: 'anniversary' | 'birthday' | 'plan' | 'custom';
+  description?: string | null;
+}): void {
+  dbRun(
+    'INSERT INTO events (user_id, title, event_date, repeat_yearly, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    DEFAULT_USER_ID,
+    opts.title,
+    opts.event_date,
+    opts.repeat_yearly ? 1 : 0,
+    opts.kind,
+    opts.description || null,
+    nowIso()
+  );
+}
+
+/** 删除一条关系事件；返回是否真的删了一行 */
+export function deleteEvent(id: number): boolean {
+  if (!Number.isInteger(id) || id <= 0) return false;
+  const r = dbRun('DELETE FROM events WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  return r.changes > 0;
+}

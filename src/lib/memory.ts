@@ -388,6 +388,12 @@ export function deleteMemory(id: number): boolean {
   return changes > 0;
 }
 
+/** 清空该用户全部记忆及其向量（设置页"重置记忆"用；先删向量再删记忆） */
+export function wipeAllMemories(): void {
+  dbRun('DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)', DEFAULT_USER_ID);
+  dbRun('DELETE FROM memories WHERE user_id = ?', DEFAULT_USER_ID);
+}
+
 export function createMemoryManually(type: string, content: string, importance = 6, emotion?: string): number {
   const { lastInsertRowid } = dbRun(
     `INSERT INTO memories (user_id, type, content, importance, emotion, created_at, status, access_count)

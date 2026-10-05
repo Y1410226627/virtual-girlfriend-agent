@@ -1,7 +1,6 @@
 // 消息列表 / 清空聊天
 import { listMessages, messageCount } from '@/lib/engine';
-import { dbRun, DEFAULT_USER_ID } from '@/lib/db';
-import { deleteMessageById } from '@/lib/messageActions';
+import { deleteMessageById, wipeAllMessages } from '@/lib/messageActions';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,6 +25,6 @@ export async function DELETE(req: Request) {
   }
 
   // 没有 id：清空全部聊天记录
-  dbRun('DELETE FROM messages WHERE user_id = ?', DEFAULT_USER_ID);
+  wipeAllMessages();
   return Response.json({ ok: true });
 }

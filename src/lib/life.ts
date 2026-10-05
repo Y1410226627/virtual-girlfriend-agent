@@ -137,6 +137,93 @@ export function listDailyEvents(limit = 30, sinceIso?: string) {
     : dbAll<any>('SELECT * FROM agent_daily_events WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
 }
 
+/* ------------------------------------------------------------------ */
+/* 手动直控状态（"她的世界"页）                                          */
+/* ------------------------------------------------------------------ */
+
+/** 手动设定她此刻的身体数值（绝对值，clamp 0-100，cycle_day 1-60） */
+export function setHealthStates(h: Partial<HealthRow> & { cycle_day?: number }): void {
+  const cur = getHealth();
+  const numOr = (v: any, fallback: number) => {
+    const n = Number(v);
+    return isFinite(n) ? n : fallback;
+  };
+  dbRun(
+    'UPDATE agent_health SET energy = ?, sleep_quality = ?, hunger = ?, exercise = ?, cycle_day = ?, updated_at = ? WHERE user_id = ?',
+    round1(clamp(numOr(h.energy, cur.energy), 0, 100)),
+    round1(clamp(numOr(h.sleep_quality, cur.sleep_quality), 0, 100)),
+    round1(clamp(numOr(h.hunger, cur.hunger), 0, 100)),
+    round1(clamp(numOr(h.exercise, cur.exercise), 0, 100)),
+    Math.round(clamp(numOr(h.cycle_day, cur.cycle_day), 1, 60)),
+    nowIso(),
+    DEFAULT_USER_ID
+  );
+}
+
+/** 手动设定她此刻的心理数值（绝对值，clamp 0-100） */
+export function setPsychologyStates(p: Partial<PsychRow>): void {
+  const cur = getPsychology();
+  const numOr = (v: any, fallback: number) => {
+    const n = Number(v);
+    return isFinite(n) ? n : fallback;
+  };
+  dbRun(
+    'UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, security = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?',
+    round1(clamp(numOr(p.stress, cur.stress), 0, 100)),
+    round1(clamp(numOr(p.loneliness, cur.loneliness), 0, 100)),
+    round1(clamp(numOr(p.missing_user, cur.missing_user), 0, 100)),
+    round1(clamp(numOr(p.security, cur.security), 0, 100)),
+    round1(clamp(numOr(p.self_worth, cur.self_worth), 0, 100)),
+    round1(clamp(numOr(p.mental_energy, cur.mental_energy), 0, 100)),
+    nowIso(),
+    DEFAULT_USER_ID
+  );
+}
+
+/** 把健康表的 updated_at 往回拨 N 小时，再推进一次（立刻看到生活变化） */
+export function simulateHours(hours: number): { steps: number; changes: string[] } {
+  const h = Math.min(72, Math.max(1, hours || 6));
+  dbRun(
+    'UPDATE agent_health SET updated_at = ? WHERE user_id = ?',
+    new Date(Date.now() - h * 3600000).toISOString(),
+    DEFAULT_USER_ID
+  );
+  return advanceLife();
+}
+
+/** 手动设定档案字段（昵称/年龄/职业/故事等） */
+export function setProfileField(field: string, value: string): void {
+  dbRun(`UPDATE agent_profile SET ${field} = ?, updated_at = ? WHERE user_id = ?`, value, nowIso(), DEFAULT_USER_ID);
+}
+
+/** 隐藏一个已揭露的档案字段（从 reveal_status 里移除） */
+export function hideProfileField(field: string): void {
+  const seed = getProfileSeed();
+  const reveal = { ...(seed.reveal || {}) };
+  delete reveal[String(field || '')];
+  dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(reveal), nowIso(), DEFAULT_USER_ID);
+}
+
+/** 设定她身边的人（整组替换 [{name, role, note}]，已在路由侧做校验） */
+export function setCast(cast: CastMember[]): void {
+  dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(cast), nowIso(), DEFAULT_USER_ID);
+}
+
+/** 直接结束病程（不经历康复过程） */
+export function clearIllness(): void {
+  dbRun('UPDATE agent_health SET illness = ?, illness_severity = 0, updated_at = ? WHERE user_id = ?', 'none', nowIso(), DEFAULT_USER_ID);
+}
+
+/** 设定生理期开关与当前天数 */
+export function setCycle(enabled: boolean, day: number): void {
+  dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE user_id = ?', enabled ? 1 : 0, Math.round(clamp(day, 1, 60)), DEFAULT_USER_ID);
+}
+
+/** 只切换生理期开关（保留当前天数） */
+export function setCycleEnabled(enabled: boolean): void {
+  dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', enabled ? 1 : 0, DEFAULT_USER_ID);
+}
+
 export function logLife(field: string, oldV: any, newV: any, reason: string) {
   dbRun(
     'INSERT INTO life_state_logs (user_id, field, old_value, new_value, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)',

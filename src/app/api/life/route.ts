@@ -1,6 +1,6 @@
 // 她的世界：健康 / 心理 / 位置 / 活动 / 日常事件 / 档案里逐步揭露的信息 / 共享世界
-import { dbRun, dbAll, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
-import { nowIso, localDateStr, round1, clamp } from '@/lib/utils';
+import { dbAll, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
+import { localDateStr, round1, clamp } from '@/lib/utils';
 import {
   ensureLife,
   advanceLife,
@@ -30,6 +30,14 @@ import {
   logLife,
   getCast,
   getActiveArc,
+  setHealthStates,
+  setPsychologyStates,
+  simulateHours,
+  setProfileField,
+  hideProfileField,
+  setCast,
+  clearIllness,
+  setCycle,
 } from '@/lib/life';
 import { notifyEventEnd } from '@/lib/proactive';
 import { ensureScheduler } from '@/lib/scheduler';
@@ -140,12 +148,7 @@ export async function POST(req: Request) {
   if (action === 'simulate_hours') {
     // 把时间往回拨 N 小时，再推进一次（方便你立刻看到她的生活变化）
     const hours = Math.min(72, Math.max(1, Number(body.hours) || 6));
-    dbRun(
-      'UPDATE agent_health SET updated_at = ? WHERE user_id = ?',
-      new Date(Date.now() - hours * 3600000).toISOString(),
-      DEFAULT_USER_ID
-    );
-    const r = advanceLife();
+    const r = simulateHours(hours);
     return Response.json({ ok: true, hours, steps: r.steps, changes: r.changes.slice(-12) });
   }
 
@@ -153,33 +156,8 @@ export async function POST(req: Request) {
     // 手动直控：她此刻的身体 / 心理数值（你自己设定，立刻生效；之后仍会自然变化）
     const hIn = (body.health && typeof body.health === 'object' ? body.health : {}) as Record<string, any>;
     const pIn = (body.psychology && typeof body.psychology === 'object' ? body.psychology : {}) as Record<string, any>;
-    const numOr = (x: any, fallback: number) => {
-      const n = Number(x);
-      return isFinite(n) ? n : fallback;
-    };
-    const h = getHealth();
-    const p = getPsychology();
-    dbRun(
-      'UPDATE agent_health SET energy = ?, sleep_quality = ?, hunger = ?, exercise = ?, cycle_day = ?, updated_at = ? WHERE user_id = ?',
-      round1(clamp(numOr(hIn.energy, h.energy), 0, 100)),
-      round1(clamp(numOr(hIn.sleep_quality, h.sleep_quality), 0, 100)),
-      round1(clamp(numOr(hIn.hunger, h.hunger), 0, 100)),
-      round1(clamp(numOr(hIn.exercise, h.exercise), 0, 100)),
-      Math.round(clamp(numOr(hIn.cycle_day, h.cycle_day), 1, 60)),
-      nowIso(),
-      DEFAULT_USER_ID
-    );
-    dbRun(
-      'UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, security = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?',
-      round1(clamp(numOr(pIn.stress, p.stress), 0, 100)),
-      round1(clamp(numOr(pIn.loneliness, p.loneliness), 0, 100)),
-      round1(clamp(numOr(pIn.missing_user, p.missing_user), 0, 100)),
-      round1(clamp(numOr(pIn.security, p.security), 0, 100)),
-      round1(clamp(numOr(pIn.self_worth, p.self_worth), 0, 100)),
-      round1(clamp(numOr(pIn.mental_energy, p.mental_energy), 0, 100)),
-      nowIso(),
-      DEFAULT_USER_ID
-    );
+    setHealthStates(hIn);
+    setPsychologyStates(pIn);
     logLife('manual', '', '手动调整状态数值', '你在「她的世界」页直接设定了她的身体/心理数值');
     return Response.json({ ok: true });
   }
@@ -189,7 +167,7 @@ export async function POST(req: Request) {
     for (const f of PROFILE_FIELDS) {
       if (body[f] !== undefined) updates.push([f, String(body[f] || '')]);
     }
-    for (const [k, v] of updates) dbRun(`UPDATE agent_profile SET ${k} = ?, updated_at = ? WHERE user_id = ?`, v, nowIso(), DEFAULT_USER_ID);
+    for (const [k, v] of updates) setProfileField(k, v);
     return Response.json({ ok: true });
   }
 
@@ -199,10 +177,7 @@ export async function POST(req: Request) {
   }
 
   if (action === 'hide_field') {
-    const seed = getProfileSeed();
-    const reveal = { ...(seed.reveal || {}) };
-    delete reveal[String(body.field || '')];
-    dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(reveal), nowIso(), DEFAULT_USER_ID);
+    hideProfileField(String(body.field || ''));
     return Response.json({ ok: true });
   }
 
@@ -242,14 +217,14 @@ export async function POST(req: Request) {
       if (note.length > 60) return Response.json({ ok: false, error: '备注最多 60 个字' }, { status: 400 });
       cast.push({ name, role, note });
     }
-    dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(cast), nowIso(), DEFAULT_USER_ID);
+    setCast(cast);
     return Response.json({ ok: true, cast });
   }
 
   if (action === 'set_illness') {
     const kind = String(body.kind || '感冒');
     if (kind === 'none') {
-      dbRun('UPDATE agent_health SET illness = ?, illness_severity = 0, updated_at = ? WHERE user_id = ?', 'none', nowIso(), DEFAULT_USER_ID);
+      clearIllness();
     } else {
       startIllness(kind, Number(body.days) || 2);
     }
@@ -259,7 +234,7 @@ export async function POST(req: Request) {
   if (action === 'set_cycle') {
     const day = Math.round(clamp(Number(body.day) || 1, 1, 60));
     const enabled = body.enabled === true || body.enabled === 'true';
-    dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE user_id = ?', enabled ? 1 : 0, day, DEFAULT_USER_ID);
+    setCycle(enabled, day);
     setSetting('cycle_enabled', enabled ? 'true' : 'false');
     return Response.json({ ok: true });
   }

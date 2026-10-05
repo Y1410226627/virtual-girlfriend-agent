@@ -8,8 +8,9 @@ import {
   refreshMemoryEmbedding,
   forgetSweep,
   listDailySummaries,
+  wipeAllMemories,
 } from '@/lib/memory';
-import { dbAll, dbRun, DEFAULT_USER_ID } from '@/lib/db';
+import { dbAll, DEFAULT_USER_ID } from '@/lib/db';
 import { clamp, truncate } from '@/lib/utils';
 
 export const runtime = 'nodejs';
@@ -144,8 +145,7 @@ export async function DELETE(req: Request) {
   const id = Number(url.searchParams.get('id') || 0);
   const all = url.searchParams.get('all');
   if (all === '1') {
-    dbRun('DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)', DEFAULT_USER_ID);
-    dbRun('DELETE FROM memories WHERE user_id = ?', DEFAULT_USER_ID);
+    wipeAllMemories();
     return Response.json({ ok: true });
   }
   if (!id) return Response.json({ error: '缺少 id' }, { status: 400 });

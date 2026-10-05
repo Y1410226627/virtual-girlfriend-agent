@@ -1,12 +1,15 @@
 // 亲密系统：状态 / 内容分级 / 偏好 / 事后关怀
-import { dbRun, tx, DEFAULT_USER_ID } from '@/lib/db';
-import { nowIso, round1 } from '@/lib/utils';
+import { tx } from '@/lib/db';
+import { round1 } from '@/lib/utils';
 import {
   getIntimacy,
   getLevel,
   setLevel,
   listAftercare,
   inAftercare,
+  addPreference,
+  deletePreference,
+  logAftercareResponse,
 } from '@/lib/intimacy';
 import { ensureLife, listPreferences, revealPreferences } from '@/lib/life';
 import { ensureScheduler } from '@/lib/scheduler';
@@ -64,28 +67,20 @@ export async function POST(req: Request) {
       const type = String(body.type || 'custom').slice(0, 24);
       const content = String(body.content || '').trim();
       if (!content) return Response.json({ error: '内容不能为空' }, { status: 400 });
-      dbRun(
-        'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, created_at) VALUES (?, ?, ?, ?, ?)',
-        DEFAULT_USER_ID, type, content.slice(0, 120), body.revealed ? 'revealed' : 'hidden', nowIso()
-      );
+      addPreference({ type, content, revealed: !!body.revealed });
       return Response.json({ ok: true, preferences: listPreferences(true) });
     }
 
     if (action === 'delete_preference') {
       const id = Number(body.id);
       if (!Number.isInteger(id) || id <= 0) return Response.json({ error: '参数错误' }, { status: 400 });
-      const r = dbRun('DELETE FROM intimacy_preferences WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
-      return Response.json({ ok: r.changes > 0, preferences: listPreferences(true) });
+      return Response.json({ ok: deletePreference(id), preferences: listPreferences(true) });
     }
 
     if (action === 'log_aftercare_response') {
       const id = Number(body.id);
       if (!Number.isInteger(id) || id <= 0) return Response.json({ error: '参数错误' }, { status: 400 });
-      const r = dbRun(
-        'UPDATE intimacy_aftercare SET user_response = ? WHERE id = ? AND user_id = ?',
-        String(body.response || '').slice(0, 120), id, DEFAULT_USER_ID
-      );
-      return Response.json({ ok: r.changes > 0 });
+      return Response.json({ ok: logAftercareResponse(id, String(body.response || '')) });
     }
 
     return Response.json({ error: '未知操作' }, { status: 400 });

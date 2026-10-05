@@ -512,6 +512,7 @@ CREATE TABLE IF NOT EXISTS intimacy_content_level (
     version: 5,
     name: 'drop_boundaries_and_consent_logs',
     sql: `
+-- safe: 功能已移除，两张表本机无业务数据，删除只为保持结构干净（历史迁移 v5，已执行）
 -- 边界与同意日志功能已移除（两者本机数据量极小，删除只为保持结构干净）
 DROP TABLE IF EXISTS intimacy_boundaries;
 DROP TABLE IF EXISTS intimacy_consent_logs;
@@ -558,6 +559,7 @@ CREATE TABLE IF NOT EXISTS world_weekly_snapshots (
   UNIQUE(user_id, week)
 );
 
+-- safe: 重置年龄确认标记（v7 引入分级体系，历史的 age_confirmed 不再适用，统一清零让用户重新确认；已执行）
 UPDATE intimacy_content_level SET age_confirmed = 0;
 UPDATE settings SET value = 'false', updated_at = datetime('now') WHERE key = 'age_confirmed';
 `,
@@ -566,6 +568,7 @@ UPDATE settings SET value = 'false', updated_at = datetime('now') WHERE key = 'a
     version: 8,
     name: 'remove_intimacy_safety_controls',
     sql: `
+-- safe: v6 临时恢复的安全控制表/列在 v8 确认移除（功能下线，本机无业务数据保留价值；已执行）
 DROP TABLE IF EXISTS intimacy_consent_logs;
 DROP TABLE IF EXISTS intimacy_boundaries;
 ALTER TABLE intimacy_state DROP COLUMN active_session_id;

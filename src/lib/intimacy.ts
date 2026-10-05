@@ -221,3 +221,56 @@ export function intimacyPromptBlock(): string {
 ${LEVEL_TEXT[effective]}
 ${rules.join('\n')}`;
 }
+
+/* ------------------------------------------------------------------ */
+/* 偏好与事后回应（设置页 / 亲密页）                                      */
+/* ------------------------------------------------------------------ */
+
+/** 新增一条亲密偏好 */
+export function addPreference(opts: { type: string; content: string; revealed: boolean }): void {
+  dbRun(
+    'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, created_at) VALUES (?, ?, ?, ?, ?)',
+    DEFAULT_USER_ID,
+    opts.type.slice(0, 24),
+    opts.content.slice(0, 120),
+    opts.revealed ? 'revealed' : 'hidden',
+    nowIso()
+  );
+}
+
+/** 删除一条亲密偏好；返回是否真的删了一行 */
+export function deletePreference(id: number): boolean {
+  if (!Number.isInteger(id) || id <= 0) return false;
+  const r = dbRun('DELETE FROM intimacy_preferences WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  return r.changes > 0;
+}
+
+/** 记录用户对事后关怀的回应 */
+export function logAftercareResponse(id: number, response: string): boolean {
+  if (!Number.isInteger(id) || id <= 0) return false;
+  const r = dbRun(
+    'UPDATE intimacy_aftercare SET user_response = ? WHERE id = ? AND user_id = ?',
+    response.slice(0, 120),
+    id,
+    DEFAULT_USER_ID
+  );
+  return r.changes > 0;
+}
+
+/** 手动设定亲密数值（自定义模式用，绝对值 clamp 0-100） */
+export function setIntimacyState(v: Partial<{ libido: number; intimacy_need: number; sexual_satisfaction: number; sexual_stress: number }>): void {
+  const cur = getIntimacy();
+  const numOr = (x: any, fallback: number) => {
+    const n = Number(x);
+    return isFinite(n) ? n : fallback;
+  };
+  dbRun(
+    'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_satisfaction = ?, sexual_stress = ?, updated_at = ? WHERE user_id = ?',
+    round1(clamp(numOr(v.libido, cur.libido), 0, 100)),
+    round1(clamp(numOr(v.intimacy_need, cur.intimacy_need), 0, 100)),
+    round1(clamp(numOr(v.sexual_satisfaction, cur.sexual_satisfaction), 0, 100)),
+    round1(clamp(numOr(v.sexual_stress, cur.sexual_stress), 0, 100)),
+    nowIso(),
+    DEFAULT_USER_ID
+  );
+}
