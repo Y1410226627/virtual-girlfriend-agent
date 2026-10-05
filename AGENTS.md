@@ -63,6 +63,13 @@
 - ✅ **超长文件已全部拆分**（2026-10-05，ADR-0004）：9 个长文件 → 桶 + 子模块（如 `life.ts` 拆为 life-core/events/sim/shared/arc/prompt 六个子模块；三个页面各拆出 `components/<页面>/` 组件目录）；当前唯一 >450 行的代码文件是 `src/lib/db-migrations.ts`（追加式 SQL 数据文件，**刻意保持单文件单数组**，见红线 1.2）。
 - ⏳ **时间/随机数可测性**（长期约定，非待办）：新代码优先把「现在时间」作为参数传入（参考 `parseExpectedEnd(text, from)`），便于写确定性测试；老代码不强制回改。
 - ✅ **TypeScript 严格化完成**（2026-10-05）：`noUncheckedIndexedAccess` 已启用（115 处修复，零行为变化）。**不要关闭此开关**；新代码请主动做数组越界防护（`arr[0]!` 仅在确证非空时使用，或显式判空）。
+- ✅ **回合/生成/操作账本落地**（2026-10-06，ADR-0005）：新增 conversation_turns / message_generations / analysis_jobs / turn_operations 四表（v12）；服务端会话锁 `withConversationLock`；`prepareTurn` 去副作用、成功后才 `commitTurn`；重新生成 = 同 turn 新 generation；分析任务落库持久化 + generation 版本校验（取消"队列满静默丢弃"）；删除/撤回优先按账本精确回滚（旧数据保留推断式兜底）。**改聊天链路前先读 `src/lib/turn.ts` 与 ADR-0005**。
+- ✅ **质量层落地**（2026-10-06）：回复校验层（低分自动重答一次，`src/lib/reply-validator.ts`）；记忆事实键 `memories.fact_key` 主判 + 向量辅助；`affect_state`（此刻情绪）与长期指标分家；主动消息做自我暴露抽取（她自己的话进她自己的记忆/计划）；提示词分层 + 数据块 `<DATA>` 包裹。
+- ✅ **本地安全边界**（2026-10-06，ADR-0005）：dev/start 默认只监听 `127.0.0.1`；设置 `ACCESS_PIN` 才启用 middleware 门禁；已保存 Key 绑定保存时 host（换地址不携带旧 Key）；GET 路由只读化，后台推进走 `POST /api/tick` + scheduler。
+- ⏳ **共享世界规范化拆表**：事务化读改写已消除丢更新；若未来需要逐条查询/统计再拆表，必须走"双写过渡"。
+- ⏳ **事件驱动架构（Turn/Event → projections）**：账本已提供事实源；各模块目前仍以"读当前状态"为主，按需演进。
+- ⏳ **对话质量自动评测基准**：现有单测覆盖行为正确性；100~300 场景的对话质量回归（topic/intent/emotion 命中）留待专项。
+- ⏳ **prompt token 压缩**：上下文已分层并标注优先级，未做体积压缩。
 - ⏳ GitHub push：等网络稳定后由用户用 GitHub Desktop 点「Publish branch」（命令行无凭据）。CI 工作流文件已就位（`.github/workflows/verify.yml`），推送后自动生效。
 
 ## 7. 关键决策记录（ADR）

@@ -18,8 +18,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  // P1-59：GET 只读——不再 ensureLife()（避免"读一次就写库"）；getIntimacy 会自行幂等补种
   ensureScheduler();
-  ensureLife();
   const s = getIntimacy();
   const lv = getLevel();
   return Response.json({

@@ -8,6 +8,7 @@ import { getRelationshipState, logRelationship } from './relationship';
 import { DIMENSION_ALIASES, type PersonalitySignal } from './types';
 import { DIMENSION_KEYS, dimensionLabel, getPersonalityRows, consumeSignals, currentAttachmentStyle, unsolidify } from './personality-core';
 import { saveWeeklySnapshot } from './personality-snapshots';
+import { resolveSourceTurns } from './turnOps';
 
 // 原 personality.ts 的导出面（读取层 + 快照，行为不变）
 export {
@@ -25,8 +26,11 @@ export type { PersonalityRow, PersonalityLogRow } from './personality-core';
 export { saveWeeklySnapshot, listSnapshots, rollbackToSnapshot } from './personality-snapshots';
 export type { PersonalitySnapshotRow } from './personality-snapshots';
 
-/** personality_signals 里做统计用到的列 */
+/** personality_signals 里做统计 / 归因用到的列 */
 interface SignalRow {
+  id: number;
+  /** 产生该信号的 assistant 消息 id（P1-39/40 归因来源回合用） */
+  message_id: number | null;
   strength: number | null;
   weight: number | null;
   context: string | null;
@@ -234,6 +238,15 @@ export function runConfirmLayer(messageId?: number | null): void {
       .map((r) => r.context)
       .join('；');
 
+    // P1-39/40：记录这次微调实际来自哪些回合 / 哪些信号。
+    // 被消费信号的 message_id → assistant 消息 → message_generations.turn_id（映射不到则 NULL）；
+    // 供 turnOps 回滚时判断"多源累积"，避免删除单条消息就误回滚跨回合的变化。
+    const consumedGroup = direction === '+' ? pos : neg;
+    const sourceTurns = resolveSourceTurns(consumedGroup.map((r) => r.message_id));
+    const contributingSignalIds = consumedGroup.map((r) => Number(r.id)).filter((x) => x > 0);
+    const sourceTurnsJson = sourceTurns.length ? JSON.stringify(sourceTurns) : null;
+    const contributingJson = contributingSignalIds.length ? JSON.stringify(contributingSignalIds) : null;
+
     tx(() => {
       dbRun(
         'UPDATE personality_state SET value = ?, last_adjusted_turn = ?, updated_at = ? WHERE user_id = ? AND dimension = ?',
@@ -244,8 +257,8 @@ export function runConfirmLayer(messageId?: number | null): void {
         dim
       );
       dbRun(
-        `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirm', ?)`,
+        `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, source_turns, contributing_signal_ids, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirm', ?, ?, ?)`,
         DEFAULT_USER_ID,
         messageId ?? null,
         dim,
@@ -258,6 +271,8 @@ export function runConfirmLayer(messageId?: number | null): void {
         )}，情境 ${direction === '+' ? p.contexts : n.contexts} 个），触发 ±1 微调`,
         getRelationshipState().stage,
         currentAttachmentStyle(),
+        sourceTurnsJson,
+        contributingJson,
         nowIso()
       );
       consumeSignals(dim, direction);

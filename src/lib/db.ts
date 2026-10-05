@@ -461,9 +461,17 @@ export function wipeAllData(keepSettings = true): void {
     'agent_daily_events',
     'life_state_logs',
     'ongoing_events',
+    'life_arcs',
+    'agent_diaries',
     'intimacy_aftercare',
     'intimacy_preferences',
     'world_weekly_snapshots',
+    'model_profiles',
+    // v12 回合/生成/操作/分析任务账本（清零后由正常写作流程重建）
+    'conversation_turns',
+    'message_generations',
+    'analysis_jobs',
+    'turn_operations',
   ];
   db.exec('BEGIN');
   try {

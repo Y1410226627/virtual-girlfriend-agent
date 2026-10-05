@@ -28,7 +28,8 @@ const TABS = [
 ] as const;
 
 export default function WorldPage() {
-  const { data, loading, error, reload } = useApi<LifeData>('/api/life');
+  // P1-55：一次取最多 200 条生活日记，"展开全部"才有真实数据可展示（默认只返回 30）
+  const { data, loading, error, reload } = useApi<LifeData>('/api/life?limit=200');
   const [tab, setTab] = useState<(typeof TABS)[number]['k']>('now');
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

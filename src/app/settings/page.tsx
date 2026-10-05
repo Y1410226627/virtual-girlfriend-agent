@@ -42,6 +42,8 @@ export default function SettingsPage() {
   const [notifyOn, setNotifyOn] = useState(false);
   // 语音试听是否进行中
   const [ttsTesting, setTtsTesting] = useState(false);
+  // 上一次保存被服务端跳过的"非法值"字段（保留用户输入 + 红色提示，P1-57）
+  const [saveErrors, setSaveErrors] = useState<string[]>([]);
 
   // 客户端读取通知能力 / 权限 / 开关（SSR 安全）
   useEffect(() => {
@@ -190,12 +192,16 @@ export default function SettingsPage() {
       // 这里如实提示被跳过的字段，避免"部分保存"被谎报成"已保存"。
       // *_api_key 为空/掩码时按"不修改"处理属预期行为，不视为失败。
       const changed: string[] = Array.isArray(j?.changed) ? j.changed : [];
-      const skipped = Object.keys(payload).filter((k) => !changed.includes(k) && !k.endsWith('_api_key'));
-      setToast(j?.error ? j.error : skipped.length ? `部分设置未保存（格式不正确）：${skipped.join('、')}` : msg);
-      // 只清除本次保存的字段；其它卡片未保存的草稿继续保留
-      for (const k of keys) dirtyRef.current.delete(k);
+      const failed = Object.keys(payload).filter((k) => !changed.includes(k) && !k.endsWith('_api_key'));
+      setSaveErrors(failed);
+      setToast(j?.error ? j.error : failed.length ? `部分设置未保存（格式不正确）：${failed.join('、')}` : msg);
+      // P1-57：只对"成功保存"的字段清 dirty；被跳过的非法字段保留用户输入（红色错误提示见页面顶部），
+      // 否则 reload() 会用服务端旧值把用户刚填的非法值覆盖掉。
+      for (const k of keys) {
+        if (!failed.includes(k)) dirtyRef.current.delete(k);
+      }
       reload();
-      return true;
+      return failed.length === 0;
     } catch (e) {
       setToast(`保存失败：${errMsg(e)}`);
       return false;
@@ -327,6 +333,12 @@ export default function SettingsPage() {
     <div className="pb-10">
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader title="设置" desc="模型、身份、主动消息、隐私。所有数据都存在你自己电脑上。" />
+
+      {saveErrors.length ? (
+        <div className="mx-5 mt-3 rounded-2xl border border-rose-300 px-4 py-2.5 text-xs text-rose-600 md:mx-8">
+          以下设置格式不正确、未保存（已保留你的输入，请修改后重试）：{saveErrors.join('、')}
+        </div>
+      ) : null}
 
       <div className="space-y-4 px-5 md:px-8">
         <AppearanceCard theme={theme} onApplyTheme={applyTheme} />

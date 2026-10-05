@@ -33,25 +33,25 @@ export function customModeBlock(): string {
   }
 }
 
-/** 她身边的人（具名社会关系）注入块 */
+/** 她身边的人（具名社会关系）注入块；具名关系属于用户数据 → 包 <DATA>，引导语留在外面 */
 export function castBlock(): string {
   try {
     const cast = getCast();
     if (!cast.length) return '';
     const parts = cast.map((c) => `你的${c.role || '朋友'}叫${c.name}${c.note ? `（${c.note}）` : ''}`);
-    return `【你身边的人】${parts.join('；')}。聊天时可以自然提起她们（她们有自己的事，不总围着你转），但别每轮都提。`;
+    return `【你身边的人】<DATA>${parts.join('；')}</DATA>。聊天时可以自然提起她们（她们有自己的事，不总围着你转），但别每轮都提。`;
   } catch {
     return '';
   }
 }
 
-/** 她最近的生活线（跨天剧情）注入块 */
+/** 她最近的生活线（跨天剧情）注入块；剧情数据包 <DATA>，引导语留在外面 */
 export function lifeArcBlock(): string {
   try {
     const arc = getActiveArc();
     if (!arc) return '';
     const day = Math.min(arc.planned_days || 1, (arc.progress || 0) + 1);
-    return `【你最近的生活线】你正在「${arc.title}」：${arc.description}（第 ${day} 天 / 计划 ${arc.planned_days} 天）。聊到相关话题可以自然提起，但不要每轮汇报、不要念台词。`;
+    return `【你最近的生活线】<DATA>你正在「${arc.title}」：${arc.description}（第 ${day} 天 / 计划 ${arc.planned_days} 天）</DATA>。聊到相关话题可以自然提起，但不要每轮汇报、不要念台词。`;
   } catch {
     return '';
   }

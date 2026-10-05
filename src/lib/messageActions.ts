@@ -3,6 +3,7 @@
 import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
 import { clamp, nowIso, round1, errMsg } from './utils';
 import { getRelationshipState, saveRelationshipState } from './relationship';
+import { listOperationsForGeneration, listOperationsForTurn, rollbackOperations, type TurnOperationRow } from './turnOps';
 
 interface TurnEffectRow {
   id: number;
@@ -76,6 +77,34 @@ const emptyRemoved = () => ({
   proactive: 0,
 });
 
+/**
+ * 拿这条消息对应的操作账本（P0-09）：
+ *  - assistant 消息：它在 message_generations 里的那次 generation → 只反向该 generation 的操作；
+ *  - user 消息：它在 conversation_turns 里的那个 turn → 反向该 turn 的全部 generation 的操作。
+ * 没有账本（历史数据 / 老逻辑路径）时返回空数组，调用方回落到推断式回滚。
+ */
+function ledgerOpsForMessage(id: number): TurnOperationRow[] {
+  const gen = dbGet<{ id: number }>(
+    'SELECT id FROM message_generations WHERE user_id = ? AND assistant_message_id = ?',
+    DEFAULT_USER_ID,
+    id
+  );
+  if (gen) {
+    const ops = listOperationsForGeneration(Number(gen.id));
+    if (ops.length) return ops;
+  }
+  const turn = dbGet<{ id: number }>(
+    'SELECT id FROM conversation_turns WHERE user_id = ? AND user_message_id = ?',
+    DEFAULT_USER_ID,
+    id
+  );
+  if (turn) {
+    const ops = listOperationsForTurn(Number(turn.id));
+    if (ops.length) return ops;
+  }
+  return [];
+}
+
 /** 删除一条消息；cascade=true 时同时撤销这一轮产生的影响 */
 export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
   const report: DeleteReport = {
@@ -98,6 +127,56 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
     report.ok = true;
     report.notes.push('只删除了消息本身，记忆与关系状态保持不变');
     return report;
+  }
+
+  // 首选：操作账本精确反向（P0-09）。命中则不再走推断式回滚，避免重复扣减。
+  const ledgerOps = ledgerOpsForMessage(id);
+  if (ledgerOps.length) {
+    try {
+      tx(() => {
+        rollbackOperations(ledgerOps);
+        // 账本未覆盖的"行级"清理：信号 / 消息本体 / 审计兜底（关系·银行·冲突·记忆·性格·依恋·共享世界已由账本处理）
+        const eff = dbGet<TurnEffectRow>(
+          'SELECT * FROM turn_effects WHERE user_id = ? AND (message_id = ? OR user_message_id = ?) ORDER BY id DESC LIMIT 1',
+          DEFAULT_USER_ID,
+          id,
+          id
+        );
+        const ids = [id];
+        if (eff?.message_id) ids.push(Number(eff.message_id));
+        if (eff?.user_message_id) ids.push(Number(eff.user_message_id));
+        const uniq = Array.from(new Set(ids.filter((x) => Number.isFinite(x) && x > 0)));
+        const ph = uniq.map(() => '?').join(',');
+        // 记忆：账本已删本轮新建的；这里兜底清掉"合并到旧记忆但来源是这条消息"的情况
+        const memRows = dbAll<{ id: number }>(
+          `SELECT id FROM memories WHERE user_id = ? AND source_message_id IN (${ph})`,
+          DEFAULT_USER_ID,
+          ...uniq
+        );
+        for (const m of memRows) dbRun('DELETE FROM memory_embeddings WHERE memory_id = ?', m.id);
+        dbRun(`DELETE FROM memories WHERE user_id = ? AND source_message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
+        dbRun(`DELETE FROM personality_signals WHERE user_id = ? AND message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
+        dbRun(`DELETE FROM attachment_signals WHERE user_id = ? AND message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
+        dbRun(`DELETE FROM proactive_messages WHERE user_id = ? AND message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
+        dbRun('DELETE FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+      });
+      report.ok = true;
+      report.notes.push('已按操作账本精确撤销这一轮生成的影响；消息本体与信号已清理（turn_effects 记录保留作兜底）');
+      const s = getRelationshipState();
+      report.state = {
+        intimacy: round1(s.intimacy),
+        trust: round1(s.trust),
+        balance: round1(s.emotional_balance),
+        tension: round1(s.unresolved_tension),
+        repair: round1(s.repair_credit),
+        mood: s.mood,
+        stage: s.stage,
+      };
+      return report;
+    } catch (e) {
+      report.error = errMsg(e);
+      return report;
+    }
   }
 
   try {

@@ -1,7 +1,7 @@
 // LLM 向量（Embedding）：可单独配置连接 + 本地哈希兜底 + 缓存（换聊天模型时保持记忆向量一致）。
 // 依赖 llm-core 的共享内核；严禁 import 桶文件 llm.ts。
-import { llmConfig, getCounter } from './db';
-import { bumpUsage, fetchWithTimeout } from './llm-core';
+import { llmConfig, getCounter, getSetting } from './db';
+import { bumpUsage, fetchWithTimeout, guardKeyByHost } from './llm-core';
 
 /* ------------------------------------------------------------------ */
 /* Embedding（可单独配置连接，换聊天模型时保持记忆向量一致）             */
@@ -105,12 +105,40 @@ export async function embed(texts: string[]): Promise<number[][]> {
   };
 
   if (shouldTryEmbeddingApi(cfg)) {
+    // P0-13：已保存的向量 Key（或回退用的聊天 Key）只发给"保存它时所属的 host"；
+    // host 不一致时停止发送该 Key、回退 env（没有则为空），避免改 URL 就把凭据带到未知主机。
+    const savedEmbKey = getSetting('embedding_api_key') || '';
+    let embKey = cfg.embeddingApiKey;
+    if (savedEmbKey) {
+      const g = guardKeyByHost({
+        savedKey: savedEmbKey,
+        savedHost: getSetting('embedding_key_host') || '',
+        targetUrl: cfg.embeddingBaseUrl,
+        envKey: process.env.EMBEDDING_API_KEY || '',
+      });
+      if (g.dropped) {
+        console.warn('[embedding] 目标地址与已保存向量 Key 的归属主机不一致，已停止发送该 Key（改用环境变量）');
+      }
+      embKey = g.apiKey;
+    } else if (cfg.embeddingApiKey) {
+      // 向量接口复用聊天 Key 的情况：按聊天 Key 的归属主机校验
+      const g = guardKeyByHost({
+        savedKey: cfg.embeddingApiKey,
+        savedHost: getSetting('llm_key_host') || '',
+        targetUrl: cfg.embeddingBaseUrl,
+        envKey: process.env.LLM_API_KEY || '',
+      });
+      if (g.dropped) {
+        console.warn('[embedding] 目标地址与聊天 Key 的归属主机不一致，已停止发送该 Key（改用环境变量）');
+      }
+      embKey = g.apiKey;
+    }
     try {
       const res = await fetchWithTimeout(
         `${cfg.embeddingBaseUrl}/embeddings`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.embeddingApiKey}` },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${embKey}` },
           body: JSON.stringify({ model: cfg.embeddingModel, input: missTexts }),
         },
         20000

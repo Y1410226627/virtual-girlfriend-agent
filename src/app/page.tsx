@@ -21,7 +21,9 @@ import { useOnboarding } from '@/components/chat/use-onboarding';
 export default function ChatPage() {
   const [input, setInput] = useState('');
   const [toast, setToast] = useState<string | null>(null);
-  const visitAtRef = useRef<number>(Date.now()); // "你这次进来"的时间（用于"她等了你多久"）
+  const visitAtRef = useRef<number>(Date.now()); // "你这次进来"的时间（用于记录 lastVisitAt）
+  // P1-50："她等了你多久"要按"当前时间"实时计算（而不是你进页面那一刻），每分钟刷新一次
+  const [nowTs, setNowTs] = useState(() => Date.now());
 
   const { state, onboard, setOnboard, loadState, setSceneMode } = useChatState(setToast);
   const {
@@ -32,8 +34,11 @@ export default function ChatPage() {
     busyNote,
     recalling,
     loadErr,
+    hasOlder,
+    loadingOlder,
     listRef,
     loadMessages,
+    loadOlder,
     send,
     regenerate,
     withdraw,
@@ -60,7 +65,7 @@ export default function ChatPage() {
   const { stickerOpen, setStickerOpen, stickerPanelRef, stickerBtnRef, insertSticker } = useSticker(setInput);
   const { nameDraft, setNameDraft, saveOnboard } = useOnboarding({ setOnboard, loadState, setToast });
 
-  /* 记录"你这次进来"的时间（用于顶部"她等了你 X 小时"） */
+  /* 记录"你这次进来"的时间（用于 lastVisitAt） */
   useEffect(() => {
     visitAtRef.current = Date.now();
     try {
@@ -68,6 +73,12 @@ export default function ChatPage() {
     } catch {
       /* ignore */
     }
+  }, []);
+
+  /* P1-50：每分钟刷新"当前时间"，让"她等了你多久"实时增长（卸载时清理定时器） */
+  useEffect(() => {
+    const t = setInterval(() => setNowTs(Date.now()), 60_000);
+    return () => clearInterval(t);
   }, []);
 
   const her = state?.persona?.agent_name || '她';
@@ -86,7 +97,8 @@ export default function ChatPage() {
     if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg.streaming) return null;
     const ts = new Date(lastMsg.created_at).getTime();
     if (!isFinite(ts)) return null;
-    const ms = visitAtRef.current - ts;
+    // P1-50：用"当前时间"（每分钟刷新）而不是进页面那一刻，让等待时长实时增长
+    const ms = nowTs - ts;
     if (ms < 3600_000) return null;
     const h = Math.floor(ms / 3600_000);
     return h >= 24 ? `她等了你 ${Math.floor(h / 24)} 天` : `她等了你 ${h} 小时`;
@@ -138,6 +150,9 @@ export default function ChatPage() {
         playingId={playingId}
         ttsEnabled={state?.ttsEnabled}
         stickers={state?.stickers}
+        hasOlder={hasOlder}
+        loadingOlder={loadingOlder}
+        onLoadOlder={loadOlder}
         setInput={setInput}
         send={send}
         onRequestDelete={(m) => {

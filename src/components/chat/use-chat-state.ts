@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { errMsg } from '@/lib/utils';
 import type { AppState } from '@/components/chat/shared';
 
@@ -14,6 +14,13 @@ export function useChatState(setToast: (v: string | null) => void) {
   // 会把旧快照盖回来，导致变更短暂不生效——所以这里始终发新请求，只用序号丢弃过期响应。
   const seqRef = useRef(0); // 已发出的最新请求序号
   const appliedRef = useRef(0); // 已应用的响应序号
+
+  // 应用启动时做一次性后台推进（P1-59）：GET 已只读化，改由这里触发（静默失败即可）
+  useEffect(() => {
+    void fetch('/api/tick', { method: 'POST' }).catch(() => {
+      /* 推进失败不影响页面 */
+    });
+  }, []);
 
   const loadState = useCallback(async () => {
     const seq = ++seqRef.current;

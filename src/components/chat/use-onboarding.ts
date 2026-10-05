@@ -20,19 +20,19 @@ export function useOnboarding(params: {
       return;
     }
     try {
-      const r1 = await fetch('/api/relationship', {
+      // P1-56：一次请求同时写 user_name + agent_name，服务端用同一事务落库（原子）。
+      const r = await fetch('/api/relationship', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'set_user', user_name: name }),
+        body: JSON.stringify({
+          action: 'set_user',
+          user_name: name,
+          agent_name: nameDraft.agent_name.trim() || undefined,
+        }),
       });
-      if (!r1.ok) throw new Error(`保存失败 ${r1.status}`);
-      if (nameDraft.agent_name.trim()) {
-        const r2 = await fetch('/api/relationship', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'set_persona', agent_name: nameDraft.agent_name.trim() }),
-        });
-        if (!r2.ok) throw new Error(`保存失败 ${r2.status}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j?.error || `保存失败 ${r.status}`);
       }
       window.localStorage.setItem('onboardDismissed', '1');
       setOnboard(false);

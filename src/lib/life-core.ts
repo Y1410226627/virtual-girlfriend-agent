@@ -1,8 +1,8 @@
 // 生活系统 · 核心层：表初始化 / 基础读写 / 日志 / 手动直控状态 / 生病与生理周期
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting } from './db';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting, setCounter, customModeOn } from './db';
 import { clamp, nowIso, round1, safeJson } from './utils';
-import { logRelationship } from './relationship';
+import { logRelationship, getPersona } from './relationship';
 
 /* ------------------------------------------------------------------ */
 /* 表初始化                                                            */
@@ -91,16 +91,32 @@ export function getActivity(): ActivityRow {
   }
   return row!;
 }
+/** 档案字段的三态揭露状态：auto=按关系阶段自动判断 / revealed=已告诉他 / hidden=永不自动揭露 */
+export type RevealState = 'auto' | 'revealed' | 'hidden';
+
+/** 兼容旧数据：true→revealed，false/缺失/非法→auto */
+export function normalizeRevealMap(raw: unknown): Record<string, RevealState> {
+  const out: Record<string, RevealState> = {};
+  if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (v === 'revealed' || v === 'hidden' || v === 'auto') out[k] = v;
+      else if (v === true) out[k] = 'revealed';
+      else if (v === false) out[k] = 'auto';
+    }
+  }
+  return out;
+}
+
 /** agent_profile 行（SELECT *；各字段均为 TEXT） */
 export interface ProfileSeed {
-  reveal: Record<string, boolean>;
-  [field: string]: string | null | Record<string, boolean>;
+  reveal: Record<string, RevealState>;
+  [field: string]: string | null | Record<string, RevealState>;
 }
 
 export function getProfileSeed(): ProfileSeed {
   const row = dbGet<Record<string, string | null>>('SELECT * FROM agent_profile WHERE user_id = ?', DEFAULT_USER_ID);
   if (!row) return { reveal: {} };
-  return { ...row, reveal: safeJson<Record<string, boolean>>(row.reveal_status, {}) };
+  return { ...row, reveal: normalizeRevealMap(safeJson<unknown>(row.reveal_status, {})) };
 }
 
 export interface CastMember { name: string; role: string; note: string }
@@ -174,11 +190,14 @@ export function setProfileField(field: string, value: string): void {
   dbRun(`UPDATE agent_profile SET ${field} = ?, updated_at = ? WHERE user_id = ?`, value, nowIso(), DEFAULT_USER_ID);
 }
 
-/** 隐藏一个已揭露的档案字段（从 reveal_status 里移除） */
+/**
+ * 把档案字段设为"永不自动揭露"。
+ * 三态后必须显式写 'hidden'：旧实现是删除记录（= 'auto'），到阶段照样会说出来，用户点"设为未说"无效。
+ */
 export function hideProfileField(field: string): void {
   const seed = getProfileSeed();
   const reveal = { ...(seed.reveal || {}) };
-  delete reveal[String(field || '')];
+  reveal[String(field || '')] = 'hidden';
   dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(reveal), nowIso(), DEFAULT_USER_ID);
 }
 
@@ -206,27 +225,46 @@ export function setCycleEnabled(enabled: boolean): void {
   dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', enabled ? 1 : 0, DEFAULT_USER_ID);
 }
 
-export function logLife(field: string, oldV: unknown, newV: unknown, reason: string) {
+/**
+ * 写一条生活状态日志。
+ * occurredAt：这件事"实际发生"的时间（历史回放时传对应的模拟时刻），默认现在。
+ * 缺少它会让离线多天回放产生的日志全部落在"今天"，时间线读起来是错的。
+ */
+export function logLife(field: string, oldV: unknown, newV: unknown, reason: string, occurredAt?: string) {
   dbRun(
     'INSERT INTO life_state_logs (user_id, field, old_value, new_value, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    DEFAULT_USER_ID, field, String(oldV ?? ''), String(newV ?? ''), reason, nowIso()
+    DEFAULT_USER_ID, field, String(oldV ?? ''), String(newV ?? ''), reason, occurredAt || nowIso()
   );
 }
 
 /* ------------------------------------------------------------------ */
 /* 生病 / 生理周期                                                      */
 /* ------------------------------------------------------------------ */
-export function startIllness(kind = '感冒', days = 2): void {
+/**
+ * 开始一段病程。
+ * startedAt：发病"实际发生"的时间（历史回放时传模拟时刻），默认现在。
+ */
+export function startIllness(kind = '感冒', days = 2, startedAt?: string): void {
   const h = getHealth();
+  const at = startedAt || nowIso();
   dbRun(
     'UPDATE agent_health SET illness = ?, illness_start = ?, illness_duration_days = ?, illness_severity = ?, energy = ?, updated_at = ? WHERE user_id = ?',
-    kind, nowIso(), round1(days), 40, clamp(h.energy - 25, 5, 100), nowIso(), DEFAULT_USER_ID
+    kind, at, round1(days), 40, clamp(h.energy - 25, 5, 100), at, DEFAULT_USER_ID
   );
-  logLife('illness', h.illness, kind, `生病了（预计 ${round1(days)} 天）`);
+  // 记录发病时间戳：短期内不再重复触发（门限判定见 life-sim）
+  setCounter('illness_last_at', new Date(at).getTime() || Date.now());
+  logLife('illness', h.illness, kind, `生病了（预计 ${round1(days)} 天）`, at);
   logRelationship('milestone', `她的状态：开始${kind}（预计 ${round1(days)} 天恢复）`, null, kind, '健康系统');
 }
 
-export function careBoost(kind: 'illness' | 'sick' | 'care'): void {
+/**
+ * 一次"被关心"事件：关怀的全部效果都收敛到这里（单一入口，避免双路径重复加成）。
+ * 合并了原 careBoost 的效果 + 原 applyInteractionEffects 里 caredForHer 的额外加成：
+ * cared_count+1、病程加速、security+8、self_worth+6、loneliness-12、missing_user-6，并写一条 care 生活日志。
+ * 自定义模式（模式 B）冻结自动数值 → no-op。
+ */
+export function applyCareEvent(kind: 'illness' | 'sick' | 'care' = 'care'): void {
+  if (customModeOn()) return;
   const h = getHealth();
   dbRun('UPDATE agent_health SET cared_count = cared_count + 1, updated_at = ? WHERE user_id = ?', nowIso(), DEFAULT_USER_ID);
   if (h.illness !== 'none') {
@@ -237,11 +275,20 @@ export function careBoost(kind: 'illness' | 'sick' | 'care'): void {
   }
   const psy = getPsychology();
   dbRun(
-    'UPDATE agent_psychology SET security = ?, self_worth = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
-    round1(clamp(psy.security + 8, 0, 100)), round1(clamp(psy.self_worth + 6, 0, 100)),
-    round1(clamp(psy.loneliness - 12, 0, 100)), nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_psychology SET security = ?, self_worth = ?, loneliness = ?, missing_user = ?, updated_at = ? WHERE user_id = ?',
+    round1(clamp(psy.security + 8, 0, 100)),
+    round1(clamp(psy.self_worth + 6, 0, 100)),
+    round1(clamp(psy.loneliness - 12, 0, 100)),
+    round1(clamp(psy.missing_user - 6, 0, 100)),
+    nowIso(),
+    DEFAULT_USER_ID
   );
   logLife('care', kind, '被关心', '用户关心行为加速恢复、提升安全感');
+}
+
+/** 向后兼容别名：旧的关怀入口，内部统一走 applyCareEvent */
+export function careBoost(kind: 'illness' | 'sick' | 'care'): void {
+  applyCareEvent(kind);
 }
 
 /* ------------------------------------------------------------------ */
@@ -250,6 +297,42 @@ export function careBoost(kind: 'illness' | 'sick' | 'care'): void {
 export function isWeekend(d: Date): boolean {
   const w = d.getDay();
   return w === 0 || w === 6;
+}
+
+/* ------------------------------------------------------------------ */
+/* 她的身份模板：从 personas.occupation 推导作息 / 事件 / 叙事口径        */
+/* ------------------------------------------------------------------ */
+export type LifeTemplate = 'student' | 'graduate' | 'worker' | 'intern' | 'freelancer';
+
+/**
+ * 从自由文本的身份描述识别生活模板（未知 → student，与旧默认一致）。
+ * 判定顺序：研究生 / 实习 / 自由职业 先于"上班/工作"，学生放最后兜底。
+ */
+export function lifeTemplate(occupation?: string | null): LifeTemplate {
+  const t = String(occupation || '');
+  if (!t.trim()) return 'student';
+  if (/研究生|硕士|博士|读研|直博|phd|master/i.test(t)) return 'graduate';
+  if (/实习/.test(t)) return 'intern';
+  if (/自由职业|自由撰稿|自由插画|独立开发|个体|接单/.test(t)) return 'freelancer';
+  if (/上班|工作|职场|打工人|白领|职员|公务员|老师|教师|医生|护士|工程师|程序员|销售|会计|律师|设计师|运营/.test(t)) return 'worker';
+  if (/大一|大二|大三|大四|大学生|学生|在读|高中|本科|大学|学校|读书|考研/.test(t)) return 'student';
+  return 'student';
+}
+
+/** 当前身份模板（读 personas.occupation） */
+export function currentLifeTemplate(): LifeTemplate {
+  return lifeTemplate(getPersona().occupation);
+}
+
+/** 模板的中文描述（给生活线 / 叙事 prompt 用；student 保持"大一女生"与旧默认等价） */
+export function lifeTemplateLabel(t: LifeTemplate): string {
+  switch (t) {
+    case 'graduate': return '在读研究生';
+    case 'worker': return '上班族';
+    case 'intern': return '实习生';
+    case 'freelancer': return '自由职业者';
+    default: return '大一女生';
+  }
 }
 
 /* ------------------------------------------------------------------ */

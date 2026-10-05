@@ -1,6 +1,6 @@
 // 亲密系统：性是亲密关系的一个维度，从属于关系、强调情感连接
 // 内容分级 0/1/2/3（暧昧→亲密氛围、具体行为）；可以生成露骨色情描写
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
+import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
 import { clamp, nowIso, round1, hoursSince } from './utils';
 import { getRelationshipState, logRelationship, saveRelationshipState } from './relationship';
 import { attachmentStyle } from './attachment';
@@ -71,7 +71,10 @@ export function setLevel(level: number): void {
 /* ------------------------------------------------------------------ */
 /* 事后关怀                                                            */
 /* ------------------------------------------------------------------ */
-/** 一次亲密互动之后调用：依恋风格决定事后关怀方式 */
+/** 一次亲密互动之后调用：依恋风格决定事后关怀方式
+ *  多表写入（亲密状态 / 心理 / 关系 / 情感银行 / 事后关怀流水 / 关系日志）必须在同一事务，
+ *  中途失败就整体回滚，避免"事后状态对不上账"。
+ */
 export function startAftercare(quality: 'good' | 'neutral' | 'ignored' = 'neutral'): { state: string; minutes: number } | null {
   const att = attachmentStyle();
   const minutes = att === 'anxious' ? 45 : att === 'avoidant' ? 15 : 30;
@@ -82,40 +85,43 @@ export function startAftercare(quality: 'good' | 'neutral' | 'ignored' = 'neutra
     fearful: '先想靠近、又想缩回去',
   };
   const state = stateMap[att] || stateMap.secure!;
-  const s = getIntimacy();
-  dbRun(
-    'UPDATE intimacy_state SET aftercare_until = ?, aftercare_state = ?, last_intimacy_at = ?, sexual_satisfaction = ?, sexual_stress = ?, libido = ?, intimacy_need = ?, updated_at = ? WHERE user_id = ?',
-    new Date(Date.now() + minutes * 60000).toISOString(),
-    state,
-    nowIso(),
-    round1(clamp(s.sexual_satisfaction + (quality === 'good' ? 12 : quality === 'ignored' ? -15 : 4), 0, 100)),
-    round1(clamp(s.sexual_stress + (quality === 'ignored' ? 12 : -20), 0, 100)),
-    round1(clamp(s.libido - 25, 0, 100)),
-    round1(clamp(s.intimacy_need - (quality === 'good' ? 25 : quality === 'neutral' ? 12 : 0), 0, 100)),
-    nowIso(),
-    DEFAULT_USER_ID
-  );
-  const p = getPsychology();
-  dbRun(
-    'UPDATE agent_psychology SET security = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
-    round1(clamp(p.security + (quality === 'good' ? 5 : quality === 'ignored' ? -8 : 1), 0, 100)),
-    round1(clamp(p.loneliness - (quality === 'good' ? 5 : 0), 0, 100)),
-    nowIso(), DEFAULT_USER_ID
-  );
-  const rel = getRelationshipState();
-  if (quality === 'ignored') {
-    rel.unresolved_tension = clamp(rel.unresolved_tension + 4, 0, 100);
-    rel.conflict_state = 'tense';
-    saveRelationshipState(rel);
-    logRelationship('tension', '事后关怀没有得到回应，关系张力有所增加', null, rel.unresolved_tension, '事后关怀');
-  }
-  addBankEntry(quality === 'good' ? 3 : quality === 'ignored' ? -3 : 1, '亲密后的关怀', quality === 'good' ? '亲密之后有确认感受与陪伴' : quality === 'ignored' ? '亲密之后感到被忽视' : '亲密之后得到基本回应');
-  dbRun(
-    'INSERT INTO intimacy_aftercare (user_id, session_id, aftercare_quality, user_response, agent_state, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    DEFAULT_USER_ID, null, quality, null, state, nowIso()
-  );
-  logRelationship('milestone', `亲密互动后的关怀状态：${quality}`, null, state, '亲密系统');
-  return { state, minutes };
+  return tx(() => {
+    const s = getIntimacy();
+    dbRun(
+      'UPDATE intimacy_state SET aftercare_until = ?, aftercare_state = ?, last_intimacy_at = ?, sexual_satisfaction = ?, sexual_stress = ?, libido = ?, intimacy_need = ?, updated_at = ? WHERE user_id = ?',
+      new Date(Date.now() + minutes * 60000).toISOString(),
+      state,
+      nowIso(),
+      round1(clamp(s.sexual_satisfaction + (quality === 'good' ? 12 : quality === 'ignored' ? -15 : 4), 0, 100)),
+      round1(clamp(s.sexual_stress + (quality === 'ignored' ? 12 : -20), 0, 100)),
+      round1(clamp(s.libido - 25, 0, 100)),
+      round1(clamp(s.intimacy_need - (quality === 'good' ? 25 : quality === 'neutral' ? 12 : 0), 0, 100)),
+      nowIso(),
+      DEFAULT_USER_ID
+    );
+    const p = getPsychology();
+    dbRun(
+      'UPDATE agent_psychology SET security = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
+      round1(clamp(p.security + (quality === 'good' ? 5 : quality === 'ignored' ? -8 : 1), 0, 100)),
+      round1(clamp(p.loneliness - (quality === 'good' ? 5 : 0), 0, 100)),
+      nowIso(), DEFAULT_USER_ID
+    );
+    const rel = getRelationshipState();
+    if (quality === 'ignored') {
+      rel.unresolved_tension = clamp(rel.unresolved_tension + 4, 0, 100);
+      rel.conflict_state = 'tense';
+      saveRelationshipState(rel);
+      logRelationship('tension', '事后关怀没有得到回应，关系张力有所增加', null, rel.unresolved_tension, '事后关怀');
+    }
+    addBankEntry(quality === 'good' ? 3 : quality === 'ignored' ? -3 : 1, '亲密后的关怀', quality === 'good' ? '亲密之后有确认感受与陪伴' : quality === 'ignored' ? '亲密之后感到被忽视' : '亲密之后得到基本回应');
+    // session_id 暂为 NULL：当前没有"活跃亲密会话"概念（intimacy_state.active_session_id 已在 v8 移除），列保留待将来关联
+    dbRun(
+      'INSERT INTO intimacy_aftercare (user_id, session_id, aftercare_quality, user_response, agent_state, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      DEFAULT_USER_ID, null, quality, null, state, nowIso()
+    );
+    logRelationship('milestone', `亲密互动后的关怀状态：${quality}`, null, state, '亲密系统');
+    return { state, minutes };
+  });
 }
 
 export function inAftercare(): boolean {
@@ -238,12 +244,17 @@ ${rules.join('\n')}`;
 
 /** 新增一条亲密偏好 */
 export function addPreference(opts: { type: string; content: string; revealed: boolean }): void {
+  // 新增偏好的门槛沿用列默认值 2（migration v7: reveal_stage DEFAULT 2）。
+  // 关系阶段没到门槛时，即便请求里标了 revealed 也不能直接算"已揭露"（越权保护）→ 落库为 hidden。
+  const revealStage = 2;
+  const revealed = opts.revealed && getRelationshipState().stage >= revealStage;
   dbRun(
-    'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, created_at) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, reveal_stage, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID,
     opts.type.slice(0, 24),
     opts.content.slice(0, 120),
-    opts.revealed ? 'revealed' : 'hidden',
+    revealed ? 'revealed' : 'hidden',
+    revealStage,
     nowIso()
   );
 }

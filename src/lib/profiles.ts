@@ -136,6 +136,9 @@ export function applyProfile(id: number, silent = false): boolean {
     if (p.embedding_model !== null) setSetting('embedding_model', p.embedding_model || '');
     if (p.embedding_base_url !== null) setSetting('embedding_base_url', p.embedding_base_url || '');
     if (p.embedding_api_key !== null) setSetting('embedding_api_key', p.embedding_api_key || '');
+    // URL 与 Key 是同一档案里一起保存的 → 视为凭据属于该 host（供 llm-core 组装时的 host 校验）
+    recordKeyHost('llm', p.base_url);
+    if (p.embedding_api_key) recordKeyHost('embedding', p.embedding_base_url || p.base_url);
   });
   // 让向量缓存等按新配置重建
   bumpCounter('config_version', 1);
@@ -247,6 +250,80 @@ export function activeProfile(): ModelProfile | null {
     DEFAULT_USER_ID
   );
   return row || null;
+}
+
+/* ------------------------------------------------------------------ */
+/* URL 与凭据分离（P0-13）：Key 记录它被保存时所属的 host                 */
+/* ------------------------------------------------------------------ */
+export type KeyKind = 'llm' | 'embedding';
+
+const KEY_HOST_SETTING: Record<KeyKind, string> = {
+  llm: 'llm_key_host',
+  embedding: 'embedding_key_host',
+};
+
+/** 取 URL 的 host（小写；非法 URL 返回空串，视为"无 host"，不做校验） */
+export function hostOf(url: string): string {
+  try {
+    return new URL(String(url || '')).host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/** 读取某类 Key 被保存时所属的 host（空 = 未记录） */
+export function keyHostFor(kind: KeyKind): string {
+  return getSetting(KEY_HOST_SETTING[kind]) || '';
+}
+
+/** 记录某类 Key 当前归属的 host（保存 Key / 应用档案时调用） */
+export function recordKeyHost(kind: KeyKind, baseUrl: string): void {
+  setSetting(KEY_HOST_SETTING[kind], hostOf(baseUrl));
+}
+
+/* ------------------------------------------------------------------ */
+/* 双事实源归一（P1-42）：高级设置写穿到激活档案                          */
+/* ------------------------------------------------------------------ */
+/** settings 键 → model_profiles 列 */
+const PROFILE_COLUMN_OF: Record<string, keyof ModelProfile> = {
+  llm_base_url: 'base_url',
+  llm_api_key: 'api_key',
+  llm_model: 'chat_model',
+  llm_analysis_model: 'analysis_model',
+  embedding_base_url: 'embedding_base_url',
+  embedding_api_key: 'embedding_api_key',
+  embedding_model: 'embedding_model',
+};
+
+/**
+ * 把刚刚保存的"高级设置"字段写穿到激活档案，保证"高级设置"与"当前档案"两边一致，
+ * 消除"改了 A 却调用 B"（targetsFor 优先用档案）。
+ * 只同步本次真正改动过的键；无激活档案时返回 null（保持原有行为）。
+ */
+export function syncActiveProfileFields(keys: string[]): number | null {
+  const p = activeProfile();
+  if (!p) return null;
+  const cols: string[] = [];
+  const values: string[] = [];
+  for (const k of keys) {
+    const col = PROFILE_COLUMN_OF[k];
+    if (!col) continue;
+    const v = getSetting(k);
+    // base_url 非法/为空时不覆盖档案里已有的有效地址
+    if (col === 'base_url' && !v) continue;
+    cols.push(String(col));
+    values.push(String(v ?? ''));
+  }
+  if (!cols.length) return p.id;
+  const assignments = cols.map((c) => `${c} = ?`).join(', ');
+  dbRun(
+    `UPDATE model_profiles SET ${assignments}, updated_at = ? WHERE id = ? AND user_id = ?`,
+    ...values,
+    nowIso(),
+    p.id,
+    DEFAULT_USER_ID
+  );
+  return p.id;
 }
 
 /* ------------------------------------------------------------------ */

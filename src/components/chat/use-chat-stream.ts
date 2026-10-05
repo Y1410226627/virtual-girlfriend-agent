@@ -29,6 +29,9 @@ export function useChatStream(params: {
   const [busyNote, setBusyNote] = useState<string | null>(null); // 她忙时"正在输入"处的小字提示（在场闸门）
   const [recalling, setRecalling] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  // P1-51 历史分页：是否还有更早的消息 / 是否正在加载更早的消息
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   const listRef = useRef<HTMLDivElement>(null);
   const lastIdRef = useRef(0);
@@ -226,6 +229,8 @@ export function useChatStream(params: {
       const j = await r.json();
       if (j?.messages) {
         setMessages(j.messages);
+        // 一次拿满一页 → 可能还有更早的消息可加载（P1-51）
+        setHasOlder(Array.isArray(j.messages) && j.messages.length >= 80);
         lastIdRef.current = j.messages.length ? j.messages[j.messages.length - 1].id : 0;
         // 记录已读位置，供导航栏未读红点使用
         if (j.messages.length) {
@@ -246,6 +251,40 @@ export function useChatStream(params: {
     loadMessages();
     loadState();
   }, [loadMessages, loadState]);
+
+  /* P1-51：加载更早的历史消息（前插，并保持当前滚动位置） */
+  const loadOlder = useCallback(async () => {
+    const first = messagesRef.current[0];
+    if (!first || first.id <= 0 || loadingOlder) return;
+    setLoadingOlder(true);
+    const el = listRef.current;
+    const prevHeight = el?.scrollHeight ?? 0;
+    const prevTop = el?.scrollTop ?? 0;
+    try {
+      const r = await fetch(`/api/messages?beforeId=${first.id}&limit=60`, { cache: 'no-store' });
+      const j = await r.json();
+      const older: Msg[] = Array.isArray(j?.messages) ? j.messages : [];
+      if (!older.length) {
+        setHasOlder(false);
+        return;
+      }
+      setMessages((prev) => {
+        const exists = new Set(prev.map((m) => m.id));
+        const add = older.filter((m) => !exists.has(m.id));
+        return add.length ? [...add, ...prev] : prev;
+      });
+      if (older.length < 60) setHasOlder(false);
+      // 前插后内容变高：把 scrollTop 加上"新增的高度"，视觉上位置不动
+      requestAnimationFrame(() => {
+        const e = listRef.current;
+        if (e) e.scrollTop = prevTop + (e.scrollHeight - prevHeight);
+      });
+    } catch {
+      /* 忽略：下次再试 */
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [loadingOlder, setMessages]);
 
   /* 轮询新消息（她会主动发消息） */
   useEffect(() => {
@@ -321,21 +360,27 @@ export function useChatStream(params: {
       sendingRef.current = false;
       setTyping(false);
 
-      // 后台分析（记忆/关系/性格信号/依恋信号）——入队即返回，完全不阻塞你打字
+      // 后台分析：新版服务端在落库后已自行入队（done 事件带 analysisStartedAt / analysisJobId），
+      // 前端不再主动 POST /api/analyze，只轮询 GET 看进度。
       setRecalling(true);
-      const enqueueAt = Date.now();
-      fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userMessage: text,
-          assistantMessage: assistantText,
-          userMessageId: ids?.userMessageId,
-          assistantMessageId: ids?.assistantMessageId,
-        }),
-      }).catch(() => {
-        /* 分析失败不影响聊天 */
-      });
+      let enqueueAt = Number(ids?.analysisStartedAt) || 0;
+      const serverEnqueued = !!ids && (enqueueAt > 0 || ids.analysisJobId != null);
+      if (!serverEnqueued) {
+        // 兼容尚未切换的服务端（done 未携带入队信息）：兜底主动触发一次，避免分析被静默丢弃。
+        enqueueAt = Date.now();
+        fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userMessage: text,
+            assistantMessage: assistantText,
+            userMessageId: ids?.userMessageId,
+            assistantMessageId: ids?.assistantMessageId,
+          }),
+        }).catch(() => {
+          /* 分析失败不影响聊天 */
+        });
+      }
 
       // 轮询后台进度：跑完了再刷新状态、给一个小提示
       // 服务端语义：busy = running || 队列非空（入队未开始/运行中皆为 true），lastFinishedAt 在每轮完成时更新，
@@ -452,8 +497,11 @@ export function useChatStream(params: {
     busyNote,
     recalling,
     loadErr,
+    hasOlder,
+    loadingOlder,
     listRef,
     loadMessages,
+    loadOlder,
     send,
     regenerate,
     withdraw,

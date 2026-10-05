@@ -16,6 +16,9 @@ export function LifeEventsCard({
   setShowAllEvents: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const total = eventsTotal ?? events?.length ?? 0;
+  // 已取到的条数（前端一次最多取 200；total 是真实总数）
+  const fetched = events?.length ?? 0;
+  const more = total > fetched;
   return (
     <Card title="生活日记（她自己经历的小事）">
       {events?.length ? (
@@ -31,7 +34,7 @@ export function LifeEventsCard({
           ))}
           {total > 20 ? (
             <button className="btn-ghost w-full !py-1.5 text-xs" onClick={() => setShowAllEvents((v) => !v)}>
-              {showAllEvents ? '收起' : `展开全部（共 ${total} 条）`}
+              {showAllEvents ? '收起' : more ? `展开最近 ${fetched} 条（共 ${total} 条）` : `展开全部（共 ${total} 条）`}
             </button>
           ) : null}
         </div>

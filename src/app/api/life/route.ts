@@ -3,8 +3,6 @@ import { dbAll, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
 import { round1, clamp, calendarDaysBetween } from '@/lib/utils';
 import {
   ensureLife,
-  advanceLife,
-  saveWeeklyWorldSnapshot,
   getHealth,
   getPsychology,
   getLocation,
@@ -59,11 +57,13 @@ interface WeeklySnapshotRow {
   created_at: string;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // P1-59：GET 只读——不再推进时间（advanceLife）/ 写每周快照，避免"读一次就改库"。
+  // 生活推进改由 POST /api/tick（应用启动时触发一次）与后台定时器（每 5 分钟）负责。
   ensureScheduler();
-  ensureLife();
-  advanceLife();
-  saveWeeklyWorldSnapshot();
+  const url = new URL(req.url);
+  // 生活日记明细条数可调（默认 30，最多 200）；前端"展开全部"会带更大的 limit
+  const eventsLimit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 30));
   const h = getHealth();
   const p = getPsychology();
   const loc = getLocation();
@@ -119,8 +119,8 @@ export async function GET() {
     })(),
     recently: whatHappenedSince(12),
     timeline,
-    events: listDailyEvents(30),
-    // 明细最多 30 条；eventsTotal 是真实总数（前端"共 N 条"用，避免把上限当总数）
+    events: listDailyEvents(eventsLimit),
+    // 明细最多 eventsLimit 条；eventsTotal 是真实总数（前端"共 N 条"用，避免把上限当总数）
     eventsTotal: countDailyEvents(),
     profile: {
       fields,
@@ -184,7 +184,8 @@ export async function POST(req: Request) {
   }
 
   if (action === 'reveal_field') {
-    revealProfileFields([String(body.field || '')]);
+    // 用户在界面上手动"设为已说"：用户明确意图，force 绕过关系阶段门限（模型自动揭露仍受门限约束）
+    revealProfileFields([String(body.field || '')], { force: true });
     return Response.json({ ok: true });
   }
 

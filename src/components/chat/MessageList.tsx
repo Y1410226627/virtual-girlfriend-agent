@@ -18,6 +18,9 @@ interface MessageListProps {
   playingId: number | null;
   ttsEnabled?: boolean;
   stickers?: Sticker[];
+  hasOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void | Promise<void>;
   setInput: React.Dispatch<React.SetStateAction<string>>;
   send: (override?: string) => void | Promise<void>;
   onRequestDelete: (m: Msg) => void;
@@ -43,6 +46,9 @@ export default function MessageList({
   playingId,
   ttsEnabled,
   stickers,
+  hasOlder,
+  loadingOlder,
+  onLoadOlder,
   setInput,
   send,
   onRequestDelete,
@@ -127,6 +133,13 @@ export default function MessageList({
       ) : null}
 
       <div className="mx-auto max-w-3xl space-y-3">
+        {hasOlder ? (
+          <div className="flex justify-center">
+            <button className="btn-ghost !py-1.5 text-xs" disabled={loadingOlder} onClick={() => void onLoadOlder?.()}>
+              {loadingOlder ? '正在加载更早的消息…' : '加载更早的消息'}
+            </button>
+          </div>
+        ) : null}
         {waitHint ? (
           <div className="text-center text-[11px] ink-3" role="status" aria-live="polite">
             {waitHint}

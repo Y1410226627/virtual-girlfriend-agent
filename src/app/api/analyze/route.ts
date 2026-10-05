@@ -9,7 +9,7 @@ import { round1 } from '@/lib/utils';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** 请求体：对话内容与可选消息 id */
+/** 请求体：兼容旧客户端（只信消息 id，文本参数一律忽略） */
 type ReqBody = {
   userMessage?: unknown;
   assistantMessage?: unknown;
@@ -48,21 +48,18 @@ export async function POST(req: Request) {
   } catch {
     return Response.json({ error: '无效请求' }, { status: 400 });
   }
-  const userMessage = String(body?.userMessage || '').slice(0, 4000);
-  const assistantMessage = String(body?.assistantMessage || '').slice(0, 4000);
-  if (!assistantMessage) return Response.json({ error: '缺少对话内容' }, { status: 400 });
+  // 兼容旧客户端：只信 userMessageId/assistantMessageId，文本参数忽略（分析时从 messages 表读真实文本）。
+  // 缺 id 一律 400；无 turn/generation 的旧任务由队列侧放宽为"assistant 消息存在即可"。
   const rawUid = body?.userMessageId;
   const rawAid = body?.assistantMessageId;
-  const userMessageId = rawUid != null && Number.isInteger(Number(rawUid)) ? Number(rawUid) : undefined;
-  const assistantMessageId = rawAid != null && Number.isInteger(Number(rawAid)) ? Number(rawAid) : undefined;
+  const userMessageId = rawUid != null && Number.isInteger(Number(rawUid)) ? Number(rawUid) : null;
+  const assistantMessageId = rawAid != null && Number.isInteger(Number(rawAid)) ? Number(rawAid) : null;
+  if (userMessageId == null || assistantMessageId == null) {
+    return Response.json({ error: '缺少 userMessageId / assistantMessageId' }, { status: 400 });
+  }
 
   // 关键：入队后立刻返回，分析在后台按顺序执行
-  const { pending } = enqueueAnalysis({
-    userMessage,
-    assistantMessage,
-    userMessageId,
-    assistantMessageId,
-  });
+  const { pending } = enqueueAnalysis({ userMessageId, assistantMessageId });
 
-  return Response.json({ queued: true, pending: pending + (analysisQueueStatus().running ? 1 : 0) });
+  return Response.json({ queued: true, pending });
 }

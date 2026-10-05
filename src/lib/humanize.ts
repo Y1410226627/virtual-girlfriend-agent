@@ -35,9 +35,32 @@ export interface HumanizeResult {
   notes: string[];
 }
 
-/** AI 自我暴露 / 元信息（中英文都拦） */
+/** AI 自我暴露 / 元信息（中英文都拦）——普通模式用（连"数据库/后台/系统提示"这类术语也一并删） */
 const AI_SELF_RE =
   /(作为一个?\s*(AI|人工智能|人工智能助手|语言模型|大模型|助手|程序|机器人|智能体)|我是(一个)?\s*(AI|人工智能|语言模型|助手|程序|机器人|虚拟人|智能体)|作为(你的)?(虚拟)?(女友)?(助手|AI)|语言模型的?限制|系统提示|提示词|数据库|记忆库|后台|算法|训练数据|模型(认为|判断)|as an? ai|ai language model|language model|i am an? ai|i'm an? ai|as a helpful assistant|i cannot feel)/i;
+/**
+ * 严格版：只拦"她自认是 AI / 程序 / 助手"这类真正出戏的话，
+ * 不含"数据库 / 后台 / 系统提示 / 提示词 / 模型"等术语——用于用户正经问技术/元问题时放宽模式。
+ */
+const AI_SELF_HARD_RE =
+  /(作为一个?\s*(AI|人工智能|人工智能助手|语言模型|大模型|助手|程序|机器人|智能体)|我是(一个)?\s*(AI|人工智能|语言模型|助手|程序|机器人|虚拟人|智能体)|作为(你的)?(虚拟)?(女友)?(助手|AI)|语言模型的?限制|as an? ai|ai language model|language model|i am an? ai|i'm an? ai|as a helpful assistant|i cannot feel)/i;
+
+/** 技术/元对话关键词（用户消息里出现这些，多半是在正经问"你怎么运作的"） */
+const META_TECH_WORD_RE = /(记忆|系统|模型|AI|人工智能|设置|数据库|prompt|提示词|后台|算法|程序|代码|接口|功能|实现|原理|机制|设定|人格|参数)/i;
+/** 疑问 / 求解释的语气 */
+const META_QUESTION_RE =
+  /([?？]|怎么|如何|为什么|为啥|什么|哪些|能不能|可不可以|能否|介绍|解释|说明|讲讲|说说|聊聊|原理|机制|工作方式|怎么工作|是啥|是不是|有没有|你说说)/;
+
+/**
+ * 用户这一轮是不是在问技术/元问题（如"你这个记忆系统怎么工作的"）。
+ * 是 → humanize 走放宽模式：只删明显出戏句（自认 AI/程序），保留术语。
+ */
+export function isMetaTechQuestion(userMessage: string): boolean {
+  const t = String(userMessage || '');
+  if (!t) return false;
+  return META_TECH_WORD_RE.test(t) && META_QUESTION_RE.test(t);
+}
+
 /** 用户替身发言（她在回复里替你说话） */
 const ROLE_PREFIX_RE = /^\s*(?:她|他|AI|Assistant|assistant)\s*[：:]\s*/;
 /** 括号里的元信息（内心独白/注释） */
@@ -188,7 +211,7 @@ function filterActions(
 }
 
 /** 句级清理：去掉暴露 AI 身份、解释系统、替用户说话的句子 */
-function cleanSentences(text: string, userName: string): { text: string; notes: string[] } {
+function cleanSentences(text: string, userName: string, selfRe: RegExp): { text: string; notes: string[] } {
   const notes: string[] = [];
   const sentences = text.split(/(?<=[。！？!?…；;\n])/);
   const kept: string[] = [];
@@ -200,7 +223,7 @@ function cleanSentences(text: string, userName: string): { text: string; notes: 
       if (cur.includes('\n')) kept.push('\n');
       continue;
     }
-    if (AI_SELF_RE.test(cur)) {
+    if (selfRe.test(cur)) {
       notes.push(`删掉AI腔: ${truncate(raw.trim(), 24)}`);
       continue;
     }
@@ -250,6 +273,10 @@ export function fallbackReply(ctx: HumanizeContext): string {
 export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult {
   const notes: string[] = [];
   let text = String(raw || '');
+  // 用户在正经问技术/元问题（"你这个记忆系统怎么工作的"）→ 放宽：只删自认 AI/程序的出戏句，保留术语
+  const metaTalk = isMetaTechQuestion(ctx.userMessage || '');
+  const selfRe = metaTalk ? AI_SELF_HARD_RE : AI_SELF_RE;
+  if (metaTalk) notes.push('技术/元对话模式：放宽术语过滤');
 
   // 代码块 / JSON
   text = text.replace(/```[\s\S]*?```/g, '');
@@ -281,7 +308,7 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
       }
     }
     cur = cur.replace(META_PAREN_RE, '');
-    if (AI_SELF_RE.test(cur)) {
+    if (selfRe.test(cur)) {
       notes.push(`删掉AI腔: ${truncate(cur, 24)}`);
       continue;
     }
@@ -295,7 +322,7 @@ export function humanizeReply(raw: string, ctx: HumanizeContext): HumanizeResult
   text = keptLines.join('\n');
 
   // 句子级清理
-  const sent = cleanSentences(text, ctx.userName);
+  const sent = cleanSentences(text, ctx.userName, selfRe);
   notes.push(...sent.notes);
   text = sent.text;
 

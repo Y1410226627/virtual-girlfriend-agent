@@ -1,6 +1,6 @@
 // 聊天引擎：上下文组装 + 回复生成（流式）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, numSetting, getSetting } from './db';
-import { nowIso, truncate, hoursSince, errMsg } from './utils';
+import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, numSetting, getSetting } from './db';
+import { nowIso, truncateMiddle, hoursSince, errMsg } from './utils';
 import { chat, chatStream, type ChatMessage } from './llm';
 import { buildReplyMessages, buildHints } from './prompts';
 import { retrieveMemories, formatMemoryBlock } from './memory';
@@ -11,16 +11,32 @@ import { humanizeReply, type HumanizeContext } from './humanize';
 import { detectScene, type Scene } from './scene';
 import { renderContentForModel } from './stickers';
 import { ensureLife, advanceLife, whatHappenedSince, getExpiredEvent, settleExpiredEvent } from './life';
+import { createTurn, beginGeneration, completeGeneration, withConversationLock } from './turn';
 import type { MessageRow } from './types';
 
 export interface PreparedTurn {
   userMessageId: number | null;
+  /** 本轮所属回合（一个用户消息 = 一个 turn） */
+  turnId: number | null;
+  /** 本轮的生成记录（重新生成 = 新 generation） */
+  generationId: number | null;
   messages: ChatMessage[];
   memoryBlock: string;
   hints: string[];
   turnCount: number;
   /** 交给"人味层"的上下文（清洗/补动作/查重都要用） */
   humanize: HumanizeContext;
+  /** 本轮的场景更新（prepare 只计算，commitTurn 才落库） */
+  sceneUpdate: SceneUpdate;
+}
+
+export interface PrepareTurnOptions {
+  /** 重新生成时置 false：不再重复保存用户消息，复用他已有的那一条 */
+  insertUserMessage?: boolean;
+  userMessageId?: number;
+  /** 重新生成时由调用方（chat 路由）传入的既有 turn/generation */
+  turnId?: number | null;
+  generationId?: number | null;
 }
 
 /* ---------------------- 消息读写 ---------------------- */
@@ -111,16 +127,22 @@ export function markAssistantMessagesRead(): void {
 /** 最近 N 轮对话 → LLM messages（工作记忆）。表情包会转换成她看得懂的描述 */
 export function recentMessagesForPrompt(limit?: number): ChatMessage[] {
   const n = limit ?? Math.max(4, numSetting('context_size', 20));
+  // 先多取候选（limit*3，上限 120），过滤出 user/assistant 后再取最近 limit 条：
+  // 主动消息 / 系统消息不再挤占额度，保证拿到的是真实对话轮。
+  const candidateLimit = Math.min(120, Math.max(n * 3, n));
   const rows = dbAll<MessageRow>(
     'SELECT role, content, is_proactive, created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
     DEFAULT_USER_ID,
-    n
-  ).reverse();
+    candidateLimit
+  );
   return rows
     .filter((r) => r.role === 'user' || r.role === 'assistant')
+    .slice(0, n)
+    .reverse()
     .map((r) => ({
       role: r.role as 'user' | 'assistant',
-      content: truncate(renderContentForModel(String(r.content || '')), 800),
+      // 长消息头尾保留（约 40% 头 + 60% 尾）：既见铺垫，也见结论
+      content: truncateMiddle(renderContentForModel(String(r.content || '')), 800),
     }));
 }
 
@@ -145,15 +167,29 @@ export function recentActionPhrases(limit = 10): string[] {
 }
 
 /* ---------------------- 每轮准备 ---------------------- */
-/** 保存用户消息 → 检索记忆 → 组装 Prompt */
-export async function prepareTurn(
-  userText: string,
-  opts: { insertUserMessage?: boolean; userMessageId?: number } = {}
-): Promise<PreparedTurn> {
+/**
+ * 准备一轮：保存用户消息 → 建 turn/generation → 检索记忆 → 组装 Prompt。
+ * 本函数只做"读取 + 计算 + 返回待提交动作"，**不写本轮产物**：
+ *   - 不 bump turn_count、不 touchInteraction、不落库场景（这些在 commitTurn，assistant 成功落库后执行）；
+ *   - 但保留"按时间幂等推进"的世界状态（ensureLife/advanceLife/过期事件 settle）——它们属于
+ *     "到此刻为止的世界"，不是本轮的产物，重复执行也安全，所以仍放在 prepare。
+ */
+export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {}): Promise<PreparedTurn> {
   const text = String(userText || '').trim();
+  const insertUser = opts.insertUserMessage !== false;
   // 重新生成时不再重复保存用户消息，直接复用他已存在的那一条
-  const userMessageId = opts.insertUserMessage === false ? opts.userMessageId ?? null : insertMessage('user', text);
-  const turnCount = bumpCounter('turn_count');
+  const userMessageId = insertUser ? insertMessage('user', text) : opts.userMessageId ?? null;
+
+  // 新用户消息 → 建 turn（sequence 递增）→ beginGeneration（generation_no 递增、置为当前）
+  let turnId = opts.turnId ?? null;
+  let generationId = opts.generationId ?? null;
+  if (insertUser && userMessageId) {
+    turnId = createTurn(userMessageId).id;
+    generationId = beginGeneration(turnId).id;
+  }
+
+  // 只读当前计数：首次见面判定与 buildHints 都基于"已成功完成"的持久计数
+  const turnCount = getCounter('turn_count');
   const gapHours = hoursSince(getRelationshipState().last_interaction_at);
   // 她的生活先推进到此刻（按流逝时间推导，幂等；不足 15 分钟会直接返回）
   try {
@@ -165,25 +201,23 @@ export async function prepareTurn(
   } catch (e) {
     console.warn('[life] advance failed:', errMsg(e));
   }
-  touchInteraction();
 
-  // 场景：先按规则识别（零延迟），后台分析会用 LLM 再校正
-  updateSceneFromMessage(text);
+  // 场景：只计算不落库（落库在 commitTurn，含 TTL）
+  const sceneUpdate = computeSceneUpdate(text);
 
   const recent = recentMessagesForPrompt();
 
-  // 检索 query = 最近 3 条用户消息
-  const query = recent
+  // 记忆检索：主查询=他此刻说的话；最近几条用户消息作为补充查询（多查询并行、按相似度 rerank）
+  const extraQueries = recent
     .filter((m) => m.role === 'user')
-    .slice(-3)
+    .slice(-3, -1)
     .map((m) => m.content)
-    .join(' ') || text;
-
-  const memoryRows = await retrieveMemories(query);
+    .filter((s) => s && s !== text)
+    .slice(-2);
+  const memoryRows = await retrieveMemories(text, { extraQueries });
   const memoryBlock = formatMemoryBlock(memoryRows);
 
-  const isFirstMeeting = messageCount() <= 2;
-  const hints = buildHints({ isFirstMeeting });
+  const hints = buildHints({ isFirstMeeting: isFirstMeeting(), userMessage: text });
 
   // 隔了一段时间没聊：把她"这段时间在做的事"作为素材，让她自然分享
   if (gapHours >= 3) {
@@ -209,10 +243,35 @@ export async function prepareTurn(
     recentActions: actions,
     recentReplies: recentReplies(6),
     userMessage: text,
-    scene: currentScene().scene,
+    scene: sceneUpdate.scene,
   };
 
-  return { userMessageId, messages, memoryBlock, hints, turnCount, humanize };
+  return {
+    userMessageId,
+    turnId,
+    generationId,
+    messages,
+    memoryBlock,
+    hints,
+    turnCount,
+    humanize,
+    sceneUpdate,
+  };
+}
+
+/**
+ * 提交本轮产物（assistant 消息成功落库后调用）：turn_count 计数、streak/last_interaction_at、场景落库（含 TTL）。
+ * 生成失败则不调用 —— 避免出现"没有她回复的幽灵 turn"。
+ */
+export function commitTurn(prepared: PreparedTurn): void {
+  bumpCounter('turn_count');
+  touchInteraction();
+  commitScene(prepared.sceneUpdate);
+}
+
+/** 首次见面判定：基于持久计数（重新生成不改变判定；清空聊天记录后不误判） */
+export function isFirstMeeting(): boolean {
+  return getCounter('turn_count') === 0;
 }
 
 /** 她最近说过的原话（用于查重，避免复读） */
@@ -225,56 +284,162 @@ export function recentReplies(limit = 6): string[] {
 }
 
 /* ---------------------- 场景（线上 / 线下） ---------------------- */
-/**
- * scene_mode = auto → 规则识别（+ 后台 LLM 校正）
- * scene_mode = online / offline → 用户强制指定
- */
-export function updateSceneFromMessage(userText: string): { scene: Scene; mode: string; reason: string } {
-  const rel = getRelationshipState();
-  const mode = getSetting('scene_mode') || 'auto';
-  let scene: Scene = rel.scene === 'offline' ? 'offline' : 'online';
-  let reason = rel.scene_reason || '';
+/** 场景默认存活 6 小时：作为"这次判定还算不算数"的 turnover 依据 */
+const SCENE_TTL_MS = 6 * 60 * 60 * 1000;
 
-  if (mode === 'offline') {
-    scene = 'offline';
-    reason = '你手动指定了线下';
-  } else if (mode === 'online') {
-    scene = 'online';
-    reason = '你手动指定了线上';
-  } else {
-    const d = detectScene(userText, scene);
-    if (d.confidence > 0 && d.scene !== scene) {
-      scene = d.scene;
-      reason = d.reason;
-    } else if (d.confidence >= 0.5 && d.reason) {
-      reason = d.reason;
-    }
-  }
-
-  if (scene !== (rel.scene || 'online') || reason !== (rel.scene_reason || '')) {
-    rel.scene = scene;
-    rel.scene_reason = reason;
-    rel.scene_updated_at = nowIso();
-    saveRelationshipState(rel);
-  }
-  return { scene, mode, reason };
+export interface SceneUpdate {
+  scene: Scene;
+  mode: string;
+  reason: string;
+  confidence: number;
+  /** 场景来源：manual=用户强制 / rule=规则识别 / none=未变化 */
+  source: string;
+  /** 过期时间（ISO）；null 表示不过期（用户强制指定时） */
+  expiresAt: string | null;
+  /** 是否与已落库状态不同、需要写库 */
+  allowSwitch: boolean;
 }
 
-/** 当前场景（供界面与主动消息判断使用） */
+/** scene.ts 后续会扩展 temporal 字段（过去/现在/将来）；这里按可选字段兼容，缺字段不报错 */
+interface SceneDetectionExt {
+  scene: Scene;
+  reason: string;
+  confidence: number;
+  temporal?: string | null;
+}
+
+/** 读取场景过期时间（readRelationshipState 不含该列，单独查一次） */
+function readSceneExpiry(): string | null {
+  const row = dbGet<{ scene_expires_at: string | null }>(
+    'SELECT scene_expires_at FROM relationship_state WHERE user_id = ?',
+    DEFAULT_USER_ID
+  );
+  return row?.scene_expires_at ?? null;
+}
+
+function isSceneExpired(expiresAt: string | null, now = Date.now()): boolean {
+  return !!expiresAt && now > new Date(expiresAt).getTime();
+}
+
+/**
+ * auto 模式下"当前生效的场景"：过期则该次判定作废，视为 online（不回写）。
+ * online/offline 强制模式忽略 TTL。
+ */
+function effectiveAutoScene(
+  rel: { scene?: string; scene_reason?: string | null },
+  expiresAt: string | null
+): { scene: Scene; reason: string } {
+  if (isSceneExpired(expiresAt)) return { scene: 'online', reason: '' };
+  return { scene: rel.scene === 'offline' ? 'offline' : 'online', reason: rel.scene_reason || '' };
+}
+
+/**
+ * 只计算本轮场景（不落库）：prepare 阶段调用，真正写库在 commitScene。
+ * 切换规则：scene_mode 为 online/offline 时强制指定、忽略 TTL；
+ * auto 时仅当 temporal 为空或 'current' 且 confidence >= 0.5 才允许切换（过去/将来的提及不该切场景）。
+ */
+function computeSceneUpdate(userText: string): SceneUpdate {
+  const rel = getRelationshipState();
+  const mode = getSetting('scene_mode') || 'auto';
+
+  if (mode === 'offline' || mode === 'online') {
+    const persisted: Scene = rel.scene === 'offline' ? 'offline' : 'online';
+    const scene: Scene = mode === 'offline' ? 'offline' : 'online';
+    const reason = mode === 'offline' ? '你手动指定了线下' : '你手动指定了线上';
+    return {
+      scene,
+      mode,
+      reason,
+      confidence: 1,
+      source: 'manual',
+      expiresAt: null, // 用户强制指定：TTL 不生效
+      allowSwitch: scene !== persisted || reason !== (rel.scene_reason || ''),
+    };
+  }
+
+  // auto：过期判定视为 online（不回写）
+  const base = effectiveAutoScene(rel, readSceneExpiry());
+  const d = detectScene(userText, base.scene) as SceneDetectionExt;
+  const temporal = d.temporal ?? null;
+  const temporalOk = temporal === null || temporal === 'current';
+  let scene: Scene = base.scene;
+  let reason = base.reason;
+  let confidence = 0;
+  let source = 'none';
+  let expiresAt: string | null = null;
+  let allowSwitch = false;
+
+  if (temporalOk && d.confidence >= 0.5 && d.scene !== base.scene) {
+    scene = d.scene;
+    reason = d.reason || base.reason;
+    confidence = d.confidence;
+    source = 'rule';
+    expiresAt = new Date(Date.now() + SCENE_TTL_MS).toISOString();
+    allowSwitch = true;
+  } else if (d.confidence >= 0.5 && d.reason && d.reason !== base.reason) {
+    // 场景不变但理由更清晰：仅更新理由（同样带 TTL）
+    reason = d.reason;
+    confidence = d.confidence;
+    source = 'rule';
+    expiresAt = new Date(Date.now() + SCENE_TTL_MS).toISOString();
+    allowSwitch = true;
+  }
+  return { scene, mode, reason, confidence, source, expiresAt, allowSwitch };
+}
+
+/** 落库场景（含 scene_confidence/scene_source/scene_expires_at）：仅在需要变化时写 */
+export function commitScene(update: SceneUpdate): void {
+  if (!update.allowSwitch) return;
+  const rel = getRelationshipState();
+  rel.scene = update.scene;
+  rel.scene_reason = update.reason;
+  rel.scene_updated_at = nowIso();
+  saveRelationshipState(rel);
+  // saveRelationshipState 不写 TTL 三列，这里单独补写
+  dbRun(
+    'UPDATE relationship_state SET scene_confidence = ?, scene_source = ?, scene_expires_at = ? WHERE user_id = ?',
+    update.confidence,
+    update.source,
+    update.expiresAt,
+    DEFAULT_USER_ID
+  );
+}
+
+/**
+ * 兼容旧接口：立即计算并落库场景（供非对话场景调用）。
+ * 对话主链路请走 prepare 计算 + commitTurn 落库，不要在这里重复写入。
+ */
+export function updateSceneFromMessage(userText: string): { scene: Scene; mode: string; reason: string } {
+  const update = computeSceneUpdate(userText);
+  commitScene(update);
+  return { scene: update.scene, mode: update.mode, reason: update.reason };
+}
+
+/**
+ * 当前场景（供界面与主动消息判断使用）。
+ * auto 模式下若 scene_expires_at 已过 → 视为 online（不回写）；online/offline 强制模式忽略 TTL。
+ */
 export function currentScene(): { scene: Scene; mode: string; reason: string } {
   const rel = getRelationshipState();
   const mode = getSetting('scene_mode') || 'auto';
-  const scene: Scene = mode === 'offline' ? 'offline' : mode === 'online' ? 'online' : rel.scene === 'offline' ? 'offline' : 'online';
-  return { scene, mode, reason: rel.scene_reason || '' };
+  if (mode === 'offline') return { scene: 'offline', mode, reason: rel.scene_reason || '' };
+  if (mode === 'online') return { scene: 'online', mode, reason: rel.scene_reason || '' };
+  const eff = effectiveAutoScene(rel, readSceneExpiry());
+  return { scene: eff.scene, mode, reason: eff.reason };
 }
 
 /** 直接生成一条回复（非流式，用于主动消息/测试）：同样经过"人味层" */
 export async function generateReply(userText: string): Promise<string> {
-  const prepared = await prepareTurn(userText);
-  const raw = await chat(prepared.messages, { maxTokens: 900, temperature: 0.9, thinking: false });
-  const h = humanizeReply(raw, prepared.humanize);
-  saveAssistantMessage(h.text);
-  return h.text;
+  return withConversationLock(DEFAULT_USER_ID, async () => {
+    const prepared = await prepareTurn(userText);
+    const raw = await chat(prepared.messages, { maxTokens: 900, temperature: 0.9, thinking: false });
+    const h = humanizeReply(raw, prepared.humanize);
+    const assistantMessageId = saveAssistantMessage(h.text);
+    // 成功落库后才提交本轮产物，并收尾生成记录
+    commitTurn(prepared);
+    if (prepared.generationId) completeGeneration(prepared.generationId, assistantMessageId);
+    return h.text;
+  });
 }
 
 export { chatStream };

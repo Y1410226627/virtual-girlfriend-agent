@@ -68,6 +68,12 @@ export interface ChatEvent {
   message?: string;
   userMessageId?: number;
   assistantMessageId?: number;
+  // 接口冻结：done 事件新增字段（服务端落库后已自行入队分析）
+  turnId?: number;
+  generationId?: number;
+  analysisJobId?: number;
+  /** 分析入队时刻（epoch ms）：前端用它判断"本轮分析是否已结束" */
+  analysisStartedAt?: number;
 }
 
 export interface ChatRequest {

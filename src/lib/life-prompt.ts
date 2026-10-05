@@ -4,7 +4,7 @@ import { localDateStr, localTimeStr, nowIso, calendarDaysBetween } from './utils
 import { getRelationshipState } from './relationship';
 import { getHealth, getPsychology, getLocation, getActivity, getProfileSeed } from './life-core';
 import { getActiveEvent } from './life-events';
-import { getSharedWorld, listPreferences, labelOf, FIELD_STAGE } from './life-shared';
+import { getSharedWorld, listPreferences, labelOf, FIELD_STAGE, isFieldRevealed } from './life-shared';
 
 /* ------------------------------------------------------------------ */
 /* 注入 Prompt                                                         */
@@ -77,15 +77,13 @@ export function lifePromptBlock(opts: { ignoreEvent?: boolean } = {}): string {
 
 export function profilePromptBlock(): string {
   const seed = getProfileSeed();
-  const stage = getRelationshipState().stage;
-  const reveal = seed.reveal || {};
   const shown: string[] = [];
   const hidden: string[] = [];
-  for (const [field, minStage] of Object.entries(FIELD_STAGE)) {
+  for (const field of Object.keys(FIELD_STAGE)) {
     const value = seed[field];
     if (!value) continue;
-    const isRevealed = reveal[field] === true || stage >= minStage;
-    if (isRevealed) shown.push(`- ${labelOf(field)}：${value}`);
+    // 统一走三态判定：'hidden' 不会因为阶段到了就被说出口
+    if (isFieldRevealed(field)) shown.push(`- ${labelOf(field)}：${value}`);
     else hidden.push(labelOf(field));
   }
   if (!shown.length && !hidden.length) return '';

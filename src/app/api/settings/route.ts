@@ -1,5 +1,5 @@
 // 设置：模型档案（随时切换 + 自动备用链）/ 主动频率 / 场景 / 隐私
-import { getAllSettings, setSetting, llmConfig, wipeAllData, dbAll, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient, customModeOn } from '@/lib/db';
+import { getAllSettings, getSetting, setSetting, llmConfig, wipeAllData, dbAll, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient, customModeOn } from '@/lib/db';
 import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState, logRelationship } from '@/lib/relationship';
 import { clamp } from '@/lib/utils';
 import { STAGES } from '@/lib/stages';
@@ -15,6 +15,9 @@ import {
   seedProfilesIfEmpty,
   healthSnapshot,
   resolveTestTarget,
+  syncActiveProfileFields,
+  recordKeyHost,
+  keyHostFor,
 } from '@/lib/profiles';
 import { getPersonalityRows, manualAdjust } from '@/lib/personality';
 import { getAttachmentState, setAttachmentAxes } from '@/lib/attachment';
@@ -67,6 +70,10 @@ const EDITABLE = new Set([
 // 需要"掩码值不回写"保护的敏感键（db 里只登记了模型的，这里补上语音/图片的）
 const SECRET_KEYS = [...SECRET_SETTING_KEYS, 'tts_api_key', 'img_api_key'];
 
+// 显式"清除已保存 Key"的哨兵值：把某个 Key 传成它（或放进 body.clear_keys）即表示
+// "删除已保存的 Key、回退到环境变量"。单独的空串仍然表示"保持不变"（防误清空丢失明文）。
+const CLEAR_TOKEN = '__clear__';
+
 // 对外返回设置：模型 Key 走 db 的掩码，语音/图片 Key 在这里补打码
 const maskedSettings = (settings: Record<string, string>) => {
   const out = maskSettingsForClient(settings);
@@ -105,6 +112,9 @@ export async function GET() {
       analysisThinking: cfg.analysisThinking,
       activeProfile: activeProfile()?.label || null,
       lastUsed: lastUsedTarget(),
+      // Key 归属 host（P0-13）：前端据此在"改了 URL 但没重输 Key"时给出提示
+      keyHost: keyHostFor('llm'),
+      embeddingKeyHost: keyHostFor('embedding'),
     },
     profiles: listProfiles().map((p) => ({
       ...p,
@@ -120,6 +130,13 @@ export async function PUT(req: Request) {
   const body = await req.json().catch(() => ({}));
   const incoming = body?.settings && typeof body.settings === 'object' ? body.settings : body;
   const changed: string[] = [];
+  const cleared: string[] = [];
+  // 显式"清除已保存 Key"：body.clear_keys = ['llm_api_key']，或对某个 Key 传 CLEAR_TOKEN。
+  const clearSet = new Set<string>();
+  const rawClear: unknown = body?.clear_keys;
+  if (Array.isArray(rawClear)) {
+    for (const k of rawClear) if (typeof k === 'string' && SECRET_KEYS.includes(k)) clearSet.add(k);
+  }
   const RANGE: Record<string, [number, number]> = {
     context_size: [2, 60],
     memory_top_k: [3, 30],
@@ -128,10 +145,18 @@ export async function PUT(req: Request) {
   };
   for (const [k, v] of Object.entries(incoming || {})) {
     if (!EDITABLE.has(k)) continue;
-    // 敏感键保护：前端回传的掩码值、以及空串都不算修改（避免把"••••1234"当新 Key 存进去，
-    // 也避免用户清空输入框时把已保存的真实 Key 覆盖成空 → 明文永久丢失）。
-    // 本应用没有"显式清空 Key"的需求，空 = 保持不变。
-    if (SECRET_KEYS.includes(k) && (looksLikeMask(v) || String(v ?? '') === '')) continue;
+    // 敏感键三态：清除（CLEAR_TOKEN / clear_keys）→ 保持（空串、掩码值）→ 保存明文。
+    // "空 = 保持不变"是为了避免用户清空输入框时把已保存的真实 Key 覆盖成空 → 明文永久丢失；
+    // 真正想"改用环境变量"时请显式传 CLEAR_TOKEN 或 clear_keys。
+    if (SECRET_KEYS.includes(k)) {
+      if (clearSet.has(k) || String(v) === CLEAR_TOKEN) {
+        setSetting(k, ''); // 空值 → 回退环境变量（llmConfig 的"空→env"语义）
+        changed.push(k);
+        cleared.push(k);
+        continue;
+      }
+      if (looksLikeMask(v) || String(v ?? '') === '') continue;
+    }
     let value: string;
     if (k in RANGE) {
       // 数值型键：越界钳制，非数字跳过
@@ -157,9 +182,27 @@ export async function PUT(req: Request) {
     setSetting(k, value);
     changed.push(k);
   }
+  // 只出现在 clear_keys 里、未出现在 incoming 的键也要清
+  for (const k of clearSet) {
+    if (cleared.includes(k)) continue;
+    setSetting(k, '');
+    changed.push(k);
+    cleared.push(k);
+  }
   if ('agent_name' in (incoming || {})) setPersonaField('agent_name', String(incoming.agent_name || ''));
   if ('agent_story' in (incoming || {})) setPersonaField('self_story', String(incoming.agent_story || ''));
   if ('user_name' in (incoming || {})) setUserName(String(incoming.user_name || ''));
+
+  // P0-13：保存/清除 Key 时记录它的归属 host（URL 与凭据绑定）。
+  // 同一次请求同时提交 URL 与 Key 时，"当前 base_url"就是新 URL → 视为用户意图、更新绑定。
+  const effLlmBase = getSetting('llm_base_url') || process.env.LLM_BASE_URL || '';
+  const effEmbBase = getSetting('embedding_base_url') || effLlmBase;
+  if (changed.includes('llm_api_key')) {
+    recordKeyHost('llm', cleared.includes('llm_api_key') ? '' : effLlmBase);
+  }
+  if (changed.includes('embedding_api_key')) {
+    recordKeyHost('embedding', cleared.includes('embedding_api_key') ? '' : effEmbBase);
+  }
 
   // 改模型 / 向量相关设置后，让缓存按新配置重建，确保立即生效
   if (changed.some((k) => k.startsWith('llm_') || k.startsWith('embedding_') || k === 'analysis_thinking')) {
@@ -168,7 +211,20 @@ export async function PUT(req: Request) {
   if ('cycle_enabled' in (incoming || {})) {
     setCycleEnabled(String(incoming.cycle_enabled) === 'true');
   }
-  return Response.json({ ok: true, changed, settings: maskedSettings(getAllSettings()), profiles: listProfiles().map((p) => ({ ...p, api_key: maskSecret(p.api_key), embedding_api_key: maskSecret(p.embedding_api_key) })) });
+
+  // P1-42 双事实源归一：保存了高级设置（llm_* / embedding_*）且存在激活档案时，
+  // 同步写穿到该档案，保证"高级设置"与"当前档案"两边一致（否则 targetsFor 会调用档案里的旧值）。
+  const llmTouched = changed.some((k) => k.startsWith('llm_') || k.startsWith('embedding_'));
+  const syncedProfile = llmTouched ? syncActiveProfileFields(changed) : null;
+
+  return Response.json({
+    ok: true,
+    changed,
+    cleared,
+    syncedProfile,
+    settings: maskedSettings(getAllSettings()),
+    profiles: maskedProfiles(),
+  });
 }
 
 export async function POST(req: Request) {
@@ -229,12 +285,17 @@ export async function POST(req: Request) {
   }
 
   if (action === 'test_profile') {
-    const p = body.id ? listProfiles().find((x) => x.id === Number(body.id)) : null;
+    // P1-58：传了 id 但找不到档案 → 404，绝不退化成"测试当前配置"（否则用户以为测的是该档案）
+    let src: { baseUrl: unknown; apiKey: unknown; model: unknown; label: unknown };
+    if (body.id) {
+      const p = listProfiles().find((x) => x.id === Number(body.id));
+      if (!p) return Response.json({ error: '档案不存在' }, { status: 404 });
+      src = { baseUrl: p.base_url, apiKey: p.api_key, model: p.chat_model, label: p.label };
+    } else {
+      src = { baseUrl: body.base_url, apiKey: body.api_key, model: body.chat_model, label: body.label };
+    }
     // 统一走纯函数校验：地址必须是合法的 http(s) URL；
     // 自定地址且未带 Key 时不回落服务端保存的 Key（防止真实 Key 被发往任意地址）
-    const src = p
-      ? { baseUrl: p.base_url, apiKey: p.api_key, model: p.chat_model, label: p.label }
-      : { baseUrl: body.base_url, apiKey: body.api_key, model: body.chat_model, label: body.label };
     const resolved = resolveTestTarget(src, {
       baseUrl: llmConfig().baseUrl,
       apiKey: llmConfig().apiKey,

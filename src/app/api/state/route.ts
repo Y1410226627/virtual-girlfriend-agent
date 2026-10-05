@@ -14,7 +14,7 @@ import { ATTACHMENT_STYLES, attachmentStyleOf } from '@/lib/types';
 import { round1, daysSince, hoursSince } from '@/lib/utils';
 import { ensureScheduler } from '@/lib/scheduler';
 import { STICKERS } from '@/lib/stickers';
-import { ensureLife, getActivity, getHealth, getLocation, getPsychology, getActiveEvent } from '@/lib/life';
+import { getActivity, getHealth, getLocation, getPsychology, getActiveEvent } from '@/lib/life';
 import { getIntimacy, getLevel, inAftercare } from '@/lib/intimacy';
 
 export const runtime = 'nodejs';
@@ -83,7 +83,8 @@ export async function GET() {
     stickers: STICKERS,
     life: (() => {
       try {
-        ensureLife();
+        // P1-59：GET 只读——不再 ensureLife()（避免"读一次就写库"）。
+        // 各读取函数在行缺失时会自行幂等补种；生活推进由 /api/tick 与后台定时器负责。
         const h = getHealth();
         const p = getPsychology();
         const l = getLocation();

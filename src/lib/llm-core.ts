@@ -1,8 +1,8 @@
 // LLM 客户端共享内核：目标解析（档案 + 备用链）、请求构造、超时与错误判定、用量计数。
 // 说明：本文件被 llm.ts / llm-stream.ts / llm-embedding.ts 共用；只向下依赖 db / profiles，
 // 严禁 import 任何 llm-* 文件（否则会与桶文件 llm.ts 形成循环依赖）。
-import { llmConfig, setSetting, setCounter, bumpCounter } from './db';
-import { listProfiles, isCooling } from './profiles';
+import { llmConfig, getSetting, setSetting, setCounter, bumpCounter } from './db';
+import { listProfiles, isCooling, keyHostFor, hostOf } from './profiles';
 import { localDateStr } from './utils';
 
 export interface ChatMessage {
@@ -61,17 +61,55 @@ export function targetOf(
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* URL 与凭据分离（P0-13）：保存的 Key 只发给"它被保存时所属的 host"      */
+/* ------------------------------------------------------------------ */
+/** 已告警过的 host 组合：同一组合只 console.warn 一次，避免刷屏 */
+const warnedKeyHosts = new Set<string>();
+
+/**
+ * 纯函数（可测）：按 host 决定是否把"已保存的 Key"附加到目标。
+ * 规则：Key 有归属 host 且与目标 host 不一致 → 不发送该 Key，回退 env Key（没有则为空）。
+ * 归属 host 或目标 host 为空（无法解析）时不做校验（保守放行）。
+ */
+export function guardKeyByHost(params: {
+  savedKey: string;
+  savedHost: string;
+  targetUrl: string;
+  envKey?: string;
+}): { apiKey: string; dropped: boolean } {
+  const key = String(params.savedKey || '');
+  const savedHost = String(params.savedHost || '').toLowerCase();
+  const targetHost = hostOf(params.targetUrl);
+  if (!key || !savedHost || !targetHost || savedHost === targetHost) {
+    return { apiKey: key, dropped: false };
+  }
+  return { apiKey: String(params.envKey || ''), dropped: true };
+}
+
+function warnKeyHostDrop(warnKey: string, targetUrl: string, savedHost: string) {
+  if (warnedKeyHosts.has(warnKey)) return;
+  warnedKeyHosts.add(warnKey);
+  console.warn(
+    `[llm] 已保存的 Key 属于 host「${savedHost}」，与目标「${hostOf(targetUrl) || targetUrl}」不一致，` +
+      `本次不发送该 Key（回退环境变量）。如确认要发送，请在设置里同时重新填写接口地址与 Key。`
+  );
+}
+
 /** 当前档案 + 备用档案，拼成调用链（健康的排前面；正在冷却的放最后） */
 export function targetsFor(kind: 'chat' | 'analysis', modelOverride?: string): LlmTarget[] {
   const cfg = llmConfig();
   const profiles = listProfiles();
+  // 保存到 settings 的 Key 归属 host（P0-13）。env Key 视为用户自己的环境，不做校验。
+  const savedHost = keyHostFor('llm');
+  const envKey = process.env.LLM_API_KEY || '';
 
   let list: LlmTarget[];
   if (profiles.length) {
     const act = profiles.find((p) => p.is_default === 1) || profiles[0]!;
     const ordered = [act, ...profiles.filter((p) => p.id !== act.id).sort((a, b) => a.sort_order - b.sort_order)];
-    list = ordered.map((p) =>
-      targetOf(
+    list = ordered.map((p, i) => {
+      const t = targetOf(
         {
           id: String(p.id),
           label: p.label,
@@ -80,20 +118,39 @@ export function targetsFor(kind: 'chat' | 'analysis', modelOverride?: string): L
           model: (kind === 'analysis' ? p.analysis_model || p.chat_model : p.chat_model) as string,
         },
         kind
-      )
-    );
+      );
+      // 只对"激活档案"做 host 校验（它的 url/key 与 settings 镜像，可能被用户单独改了 URL）；
+      // 备用档案的 url 与 key 是一起保存的，按原样信任。
+      if (i === 0) {
+        const g = guardKeyByHost({ savedKey: t.apiKey, savedHost, targetUrl: t.baseUrl, envKey });
+        if (g.dropped) {
+          warnKeyHostDrop(`chat|${t.id}|${t.baseUrl}`, t.baseUrl, savedHost);
+          t.apiKey = g.apiKey;
+        }
+      }
+      return t;
+    });
   } else {
-    const single = targetOf(
-      {
-        id: 'env',
-        label: cfg.model,
-        baseUrl: cfg.baseUrl,
-        apiKey: cfg.apiKey,
-        model: kind === 'analysis' ? cfg.analysisModel : cfg.model,
-      },
-      kind
-    );
-    list = [single];
+    // 无档案：用 settings/env 配置。保存到 settings 的 Key 做 host 校验。
+    const settingsKey = getSetting('llm_api_key') || '';
+    let apiKey = cfg.apiKey;
+    if (settingsKey) {
+      const g = guardKeyByHost({ savedKey: settingsKey, savedHost, targetUrl: cfg.baseUrl, envKey });
+      if (g.dropped) warnKeyHostDrop(`chat|env|${cfg.baseUrl}`, cfg.baseUrl, savedHost);
+      apiKey = g.apiKey;
+    }
+    list = [
+      targetOf(
+        {
+          id: 'env',
+          label: cfg.model,
+          baseUrl: cfg.baseUrl,
+          apiKey,
+          model: kind === 'analysis' ? cfg.analysisModel : cfg.model,
+        },
+        kind
+      ),
+    ];
   }
 
   if (modelOverride) {

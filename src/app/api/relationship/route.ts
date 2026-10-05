@@ -79,15 +79,21 @@ export async function POST(req: Request) {
   }
 
   if (action === 'set_persona' || action === 'set_user') {
-    if (action === 'set_persona') {
-      if (body.agent_name !== undefined) setPersonaField('agent_name', String(body.agent_name));
-      if (body.age !== undefined) setPersonaField('age', String(body.age));
-      if (body.occupation !== undefined) setPersonaField('occupation', String(body.occupation));
-      if (body.self_story !== undefined) setPersonaField('self_story', String(body.self_story));
-    } else {
-      if (body.user_name !== undefined) setUserName(String(body.user_name));
-      if (body.user_profile !== undefined) setSetting('user_profile', String(body.user_profile));
-    }
+    // P1-56：onboarding 一次提交 user_name + agent_name，这里用同一事务写入，
+    // 避免两次请求之间失败导致"只存了一半"（要么都成功，要么都不写）。
+    tx(() => {
+      if (action === 'set_persona') {
+        if (body.agent_name !== undefined) setPersonaField('agent_name', String(body.agent_name));
+        if (body.age !== undefined) setPersonaField('age', String(body.age));
+        if (body.occupation !== undefined) setPersonaField('occupation', String(body.occupation));
+        if (body.self_story !== undefined) setPersonaField('self_story', String(body.self_story));
+      } else {
+        if (body.user_name !== undefined) setUserName(String(body.user_name));
+        if (body.user_profile !== undefined) setSetting('user_profile', String(body.user_profile));
+        // 允许 set_user 顺带写入她的名字（onboarding 单请求提交两者）
+        if (body.agent_name !== undefined) setPersonaField('agent_name', String(body.agent_name));
+      }
+    });
     return Response.json({ ok: true });
   }
 

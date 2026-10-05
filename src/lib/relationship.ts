@@ -1,6 +1,6 @@
 // 关系状态引擎：亲密度 / 信任 / 阶段跃迁 / 回退 / 关系日志
 import { dbGet, dbRun, numSetting, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
-import { clamp, nowIso, daysSince, round1, localDateStr } from './utils';
+import { clamp, nowIso, daysSince, round1, localDateStr, safeJson } from './utils';
 import { STAGES, stageOf } from './stages';
 import type { RelationshipState, RelationshipDelta } from './types';
 
@@ -48,6 +48,56 @@ export function saveRelationshipState(s: RelationshipState): void {
     s.scene_updated_at ?? null,
     nowIso(),
     s.user_id
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 此刻情绪（ad-hoc affect）：与长期指标分家，带时效（P1-16）             */
+/* ------------------------------------------------------------------ */
+export interface AffectState {
+  primary: string;
+  /** 效价 -1..1（负向 .. 正向） */
+  valence: number;
+  /** 唤醒度 0..1（平静 .. 激动） */
+  arousal: number;
+  cause: string;
+  confidence: number;
+  /** 过期时间（ISO）；过期即忽略 */
+  expiresAt: string;
+}
+
+/**
+ * 读取此刻情绪；不存在 / 字段无效 / 已过期 → null（过期即忽略，回退长期 mood）。
+ * now 作为参数传入便于写确定性测试。
+ */
+export function getAffectState(now = Date.now()): AffectState | null {
+  const row = dbGet<{ affect_json: string | null }>(
+    'SELECT affect_json FROM relationship_state WHERE user_id = ?',
+    DEFAULT_USER_ID
+  );
+  const a = safeJson<Partial<AffectState> | null>(row?.affect_json ?? null, null);
+  if (!a || typeof a !== 'object') return null;
+  const primary = typeof a.primary === 'string' ? a.primary.trim() : '';
+  const expiresAt = typeof a.expiresAt === 'string' ? a.expiresAt : '';
+  if (!primary || !expiresAt) return null;
+  if (new Date(expiresAt).getTime() <= now) return null;
+  return {
+    primary: primary.slice(0, 8),
+    valence: clamp(Number(a.valence) || 0, -1, 1),
+    arousal: clamp(Number(a.arousal) || 0, 0, 1),
+    cause: typeof a.cause === 'string' ? a.cause.slice(0, 40) : '',
+    confidence: clamp(Number(a.confidence) || 0, 0, 1),
+    expiresAt,
+  };
+}
+
+/** 写入此刻情绪（只动 affect_json 列，不触碰 saveRelationshipState 维护的其余字段） */
+export function saveAffectState(a: AffectState): void {
+  dbRun(
+    'UPDATE relationship_state SET affect_json = ?, updated_at = ? WHERE user_id = ?',
+    JSON.stringify(a),
+    nowIso(),
+    DEFAULT_USER_ID
   );
 }
 

@@ -1,5 +1,7 @@
 // 消息列表 / 清空聊天
 import { listMessages, messageCount } from '@/lib/engine';
+import { dbAll, DEFAULT_USER_ID } from '@/lib/db';
+import type { MessageRow } from '@/lib/types';
 import { deleteMessageById, wipeAllMessages } from '@/lib/messageActions';
 
 export const runtime = 'nodejs';
@@ -9,6 +11,18 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const afterId = Number(url.searchParams.get('afterId') || 0);
   const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 60));
+  // P1-51 历史分页：beforeId → 返回该 id 之前最近的 limit 条（升序），用于"加载更早的消息"。
+  // 缺省行为不变（最近 limit 条 / afterId 增量拉取）。
+  const beforeId = Number(url.searchParams.get('beforeId') || 0);
+  if (beforeId > 0) {
+    const rows = dbAll<MessageRow>(
+      'SELECT * FROM messages WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
+      DEFAULT_USER_ID,
+      beforeId,
+      limit
+    ).reverse();
+    return Response.json({ messages: rows, total: messageCount(), hasMore: rows.length === limit });
+  }
   const rows = listMessages({ afterId: afterId || undefined, limit });
   return Response.json({ messages: rows, total: messageCount() });
 }

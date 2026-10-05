@@ -56,51 +56,60 @@ export function setCast(cast: CastMember[]): void {
 /* ------------------------------------------------------------------ */
 /* 共享世界                                                            */
 /* ------------------------------------------------------------------ */
+/** 共享世界是"读 JSON → 改 JSON → 整列写回"的模式：读写必须同一事务，避免并发丢更新 */
 export function addSharedPlan(content: string, status = 'planning'): void {
   // 统一 trim 口径：模型写入的条目可能带空白，旧去重按原文比较会漏掉、产生重复计划
   const value = String(content || '').trim();
   if (!value) return;
-  const w = getSharedWorld();
-  const plans = w.plans || [];
-  if (plans.some((p) => String(p.content || p.title || '').trim() === value)) return;
-  plans.push({ id: newSharedId(), content: value, status, created_at: nowIso() });
-  dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
-  logLife('shared_plan', '', value, '新的共同约定');
+  tx(() => {
+    const w = getSharedWorld();
+    const plans = w.plans || [];
+    if (plans.some((p) => String(p.content || p.title || '').trim() === value)) return;
+    plans.push({ id: newSharedId(), content: value, status, created_at: nowIso() });
+    dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
+    logLife('shared_plan', '', value, '新的共同约定');
+  });
 }
 
 export function addSharedRitual(content: string): void {
   // 统一 trim 口径：模型写入的条目可能带空白，旧去重按原文比较会漏掉、产生重复仪式
   const value = String(content || '').trim();
   if (!value) return;
-  const w = getSharedWorld();
-  const rituals = w.rituals || [];
-  if (rituals.some((p) => String(p.content || p.title || '').trim() === value)) return;
-  rituals.push({ content: value, created_at: nowIso() });
-  dbRun('UPDATE shared_world SET shared_rituals_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(rituals), nowIso(), DEFAULT_USER_ID);
-  logLife('shared_ritual', '', value, '新的共同仪式');
+  tx(() => {
+    const w = getSharedWorld();
+    const rituals = w.rituals || [];
+    if (rituals.some((p) => String(p.content || p.title || '').trim() === value)) return;
+    rituals.push({ content: value, created_at: nowIso() });
+    dbRun('UPDATE shared_world SET shared_rituals_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(rituals), nowIso(), DEFAULT_USER_ID);
+    logLife('shared_ritual', '', value, '新的共同仪式');
+  });
 }
 
 export function addSharedPlace(content: string): void {
   // 统一 trim 口径：模型写入的条目可能带空白，旧去重按原文比较会漏掉、产生重复地点
   const value = String(content || '').trim();
   if (!value) return;
-  const w = getSharedWorld();
-  const places = w.places || [];
-  if (places.some((p) => String(p.content || p.title || '').trim() === value)) return;
-  places.push({ content: value, created_at: nowIso() });
-  dbRun('UPDATE shared_world SET shared_places_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(places), nowIso(), DEFAULT_USER_ID);
-  logLife('shared_place', '', value, '共同地点');
+  tx(() => {
+    const w = getSharedWorld();
+    const places = w.places || [];
+    if (places.some((p) => String(p.content || p.title || '').trim() === value)) return;
+    places.push({ content: value, created_at: nowIso() });
+    dbRun('UPDATE shared_world SET shared_places_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(places), nowIso(), DEFAULT_USER_ID);
+    logLife('shared_place', '', value, '共同地点');
+  });
 }
 
 export function addSharedItem(content: string): void {
   const value = String(content || '').trim().slice(0, 120);
   if (!value) return;
-  const w = getSharedWorld();
-  const items = w.items || [];
-  if (items.some((item) => (item.content || item.title) === value)) return;
-  items.push({ content: value, created_at: nowIso() });
-  dbRun('UPDATE shared_world SET shared_items_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(items), nowIso(), DEFAULT_USER_ID);
-  logLife('shared_item', '', value, '共同物品或共同记忆');
+  tx(() => {
+    const w = getSharedWorld();
+    const items = w.items || [];
+    if (items.some((item) => (item.content || item.title) === value)) return;
+    items.push({ content: value, created_at: nowIso() });
+    dbRun('UPDATE shared_world SET shared_items_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(items), nowIso(), DEFAULT_USER_ID);
+    logLife('shared_item', '', value, '共同物品或共同记忆');
+  });
 }
 
 /**
@@ -109,20 +118,22 @@ export function addSharedItem(content: string): void {
  * 老数据没有 id 时回退到下标，保持向后兼容。
  */
 export function completePlan(planIdOrIndex: string | number): void {
-  const w = getSharedWorld();
-  const plans = w.plans || [];
-  let idx = -1;
-  if (typeof planIdOrIndex === 'string' && planIdOrIndex) {
-    idx = plans.findIndex((p) => p.id === planIdOrIndex);
-  } else {
-    const i = Number(planIdOrIndex);
-    if (Number.isInteger(i) && i >= 0 && i < plans.length) idx = i;
-  }
-  const target = idx >= 0 ? plans[idx] : undefined;
-  if (!target) return;
-  target.status = target.status === 'done' ? 'planning' : 'done';
-  target.done_at = target.status === 'done' ? nowIso() : null;
-  dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
+  tx(() => {
+    const w = getSharedWorld();
+    const plans = w.plans || [];
+    let idx = -1;
+    if (typeof planIdOrIndex === 'string' && planIdOrIndex) {
+      idx = plans.findIndex((p) => p.id === planIdOrIndex);
+    } else {
+      const i = Number(planIdOrIndex);
+      if (Number.isInteger(i) && i >= 0 && i < plans.length) idx = i;
+    }
+    const target = idx >= 0 ? plans[idx] : undefined;
+    if (!target) return;
+    target.status = target.status === 'done' ? 'planning' : 'done';
+    target.done_at = target.status === 'done' ? nowIso() : null;
+    dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -148,26 +159,41 @@ export function labelOf(field: string): string {
 }
 
 /** 分析模型判定"这轮揭露了哪些个人信息"后写入状态 */
-/** 某个字段现在算不算"已经告诉过他"（显式揭露 或 关系阶段到了） */
+/**
+ * 某个字段现在算不算"已经告诉过他"。
+ * 三态：'hidden' 永不自动揭露；'revealed' 恒为真；'auto'（含旧数据缺失/false）按关系阶段门限判断。
+ */
 export function isFieldRevealed(field: string): boolean {
   const seed = getProfileSeed();
-  if (seed.reveal?.[field] === true) return true;
+  const state = seed.reveal?.[field];
+  if (state === 'revealed') return true;
+  if (state === 'hidden') return false;
   const minStage = FIELD_STAGE[field];
   if (minStage === undefined) return false;
   return getRelationshipState().stage >= minStage;
 }
 
-export function revealProfileFields(fields: string[]): void {
+export function revealProfileFields(fields: string[], opts: { force?: boolean } = {}): void {
   if (!fields || !fields.length) return;
+  const stage = getRelationshipState().stage;
   const seed = getProfileSeed();
   const reveal = { ...(seed.reveal || {}) };
+  let changed = false;
   for (const f of fields) {
-    if (!(f in FIELD_STAGE)) continue;
-    if (reveal[f]) continue;
-    reveal[f] = true;
-    logLife('profile_reveal', f, '已揭露', '在对话中自然说出');
+    const minStage = FIELD_STAGE[f];
+    if (minStage === undefined) continue; // 未知字段忽略
+    if (reveal[f] === 'revealed') continue;
+    // 模型越权保护：关系阶段还没到门限，不允许把它置为"已告诉过"（否则她会提前说漏）。
+    // force=true 用于"用户在世界页手动设为已说"——那是用户明确意图，不受阶段门限约束。
+    if (!opts.force && stage < minStage) {
+      logLife('profile_reveal', f, '未达门槛，已拦截', `关系阶段 ${stage} < 门槛 ${minStage}`);
+      continue;
+    }
+    reveal[f] = 'revealed';
+    changed = true;
+    logLife('profile_reveal', f, '已揭露', opts.force ? '用户手动设为已说' : '在对话中自然说出');
   }
-  dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(reveal), nowIso(), DEFAULT_USER_ID);
+  if (changed) dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(reveal), nowIso(), DEFAULT_USER_ID);
 }
 
 /* ------------------------------------------------------------------ */

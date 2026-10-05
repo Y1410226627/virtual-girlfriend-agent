@@ -179,6 +179,25 @@ export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
+/**
+ * 长消息头尾保留：约 40% 头 + 60% 尾，中间用 … 省略（结果总长不超过 max，含省略号本身）。
+ * 用于历史对话注入 Prompt：早期铺垫与最新落点都可保留，避免只截头丢掉结论。
+ * 极端短文本（max 很小）退化为"只留头"或纯省略号，绝不越界。
+ */
+export function truncateMiddle(s: string, max = 800): string {
+  const t = String(s || '');
+  const n = Math.floor(max);
+  if (!t || n <= 0) return '';
+  if (t.length <= n) return t;
+  const ell = '…';
+  if (n <= ell.length) return ell; // n=1：只剩省略号
+  const budget = n - ell.length;
+  if (budget < 2) return t.slice(0, budget) + ell; // n=2：头 1 + 省略号
+  const headLen = Math.max(1, Math.round(budget * 0.4));
+  const tailLen = Math.max(1, budget - headLen);
+  return t.slice(0, headLen) + ell + t.slice(t.length - tailLen);
+}
+
 /** 简单哈希（用于本地 embedding 兜底） */
 export function hashString(str: string, seed = 0): number {
   let h = 2166136261 ^ seed;

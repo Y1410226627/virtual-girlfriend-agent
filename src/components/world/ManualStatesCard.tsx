@@ -80,7 +80,7 @@ export function ManualStatesCard({
               }
               return out;
             };
-            await post(
+            const j = await post(
               {
                 action: 'set_states',
                 health: collect({
@@ -101,7 +101,8 @@ export function ManualStatesCard({
               },
               '数值已按你的设定更新'
             );
-            setEditStates(false);
+            // 失败时不要关闭编辑框（否则用户填的数值被丢弃、以为已生效）
+            if (j) setEditStates(false);
           }}
         >
           应用数值

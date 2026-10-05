@@ -1,8 +1,15 @@
 // 场景系统：区分"线上聊天（隔着手机）"与"线下相处（在一起）"
 // 自动识别用规则兜底（零延迟），后台分析用 LLM 校正；用户可强制指定
 import { TOKEN_RE } from '@/lib/stickers';
+import { clamp } from '@/lib/utils';
 
 export type Scene = 'online' | 'offline';
+
+/**
+ * 这句话的"时间性"：只有 current（当下正在发生）才允许改变场景。
+ * past / dream / hypothetical / quoted 描述的都是"非当下"，据此改场景会把人设带偏。
+ */
+export type SceneTemporal = 'current' | 'past' | 'dream' | 'hypothetical' | 'quoted';
 
 /** 线下相处线索：明确的身体动作搭配、物理位置、同处一个空间 */
 const OFFLINE_CUES =
@@ -20,26 +27,69 @@ const ONLINE_CUES_G = new RegExp(ONLINE_CUES.source, 'g');
 export interface SceneDetection {
   scene: Scene;
   reason: string;
+  /** 0~1 的置信度：0 表示不改变场景 */
   confidence: number;
+  /** 这句话的时间性；只有 current 才允许切换场景 */
+  temporal?: SceneTemporal;
 }
 
-/** 依据用户这句话判断场景（无法判断时保持原场景） */
+/* ------------------------------------------------------------------ */
+/* 时间性识别：非当下的描述（回忆 / 梦 / 假设 / 引用）不应改变场景       */
+/* ------------------------------------------------------------------ */
+/** 梦：出现"梦见/梦到"等，即便带了"抱着你"这类线下动作，也只当梦话 */
+const DREAM_RE = /(梦见|梦到|做梦|梦里|做了个梦|梦里面|梦见了)/;
+/** 引用/影视：整句被引号包住，或明说来自台词/歌词/影视/书里 */
+const QUOTED_RE =
+  /([「『][^」』]{1,80}[」』]|“[^”]{1,80}”|《[^》]{1,60}》|台词|歌词|电影里|电视剧里|剧里|小说里|书里|原文里|引用的|他念的)/;
+/** 假设：如果/要是/假如…描述的是"没发生的可能"，不是当下 */
+const HYPOTHETICAL_RE = /(如果|要是|假如|假设|万一|若是我|若你|倘若|若能|要是能|如果我)/;
+/** 过去：昨晚/前几天/那时候…是回忆，不是此刻 */
+const PAST_RE =
+  /(昨晚|昨天晚上|昨天|前天|前几天|前些天|那天|那时候|当时|上次|上回|以前|之前|小时候|上周|上周天|上个月|去年|那年|很久以前|早些时候)/;
+
+function classifyTemporal(text: string): SceneTemporal {
+  if (DREAM_RE.test(text)) return 'dream';
+  if (QUOTED_RE.test(text)) return 'quoted';
+  if (HYPOTHETICAL_RE.test(text)) return 'hypothetical';
+  if (PAST_RE.test(text)) return 'past';
+  return 'current';
+}
+
+const TEMPORAL_REASON: Record<Exclude<SceneTemporal, 'current'>, string> = {
+  past: '他说的是过去的事，不改变当前场景',
+  dream: '他在说梦，不改变当前场景',
+  hypothetical: '他在做假设，不改变当前场景',
+  quoted: '他在引用影视/台词，不改变当前场景',
+};
+
+/**
+ * 依据用户这句话判断场景（无法判断时保持原场景）。
+ * 只有"当下"（temporal = current）的句子才可能切换场景；回忆/梦/假设/引用一律不切换。
+ */
 export function detectScene(userText: string, current: Scene): SceneDetection {
   const text = String(userText || '');
   // 纯表情包消息不改变场景判断（"抱抱我/亲你一下"这类短句仍要判断，不再按长度早退）
   if (STICKER_ONLY_RE.test(text)) {
-    return { scene: current, reason: '', confidence: 0 };
+    return { scene: current, reason: '', confidence: 0, temporal: 'current' };
+  }
+  const temporal = classifyTemporal(text);
+  if (temporal !== 'current') {
+    return { scene: current, reason: TEMPORAL_REASON[temporal], confidence: 0, temporal };
   }
   const off = (text.match(OFFLINE_CUES_G) || []).length;
   const on = (text.match(ONLINE_CUES_G) || []).length;
-  if (off === 0 && on === 0) return { scene: current, reason: '', confidence: 0 };
-  if (off > on) {
-    return { scene: 'offline', reason: `他说的话像在旁边（${off} 个线下线索）`, confidence: Math.min(1, off / 2) };
-  }
-  if (on > off) {
-    return { scene: 'online', reason: `他在说手机上的事（${on} 个线上线索）`, confidence: Math.min(1, on / 2) };
-  }
-  return { scene: current, reason: '', confidence: 0 };
+  if (off === 0 && on === 0) return { scene: current, reason: '', confidence: 0, temporal: 'current' };
+  if (off === on) return { scene: current, reason: '', confidence: 0, temporal: 'current' };
+  const winner: Scene = off > on ? 'offline' : 'online';
+  // 置信度校准：主导线索 ≥1 才有意义（0.5 起步），线索越多、差距越大越自信，封顶 0.98
+  const dominant = Math.max(off, on);
+  const margin = Math.abs(off - on);
+  const confidence = clamp(0.5 + 0.15 * (dominant - 1) + 0.05 * margin, 0.5, 0.98);
+  const reason =
+    winner === 'offline'
+      ? `他说的话像在旁边（${off} 个线下线索）`
+      : `他在说手机上的事（${on} 个线上线索）`;
+  return { scene: winner, reason, confidence, temporal: 'current' };
 }
 
 /** 注入回复 Prompt 的场景约束 */

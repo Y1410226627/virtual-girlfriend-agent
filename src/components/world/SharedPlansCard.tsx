@@ -41,7 +41,7 @@ export function SharedPlansCard({
       )}
       <div className="mt-3 flex gap-2">
         <input className="input" placeholder="新增约定，例如：周末一起看那部剧" value={newPlan} onChange={(e) => setNewPlan(e.target.value)} />
-        <button className="btn" disabled={busy || !newPlan.trim()} onClick={async () => { await post({ action: 'add_plan', content: newPlan }, '已记下约定'); setNewPlan(''); }}>
+        <button className="btn" disabled={busy || !newPlan.trim()} onClick={async () => { const j = await post({ action: 'add_plan', content: newPlan }, '已记下约定'); if (j) setNewPlan(''); }}>
           添加
         </button>
       </div>

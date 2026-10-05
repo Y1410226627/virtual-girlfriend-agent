@@ -635,4 +635,88 @@ CREATE TABLE IF NOT EXISTS agent_diaries (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_diaries_user_date ON agent_diaries(user_id, date);
 `,
   },
+  {
+    version: 12,
+    name: 'turn_generation_ledger_and_durable_analysis_jobs',
+    sql: `
+-- 回合 / 生成 / 操作账本 / 持久化分析任务：把"这一轮到底发生了什么、属于哪次生成"变成可查询的事实源
+-- （只加表、加列、加索引，不改动任何历史数据）
+
+-- 一轮对话（一个用户消息 = 一个 turn；重新生成不新增 turn，只新增 generation）
+CREATE TABLE IF NOT EXISTS conversation_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  sequence INTEGER NOT NULL,
+  user_message_id INTEGER,
+  current_generation_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_user ON conversation_turns(user_id, sequence);
+
+-- 同一次用户消息下的各次生成（重新生成 = 新 generation，旧的标 superseded）
+CREATE TABLE IF NOT EXISTS message_generations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  turn_id INTEGER NOT NULL,
+  generation_no INTEGER NOT NULL,
+  assistant_message_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_message_generations_turn ON message_generations(turn_id, generation_no);
+
+-- 分析任务持久化：服务器重启后未完成的任务自动恢复，不再静默丢失
+CREATE TABLE IF NOT EXISTS analysis_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  turn_id INTEGER,
+  generation_id INTEGER,
+  user_message_id INTEGER,
+  assistant_message_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER,
+  started_at TEXT,
+  finished_at TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status ON analysis_jobs(user_id, status, id);
+
+-- 操作账本：每个真实状态变化的精确记录（删除/重新生成时按 operation 精确反向，不再靠推断）
+CREATE TABLE IF NOT EXISTS turn_operations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  turn_id INTEGER,
+  generation_id INTEGER,
+  operation_type TEXT NOT NULL,
+  target_table TEXT NOT NULL,
+  target_id INTEGER,
+  before_json TEXT,
+  after_json TEXT,
+  meta_json TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turn_operations_gen ON turn_operations(generation_id);
+CREATE INDEX IF NOT EXISTS idx_turn_operations_turn ON turn_operations(turn_id, id);
+
+-- 场景可信度 / 来源 / 过期时间（场景不再"一次切换永久保持"）
+ALTER TABLE relationship_state ADD COLUMN scene_confidence REAL;
+ALTER TABLE relationship_state ADD COLUMN scene_source TEXT;
+ALTER TABLE relationship_state ADD COLUMN scene_expires_at TEXT;
+
+-- 记忆事实键（fact_key 主判 + 向量辅助判重的长期方案）
+ALTER TABLE memories ADD COLUMN fact_key TEXT;
+
+-- 人格/依恋调整的归因：这次调整实际来自哪些回合 / 哪些信号（避免"归到当前消息"）
+ALTER TABLE personality_logs ADD COLUMN source_turns TEXT;
+ALTER TABLE personality_logs ADD COLUMN contributing_signal_ids TEXT;
+ALTER TABLE attachment_logs ADD COLUMN source_turns TEXT;
+
+-- 此刻情绪（ad-hoc affect）：与长期指标分家，带时效（过期即忽略）
+ALTER TABLE relationship_state ADD COLUMN affect_json TEXT;
+`,
+  },
 ];

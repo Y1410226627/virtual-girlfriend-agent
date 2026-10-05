@@ -1,28 +1,29 @@
 // 生活系统 · 模拟推进层：主推进 advanceLife / 状态增量 / 互动康复 / 周快照
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbRun, DEFAULT_USER_ID, getCounter, boolSetting } from './db';
+import { dbAll, dbRun, DEFAULT_USER_ID, getCounter, boolSetting, customModeOn } from './db';
 import { clamp, nowIso, localDateStr, round1 } from './utils';
 import { getRelationshipState, logRelationship } from './relationship';
 import { attachmentStyle, getAttachmentState } from './attachment';
 import { personalityMap } from './personality';
 import {
   ensureLife, getHealth, getPsychology, getLocation, getActivity, logLife, startIllness, isWeekend,
+  currentLifeTemplate, type LifeTemplate,
   listDailyEvents, listLifeLogs, type DailyEventRow,
 } from './life-core';
 import { EVENT_DRIFT, getActiveEvent, activityTypeOfEvent } from './life-events';
 import { getSharedWorld } from './life-shared';
 
 /* ------------------------------------------------------------------ */
-/* 日常轨迹（按她的身份推导；默认是"大一学生"，与你们的故事一致）        */
+/* 日常轨迹（按她的身份模板推导；默认 student，与"大一学生"旧行为一致）  */
 /* ------------------------------------------------------------------ */
-interface Block {
+export interface Block {
   from: number; to: number;
   location: string; locationType: string;
   activity: string; activityType: string;
 }
 
-/** 工作日作息 */
-const WEEKDAY: Block[] = [
+/** student：工作日作息（保持既有数据不变） */
+const STUDENT_WEEKDAY: Block[] = [
   { from: 0, to: 7, location: '家', locationType: 'home', activity: '睡觉', activityType: 'sleep' },
   { from: 7, to: 7.75, location: '家', locationType: 'home', activity: '刚起床，洗漱', activityType: 'morning' },
   { from: 7.75, to: 8.3, location: '家', locationType: 'home', activity: '吃早饭', activityType: 'meal' },
@@ -40,8 +41,8 @@ const WEEKDAY: Block[] = [
   { from: 23.5, to: 24, location: '宿舍', locationType: 'home', activity: '睡觉', activityType: 'sleep' },
 ];
 
-/** 周末作息 */
-const WEEKEND: Block[] = [
+/** student：周末作息（保持既有数据不变） */
+const STUDENT_WEEKEND: Block[] = [
   { from: 0, to: 9.5, location: '家', locationType: 'home', activity: '睡懒觉', activityType: 'sleep' },
   { from: 9.5, to: 10.5, location: '家', locationType: 'home', activity: '慢慢起床、吃早午饭', activityType: 'meal' },
   { from: 10.5, to: 12, location: '家', locationType: 'home', activity: '收拾房间、听歌', activityType: 'chores' },
@@ -54,8 +55,65 @@ const WEEKEND: Block[] = [
   { from: 22.3, to: 24, location: '家', locationType: 'home', activity: '躺床上刷手机', activityType: 'bed' },
 ];
 
-function blockAt(d: Date): Block {
-  const table = isWeekend(d) ? WEEKEND : WEEKDAY;
+/** 把"学校作息"改写成"研究生作息"：教学楼/教室 → 实验室，上课 → 做实验/看文献 */
+function graduateify(blocks: Block[]): Block[] {
+  return blocks.map((b) => {
+    if (b.locationType !== 'school') return b;
+    if (b.activityType === 'meal') return b; // 食堂吃饭保持不变
+    return { ...b, location: '实验室', activity: '做实验、看文献', activityType: 'study' };
+  });
+}
+
+/** 把"学校作息"改写成"上班作息"：学校相关地点 → 公司，上课/自习 → 上班/加班 */
+function workify(blocks: Block[]): Block[] {
+  return blocks.map((b) => {
+    if (b.activityType === 'commute') {
+      return { ...b, location: '路上', activity: /回/.test(b.activity) ? '下班回家' : '通勤上班' };
+    }
+    if (b.locationType === 'school') {
+      return { ...b, location: '公司', activity: b.activityType === 'study' ? '加班、处理工作' : '上班、处理工作', activityType: 'work' };
+    }
+    return { ...b, location: /宿舍/.test(b.location) ? '家' : b.location };
+  });
+}
+
+/** 自由职业：不打卡，作息更松散（地点多在家/咖啡店） */
+const FREELANCER_WEEKDAY: Block[] = [
+  { from: 0, to: 8, location: '家', locationType: 'home', activity: '睡觉', activityType: 'sleep' },
+  { from: 8, to: 9, location: '家', locationType: 'home', activity: '慢慢起床、吃早饭', activityType: 'meal' },
+  { from: 9, to: 12, location: '家', locationType: 'home', activity: '在家工作、写东西', activityType: 'work' },
+  { from: 12, to: 13, location: '家', locationType: 'home', activity: '吃午饭', activityType: 'meal' },
+  { from: 13, to: 15.5, location: '咖啡店', locationType: 'cafe', activity: '在咖啡店赶稿', activityType: 'work' },
+  { from: 15.5, to: 18, location: '家', locationType: 'home', activity: '在家工作、写东西', activityType: 'work' },
+  { from: 18, to: 19.5, location: '家', locationType: 'home', activity: '吃晚饭', activityType: 'meal' },
+  { from: 19.5, to: 22, location: '家', locationType: 'home', activity: '看剧、刷手机', activityType: 'leisure' },
+  { from: 22, to: 22.5, location: '家', locationType: 'home', activity: '洗澡', activityType: 'shower' },
+  { from: 22.5, to: 24, location: '家', locationType: 'home', activity: '躺床上刷手机', activityType: 'bed' },
+];
+
+export interface LifeSchedule { weekday: Block[]; weekend: Block[] }
+
+/** 身份模板 → 作息表（student 与旧数据完全一致，保持向后兼容） */
+export function scheduleOf(t: LifeTemplate): LifeSchedule {
+  switch (t) {
+    case 'graduate':
+      return { weekday: graduateify(STUDENT_WEEKDAY), weekend: graduateify(STUDENT_WEEKEND) };
+    case 'worker':
+      return { weekday: workify(STUDENT_WEEKDAY), weekend: STUDENT_WEEKEND };
+    case 'intern': {
+      const base = workify(STUDENT_WEEKDAY).map((b) => (b.activityType === 'work' ? { ...b, activity: '实习、跟着做项目' } : b));
+      return { weekday: base, weekend: STUDENT_WEEKEND };
+    }
+    case 'freelancer':
+      return { weekday: FREELANCER_WEEKDAY, weekend: STUDENT_WEEKEND };
+    default:
+      return { weekday: STUDENT_WEEKDAY, weekend: STUDENT_WEEKEND };
+  }
+}
+
+function blockAt(d: Date, t: LifeTemplate): Block {
+  const sched = scheduleOf(t);
+  const table = isWeekend(d) ? sched.weekend : sched.weekday;
   const h = d.getHours() + d.getMinutes() / 60;
   return table.find((b) => h >= b.from && h < b.to) || table[table.length - 1]!;
 }
@@ -63,20 +121,91 @@ function blockAt(d: Date): Block {
 /* ------------------------------------------------------------------ */
 /* 日常事件                                                            */
 /* ------------------------------------------------------------------ */
-const EVENT_POOL: Array<{ type: string; content: string; impact: Record<string, number>; when?: string[] }> = [
-  { type: 'small', content: '在路边看到一只橘猫，蹲下来看了好久', impact: { mood: 6, loneliness: -4 } },
-  { type: 'small', content: '买咖啡的时候洒到袖子上了，郁闷', impact: { stress: 6, mood: -3 } },
-  { type: 'small', content: '上课差点睡着，被点起来回答问题', impact: { stress: 5, mental_energy: -6 } },
-  { type: 'small', content: '室友带了小蛋糕回来，分了一块给她', impact: { mood: 7, self_worth: 3 } },
-  { type: 'small', content: '下雨没带伞，淋了一小段路', impact: { mood: -4, illnessRisk: 0.08 } },
-  { type: 'small', content: '刷到一部很想看的剧，加了收藏', impact: { mood: 5 } },
-  { type: 'small', content: '和同学为小组作业的事有点分歧', impact: { stress: 8, mood: -4 } },
-  { type: 'small', content: '在图书馆借到了一直想看的书', impact: { mood: 6, mental_energy: 4 } },
-  { type: 'small', content: '突然很想他，翻了一下以前的聊天记录', impact: { missing_user: 10, mood: 2 } },
-  { type: 'small', content: '手机快没电又没带充电宝，一路都很慌', impact: { stress: 4 } },
-  { type: 'small', content: '今天状态不错，把拖了很久的作业写完了', impact: { self_worth: 8, stress: -8, mood: 5 } },
-  { type: 'small', content: '路过一家新开的甜品店，记下来了想带他一起去', impact: { missing_user: 6, mood: 4 } },
+interface EventPoolEntry {
+  type: string;
+  content: string;
+  impact: Record<string, number>;
+  when?: string[];
+  /** 硬约束：仅在这些 activity_type 下发生（空 = 不限） */
+  activities?: string[];
+  /** 硬约束：仅在这些 location_type 下发生 */
+  locations?: string[];
+  /** 硬约束：仅在此时间段发生（含 from、不含 to，单位小时 0-24） */
+  hours?: [number, number];
+  /** 生病时是否仍可能发生（默认 true） */
+  whenIll?: boolean;
+  /** 相对权重（默认 1），用于风格偏好 */
+  weight?: number;
+}
+
+const EVENT_POOL: EventPoolEntry[] = [
+  { type: 'small', content: '在路边看到一只橘猫，蹲下来看了好久', impact: { mood: 6, loneliness: -4 }, locations: ['out'], whenIll: false, weight: 1.2 },
+  { type: 'small', content: '买咖啡的时候洒到袖子上了，郁闷', impact: { stress: 6, mood: -3 }, locations: ['out', 'school', 'cafe'], weight: 1 },
+  { type: 'small', content: '上课差点睡着，被点起来回答问题', impact: { stress: 5, mental_energy: -6 }, activities: ['class'], weight: 1 },
+  { type: 'small', content: '室友带了小蛋糕回来，分了一块给她', impact: { mood: 7, self_worth: 3 }, locations: ['home'], weight: 1.1 },
+  { type: 'small', content: '下雨没带伞，淋了一小段路', impact: { mood: -4, illnessRisk: 0.08 }, locations: ['out', 'school', 'commute', 'cafe'], whenIll: false, weight: 1 },
+  { type: 'small', content: '刷到一部很想看的剧，加了收藏', impact: { mood: 5 }, weight: 1 },
+  { type: 'small', content: '和同学为小组作业的事有点分歧', impact: { stress: 8, mood: -4 }, activities: ['class', 'study'], weight: 1 },
+  { type: 'small', content: '在图书馆借到了一直想看的书', impact: { mood: 6, mental_energy: 4 }, activities: ['study'], locations: ['school'], weight: 1.1 },
+  { type: 'small', content: '突然很想他，翻了一下以前的聊天记录', impact: { missing_user: 10, mood: 2 }, weight: 1.2 },
+  { type: 'small', content: '手机快没电又没带充电宝，一路都很慌', impact: { stress: 4 }, weight: 1 },
+  { type: 'small', content: '今天状态不错，把拖了很久的作业写完了', impact: { self_worth: 8, stress: -8, mood: 5 }, activities: ['class', 'study', 'work'], weight: 1 },
+  { type: 'small', content: '路过一家新开的甜品店，记下来了想带他一起去', impact: { missing_user: 6, mood: 4 }, locations: ['out'], whenIll: false, weight: 1.1 },
 ];
+
+/** 事件生成的上下文（时间/身份/地点/健康） */
+export interface EventContext {
+  hour: number;
+  activityType: string;
+  locationType: string;
+  illness: string;
+}
+
+/** 硬约束过滤：先去掉不符合当前身份/地点/时段/健康状态的事件 */
+export function eligibleEvents(ctx: EventContext, pool: EventPoolEntry[] = EVENT_POOL): EventPoolEntry[] {
+  return pool.filter((e) => {
+    if (ctx.activityType === 'sleep') return false; // 睡觉时不会有日常小事
+    if (e.activities && !e.activities.includes(ctx.activityType)) return false;
+    if (e.locations && !e.locations.includes(ctx.locationType)) return false;
+    if (e.hours && !(ctx.hour >= e.hours[0] && ctx.hour < e.hours[1])) return false;
+    if (ctx.illness !== 'none' && e.whenIll === false) return false;
+    return true;
+  });
+}
+
+/** 风格偏好权重：深夜更安静、出门更容易遇到户外小事、生病时更低产 */
+function eventWeight(e: EventPoolEntry, ctx: EventContext): number {
+  let w = e.weight ?? 1;
+  const lateNight = ctx.hour >= 23 || ctx.hour < 6;
+  if (lateNight) w *= e.locations && e.locations.includes('out') ? 0.3 : 0.6;
+  if ((ctx.activityType === 'out' || ctx.locationType === 'out') && e.locations?.includes('out')) w *= 1.6;
+  if (ctx.illness !== 'none') w *= 0.7;
+  return w > 0 ? w : 0;
+}
+
+/** 按权重抽一个候选：roll ∈ [0,1)（调用方用确定性哈希生成，回放结果稳定） */
+export function pickEvent(ctx: EventContext, roll: number, pool: EventPoolEntry[] = EVENT_POOL): EventPoolEntry | null {
+  const cands = eligibleEvents(ctx, pool);
+  if (!cands.length) return null;
+  const weights = cands.map((e) => eventWeight(e, ctx));
+  const total = weights.reduce((a, b) => a + b, 0);
+  if (total <= 0) return cands[0]!;
+  let target = Math.min(Math.max(roll, 0), 0.999999) * total;
+  for (let i = 0; i < cands.length; i++) {
+    target -= weights[i]!;
+    if (target < 0) return cands[i]!;
+  }
+  return cands[cands.length - 1]!;
+}
+
+/** 生病触发门限：正在生病、或距上次生病不足 7 天，都不再触发 */
+const ILLNESS_COOLDOWN_MS = 7 * 86400000;
+export function illnessTriggerAllowed(health: { illness: string }, nowMs: number): boolean {
+  if (health.illness !== 'none') return false;
+  const last = getCounter('illness_last_at');
+  if (last > 0 && nowMs - last < ILLNESS_COOLDOWN_MS) return false;
+  return true;
+}
 
 function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
   const todayCount = dbAll<DailyEventRow>(
@@ -95,7 +224,16 @@ function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
   const normalized = (hash >>> 0) / 4294967296;
   const chance = (indep >= 60 ? 0.2 : 0.13) * (block.activityType === 'leisure' || block.activityType === 'out' ? 1.3 : 1);
   if (normalized > chance) return;
-  const pick = EVENT_POOL[(hash >>> 8) % EVENT_POOL.length]!;
+  const health = getHealth();
+  const ctx: EventContext = {
+    hour: d.getHours() + d.getMinutes() / 60,
+    activityType: block.activityType,
+    locationType: block.locationType,
+    illness: health.illness,
+  };
+  const roll = ((hash >>> 8) % 1000) / 1000;
+  const pick = pickEvent(ctx, roll);
+  if (!pick) return;
   dbRun(
     'INSERT INTO agent_daily_events (user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, pick.type, pick.content, JSON.stringify(pick.impact), d.toISOString()
@@ -115,7 +253,10 @@ function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
     emotion, round1(stress), round1(lon), round1(miss), round1(worth), round1(me), nowIso(), DEFAULT_USER_ID
   );
   if ((pick.impact.illnessRisk || 0) > 0 && normalized < (pick.impact.illnessRisk as number)) {
-    startIllness('感冒', 2 + ((hash >>> 16) % 2000) / 1000);
+    // 已经在生病 / 距上次生病不足 7 天 → 跳过，避免病程叠加
+    if (illnessTriggerAllowed(health, d.getTime())) {
+      startIllness('感冒', 2 + ((hash >>> 16) % 2000) / 1000, d.toISOString());
+    }
   }
 }
 
@@ -124,6 +265,8 @@ function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
 /* ------------------------------------------------------------------ */
 export function advanceLife(): { steps: number; changes: string[] } {
   ensureLife();
+  // 自定义模式：冻结一切自动数值漂移（数值由用户直控；记忆/日记/叙事不受影响）
+  if (customModeOn()) return { steps: 0, changes: [] };
   if (!boolSetting('life_enabled', true)) return { steps: 0, changes: [] };
   const changes: string[] = [];
   const h0 = getHealth();
@@ -138,6 +281,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
   // 历史回放从"上次更新的那一刻"往后一步步推，而不是从 now 往回推：
   // 这样离线 5 天时会先补最早的那 48 小时，且 updated_at 只推进已模拟的部分，剩下的留给下次
   const simStart = lastAt;
+  const template = currentLifeTemplate();
   const indep = Number(personalityMap().independence ?? 50);
   const att = attachmentStyle();
   const rel = getRelationshipState();
@@ -145,19 +289,26 @@ export function advanceLife(): { steps: number; changes: string[] } {
   let cycleDate = localDateStr(new Date(lastAt));
   // 可控事件进行中：作息表不覆盖她正在做的事（她说了"去睡了"，就一直睡到事件结束）
   const activeEvent = getActiveEvent();
-  const activeEventStart = activeEvent ? new Date(activeEvent.started_at).getTime() : 0;
+  const activeEventStart = activeEvent ? new Date(activeEvent.started_at).getTime() : NaN;
+  // 事件结束边界：过了 expected_end_at 就不再算"正在进行"（否则过期事件会一直覆盖后续时段的作息）
+  const activeEventEnd = activeEvent?.expected_end_at ? new Date(activeEvent.expected_end_at).getTime() : NaN;
   const activeEventActType = activeEvent ? activityTypeOfEvent(activeEvent.event_type) : '';
 
   for (let k = 0; k < steps; k++) {
     const d = new Date(simStart + k * stepH * 3600000);
     const stepEnd = new Date(simStart + (k + 1) * stepH * 3600000);
     const hour = d.getHours() + d.getMinutes() / 60;
-    let block = blockAt(d);
+    let block = blockAt(d, template);
     const health = getHealth();
     const psy = getPsychology();
     const loc = getLocation();
     const act = getActivity();
-    const eventStep = !!(activeEvent && isFinite(activeEventStart) && d.getTime() >= activeEventStart);
+    const eventStep = !!(
+      activeEvent &&
+      isFinite(activeEventStart) &&
+      d.getTime() >= activeEventStart &&
+      (!isFinite(activeEventEnd) || d.getTime() < activeEventEnd)
+    );
     if (eventStep) {
       block = {
         from: 0,
@@ -181,7 +332,8 @@ export function advanceLife(): { steps: number; changes: string[] } {
         block.activity, block.activityType, d.toISOString(), endAt.toISOString(), nowIso(), DEFAULT_USER_ID
       );
       changes.push(`${block.activity}（${block.location}）`);
-      logLife('activity', act.current_activity, block.activity, `作息时间到：${block.location}`);
+      // 日志时间用"这一步的模拟时刻"，历史回放时不能再落成"今天"
+      logLife('activity', act.current_activity, block.activity, `作息时间到：${block.location}`, d.toISOString());
     }
 
     // 2) 健康漂移
@@ -203,8 +355,9 @@ export function advanceLife(): { steps: number; changes: string[] } {
       hunger = clamp(hunger - 2.5, 0, 100);
       if (hour >= 6 && hour <= 9) sleepQ = clamp(sleepQ + (rel.unresolved_tension > 40 ? 2 : 5), 0, 100);
     } else {
-      energy = clamp(energy - (block.activityType === 'class' || block.activityType === 'study' ? 3.4 : 2.2), 0, 100);
-      hunger = clamp(hunger - (block.activityType === 'class' ? 7 : 5), 0, 100);
+      const focus = block.activityType === 'class' || block.activityType === 'study' || block.activityType === 'work';
+      energy = clamp(energy - (focus ? 3.4 : 2.2), 0, 100);
+      hunger = clamp(hunger - (block.activityType === 'class' || block.activityType === 'work' ? 7 : 5), 0, 100);
       if (block.activityType === 'shower' || block.activityType === 'bed') sleepQ = clamp(sleepQ + 1.2, 0, 100);
       if (block.activityType === 'meal') {
         hunger = clamp(hunger + 34, 0, 100);
@@ -226,7 +379,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
           illness = 'none';
           severity = 0;
           sleepQ = clamp(sleepQ - 8, 0, 100);
-          logLife('illness', health.illness, '恢复', '病程结束');
+          logLife('illness', health.illness, '恢复', '病程结束', d.toISOString());
           changes.push('病好了');
         }
       }
@@ -253,7 +406,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
     let miss = psy.missing_user;
     let security = psy.security;
     let me = psy.mental_energy;
-    const workLoad = block.activityType === 'class' || block.activityType === 'study' ? 3 : block.activityType === 'out' ? 1 : -1.5;
+    const workLoad = block.activityType === 'class' || block.activityType === 'study' || block.activityType === 'work' ? 3 : block.activityType === 'out' ? 1 : -1.5;
     // 事件步：基础作息漂移不叠加（数值只按事件影响走，和等效时长结算保持一致）
     stress = clamp(stress + (eventEffect ? 0 : workLoad * (stepH / 2)) + (illness !== 'none' ? 1.2 : 0), 0, 100);
     if (!eventEffect) {
@@ -328,6 +481,8 @@ export interface LifePsychologyDelta {
 }
 
 export function applyLifeDeltas(input: { health?: LifeHealthDelta; psychology?: LifePsychologyDelta }): void {
+  // 自定义模式：身体/心理数值不自动漂移
+  if (customModeOn()) return;
   const hd = input.health || {};
   const pd = input.psychology || {};
   const h = getHealth();
@@ -372,23 +527,19 @@ export function applyLifeDeltas(input: { health?: LifeHealthDelta; psychology?: 
 /* ------------------------------------------------------------------ */
 /* 康复：亲密互动也会影响状态                                            */
 /* ------------------------------------------------------------------ */
-export function applyInteractionEffects(opts: { caredForHer?: boolean }): void {
+export function applyInteractionEffects(_opts: { caredForHer?: boolean }): void {
+  // 自定义模式：聊天的自动康复也冻结（数值由用户直控）
+  if (customModeOn()) return;
+  // P1-04：被关心的额外加成已统一到 life-core.applyCareEvent，此处不再重复加成，
+  // 参数仅为向后兼容保留（caredForHer 被忽略），避免同一次"被关心"走两套效果。
   const psy = getPsychology();
-  // 聊过天会把孤独/想念往下压一点（温和底噪），真正的下降靠"被关心"的加成
+  // 聊过天会把孤独/想念往下压一点（温和底噪），真正的下降靠 applyCareEvent
   dbRun(
     'UPDATE agent_psychology SET loneliness = ?, missing_user = ?, updated_at = ? WHERE user_id = ?',
     round1(clamp(psy.loneliness - 2, 0, 100)),
     round1(clamp(psy.missing_user - 3, 0, 100)),
     nowIso(), DEFAULT_USER_ID
   );
-  if (opts.caredForHer) {
-    const updated = getPsychology();
-    dbRun(
-      'UPDATE agent_psychology SET security = ?, loneliness = ?, missing_user = ?, updated_at = ? WHERE user_id = ?',
-      round1(clamp(updated.security + 5, 0, 100)), round1(clamp(updated.loneliness - 8, 0, 100)),
-      round1(clamp(updated.missing_user - 6, 0, 100)), nowIso(), DEFAULT_USER_ID
-    );
-  }
 }
 
 /* ------------------------------------------------------------------ */

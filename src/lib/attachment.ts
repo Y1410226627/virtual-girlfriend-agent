@@ -1,9 +1,10 @@
 // 依恋风格系统（成人依恋理论）：焦虑轴 + 回避轴，双轴正交
 // 演化规则：每 10 轮由 LLM 分析 → 输出偏移信号（≤±2）→ 累积 3 次同向才实际调整
-import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, customModeOn } from './db';
+import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, customModeOn, tx } from './db';
 import { clamp, nowIso, round1 } from './utils';
 import { attachmentStyleOf, ATTACHMENT_STYLES, type AttachmentState, type AttachmentSignal } from './types';
 import { logRelationship } from './relationship';
+import { resolveSourceTurns } from './turnOps';
 
 interface AttachmentSignalRow {
   id: number;
@@ -11,6 +12,8 @@ interface AttachmentSignalRow {
   direction: string;
   delta: number;
   reasoning: string | null;
+  /** 产生该信号的 assistant 消息 id（P1-40 归因来源回合用） */
+  message_id: number | null;
 }
 
 export interface AttachmentLogRow {
@@ -31,8 +34,16 @@ export function getAttachmentState(): AttachmentState {
   return a;
 }
 
-/** 写入依恋轴；返回是否真的发生了写入（数值没变时返回 false，调用方据此决定是否消费信号） */
-export function setAttachmentAxes(anxiety: number, avoidance: number, trigger: string, reasoning: string): boolean {
+/** 写入依恋轴；返回是否真的发生了写入（数值没变时返回 false，调用方据此决定是否消费信号）
+ *  sourceTurns（P1-40）：这次调整实际来自哪些回合（由被消费信号的 message_id 映射），
+ *  写入 attachment_logs.source_turns 供回滚判断"多源累积"；为空则落 NULL。 */
+export function setAttachmentAxes(
+  anxiety: number,
+  avoidance: number,
+  trigger: string,
+  reasoning: string,
+  sourceTurns?: number[] | null
+): boolean {
   const cur = getAttachmentState();
   const oldA = Number(cur.anxiety);
   const oldV = Number(cur.avoidance);
@@ -48,9 +59,11 @@ export function setAttachmentAxes(anxiety: number, avoidance: number, trigger: s
     nowIso(),
     DEFAULT_USER_ID
   );
+  const sourceTurnsJson =
+    sourceTurns && sourceTurns.length ? JSON.stringify([...new Set(sourceTurns)].sort((a, b) => a - b)) : null;
   dbRun(
-    `INSERT INTO attachment_logs (user_id, old_anxiety, new_anxiety, old_avoidance, new_avoidance, trigger, reasoning, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO attachment_logs (user_id, old_anxiety, new_anxiety, old_avoidance, new_avoidance, trigger, reasoning, source_turns, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     DEFAULT_USER_ID,
     round1(oldA),
     round1(newA),
@@ -58,6 +71,7 @@ export function setAttachmentAxes(anxiety: number, avoidance: number, trigger: s
     round1(newV),
     trigger,
     reasoning,
+    sourceTurnsJson,
     nowIso()
   );
   if (cur.style !== style) {
@@ -99,7 +113,7 @@ export function runAttachmentLayer(): void {
   let avoidance = Number(cur.avoidance);
   const reasons: string[] = [];
   // 只有"真的写入了新数值"才消费这些信号（原来先标记 applied 再写，写不动时信号被静默吞掉）
-  const gatedConsume: Array<Array<{ id: number }>> = [];
+  const gatedConsume: AttachmentSignalRow[][] = [];
 
   for (const axis of ['anxiety', 'avoidance'] as const) {
     const rows = dbAll<AttachmentSignalRow>(
@@ -116,19 +130,22 @@ export function runAttachmentLayer(): void {
       const posSum = pos.reduce((s, r) => s + Math.abs(Number(r.delta) || 0), 0);
       const negSum = neg.reduce((s, r) => s + Math.abs(Number(r.delta) || 0), 0);
       const net = posSum - negSum;
-      for (const r of [...pos, ...neg]) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
-      if (Math.abs(net) >= 0.5) {
-        dbRun(
-          `INSERT INTO attachment_signals (user_id, axis, direction, delta, reasoning, user_cues, message_id, created_at)
-           VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
-          DEFAULT_USER_ID,
-          axis,
-          net > 0 ? '+' : '-',
-          round1(clamp(net, -2, 2)),
-          '正反信号按累计净偏移抵消后的净差',
-          nowIso()
-        );
-      }
+      // 抵消（消费旧信号 + 保留净差）必须整体成功：任一失败都不消费，信号下次可重跑（P1-41）
+      tx(() => {
+        for (const r of [...pos, ...neg]) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
+        if (Math.abs(net) >= 0.5) {
+          dbRun(
+            `INSERT INTO attachment_signals (user_id, axis, direction, delta, reasoning, user_cues, message_id, created_at)
+             VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
+            DEFAULT_USER_ID,
+            axis,
+            net > 0 ? '+' : '-',
+            round1(clamp(net, -2, 2)),
+            '正反信号按累计净偏移抵消后的净差',
+            nowIso()
+          );
+        }
+      });
       continue;
     }
     const group = pos.length ? pos : neg;
@@ -147,10 +164,15 @@ export function runAttachmentLayer(): void {
   }
 
   if (reasons.length) {
-    const wrote = setAttachmentAxes(anxiety, avoidance, '累积 3 次同向依恋信号', reasons.join(' '));
-    if (wrote) {
-      for (const g of gatedConsume) for (const r of g) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
-    }
+    // P1-40：这次调整来自哪些回合 —— 由本次实际消费的信号的 message_id 映射得到。
+    const sourceTurns = resolveSourceTurns(gatedConsume.flat().map((r) => r.message_id));
+    // 状态更新（含日志）+ 消费信号必须在一个事务里：日志/状态写入失败时信号不被消费，下次可重跑（P1-41）
+    tx(() => {
+      const wrote = setAttachmentAxes(anxiety, avoidance, '累积 3 次同向依恋信号', reasons.join(' '), sourceTurns);
+      if (wrote) {
+        for (const g of gatedConsume) for (const r of g) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
+      }
+    });
   }
 }
 

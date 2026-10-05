@@ -41,20 +41,37 @@ export default function NotifyWatcher() {
 
     let stopped = false;
 
-    const readLastId = (): number => {
+    // P1-52：两个游标分离，避免"看过了 = 通知过了"混在一起导致静默吞掉通知。
+    //  - SEEN：页面可见时"他看过了"的游标，只推进它（不通知）。
+    //  - NOTIFIED：真正展示过通知的游标，只有发了通知才推进。
+    const SEEN_KEY = 'gf_notify_seen';
+    const NOTIFIED_KEY = 'gf_notify_last';
+    const readNum = (key: string): number => {
       try {
-        return Number(window.localStorage.getItem('lastNotifiedMsgId')) || 0;
+        return Number(window.localStorage.getItem(key)) || 0;
       } catch {
         return 0;
       }
     };
-    const writeLastId = (id: number) => {
+    const writeNum = (key: string, id: number) => {
       try {
-        window.localStorage.setItem('lastNotifiedMsgId', String(id));
+        window.localStorage.setItem(key, String(id));
       } catch {
         /* ignore */
       }
     };
+    let seen = readNum(SEEN_KEY);
+    let notified = readNum(NOTIFIED_KEY);
+    // 迁移旧版本游标（lastNotifiedMsgId）：当作"已看过"，避免升级后被历史消息刷屏
+    const legacy = readNum('lastNotifiedMsgId');
+    if (!seen && legacy) {
+      seen = legacy;
+      writeNum(SEEN_KEY, seen);
+    }
+    if (!notified && legacy) {
+      notified = legacy;
+      writeNum(NOTIFIED_KEY, notified);
+    }
 
     // 优先用 Service Worker 的 showNotification，失败回退到页面级 new Notification
     const showNotification = async (title: string, body: string) => {
@@ -80,10 +97,11 @@ export default function NotifyWatcher() {
     };
 
     const poll = async () => {
-      const lastId = readLastId();
+      // 只关心"两个游标之后的最新消息"（取较大值，避免已看过的又被当成新消息）
+      const cursor = Math.max(seen, notified);
       let rows: MessageRow[] = [];
       try {
-        const r = await fetch(`/api/messages?afterId=${lastId}&limit=20`, { cache: 'no-store' });
+        const r = await fetch(`/api/messages?afterId=${cursor}&limit=20`, { cache: 'no-store' });
         if (!r.ok) return;
         const j = await r.json();
         rows = Array.isArray(j?.messages) ? j.messages : [];
@@ -93,10 +111,10 @@ export default function NotifyWatcher() {
       if (stopped) return;
 
       // 只看在游标之后、她（assistant）发来的新消息
-      const hers = rows.filter((m) => m && m.role === 'assistant' && Number(m.id) > lastId);
+      const hers = rows.filter((m) => m && m.role === 'assistant' && Number(m.id) > cursor);
       if (hers.length === 0) return;
 
-      let maxId = lastId;
+      let maxId = cursor;
       let latest = hers[0]!;
       for (const m of hers) {
         const id = Number(m.id) || 0;
@@ -113,13 +131,22 @@ export default function NotifyWatcher() {
         /* ignore */
       }
 
-      // 页面不可见 + 权限已授予 + 用户开关打开 → 通知（只发最新一条，避免刷屏）
       if (hidden && Notification.permission === 'granted' && enabled) {
+        // 页面不可见 + 权限已授予 + 用户开关打开 → 通知（只发最新一条，避免刷屏）
         const body = cleanText(latest?.content ?? '');
         await showNotification('她', body || '给你发来一条消息');
+        // 真正通知了才推进 NOTIFIED（两个游标一起推进）
+        notified = Math.max(notified, maxId);
+        writeNum(NOTIFIED_KEY, notified);
+        seen = Math.max(seen, maxId);
+        writeNum(SEEN_KEY, seen);
+      } else if (!hidden) {
+        // 页面可见：他看到了，只推进 SEEN，不推进 NOTIFIED
+        // （这样即使现在没开通知，之后开启也不会补推他早就看过的消息）
+        seen = Math.max(seen, maxId);
+        writeNum(SEEN_KEY, seen);
       }
-      // 页面可见 / 未开启通知：只推进游标，不打扰
-      writeLastId(maxId);
+      // 页面隐藏但未开启通知 / 权限未授予：两个游标都不推进 → 用户开启通知后仍能补通知，绝不静默吞掉
     };
 
     void poll(); // 首次加载立即跑一次

@@ -86,7 +86,14 @@ export interface EffectiveInfo {
   analysisThinking: string | boolean;
   activeProfile: string | null;
   lastUsed: { model: string; fallback?: boolean } | null;
+  /** 已保存的聊天 Key 归属的 host（P0-13，用于"改了 URL 未重输 Key"提示） */
+  keyHost?: string;
+  /** 已保存的向量 Key 归属的 host */
+  embeddingKeyHost?: string;
 }
+
+/** 显式"清除已保存的 Key、改用环境变量"的哨兵值（与后端 CLEAR_TOKEN 对齐） */
+export const CLEAR_KEY_TOKEN = '__clear__';
 
 export interface SettingsResponse {
   settings: Record<string, string>;

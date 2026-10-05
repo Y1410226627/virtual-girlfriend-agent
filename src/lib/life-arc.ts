@@ -3,7 +3,7 @@
 import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getCounter, setCounter } from './db';
 import { clamp, nowIso, localDateStr, errMsg } from './utils';
 import { chatJson, type ChatMessage } from './llm';
-import { getHealth, getPsychology, logLife, type LifeLogRow, type DailyEventRow } from './life-core';
+import { getHealth, getPsychology, logLife, currentLifeTemplate, lifeTemplateLabel, type LifeLogRow, type DailyEventRow } from './life-core';
 import { getCast } from './life-shared';
 
 /* ------------------------------------------------------------------ */
@@ -65,8 +65,8 @@ async function generateLifeArc(): Promise<boolean> {
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content: `你是「她」的生活编剧。她是一个大一女生${castLine}。
-请为她设计一条接下来几天正在忙的生活线（一个跨天的小目标 / 小事件），要求生活化、真实、不狗血、不夸张，符合普通大学生日常。
+        content: `你是「她」的生活编剧。她是一个${lifeTemplateLabel(currentLifeTemplate())}${castLine}。
+请为她设计一条接下来几天正在忙的生活线（一个跨天的小目标 / 小事件），要求生活化、真实、不狗血、不夸张，符合她的日常。
 可以结合她当前的状态（精力 ${Math.round(h.energy)}/100，情绪「${p.base_emotion}」，季节：${seasonOf()}）自然一点。
 选题方向举例：期末周复习某一科、社团准备演出、学车、手工做一个礼物、家里打电话说起的事、运动减肥计划、给朋友准备生日、整理旧物、参加比赛、追一部剧……
 不要写生死、绝症、重大意外这类沉重剧情。
@@ -102,7 +102,8 @@ async function generateLifeArc(): Promise<boolean> {
 
 /**
  * 推进生活线：6 小时检查一次；有 active 则每天最多推进一天，到期结束并记一条日常事件；
- * 无 active 且距上次生成 ≥3 天则用模型生成一条（无论成败都更新 last_gen）。
+ * 无 active 且距上次"成功生成" ≥3 天则用模型生成一条。
+ * 生成失败不能推进 last_gen（否则要白等 3 天），改为写 retry_after（2 小时后重试）。
  * 全程静默，失败不影响主流程。
  */
 export async function tickLifeArc(): Promise<void> {
@@ -132,10 +133,16 @@ export async function tickLifeArc(): Promise<void> {
       return;
     }
 
-    // 没有进行中的生活线：距上次生成 ≥3 天才考虑再生成（避免频繁打扰模型）
-    if (now - getCounter('life_arc_last_gen') >= 3 * 86400000) {
-      await generateLifeArc(); // 成败都更新 last_gen
+    // 没有进行中的生活线：距上次成功生成 ≥3 天才考虑再生成（避免频繁打扰模型）
+    if (now - getCounter('life_arc_last_gen') < 3 * 86400000) return;
+    // 上次生成失败 → 按 retry_after 稍后再试，不占用"3 天"节奏
+    if (now < getCounter('life_arc_retry_after')) return;
+    const ok = await generateLifeArc();
+    if (ok) {
       setCounter('life_arc_last_gen', now);
+      setCounter('life_arc_retry_after', 0);
+    } else {
+      setCounter('life_arc_retry_after', now + 2 * 3600000);
     }
   } catch (e) {
     console.warn('[life] tickLifeArc 失败:', errMsg(e));
@@ -188,14 +195,14 @@ async function generateDiary(date: string): Promise<boolean> {
       .filter(Boolean)
       .join('\n');
 
-    const castNames = getCast().map((c) => c.name).join('、');
-    const castHint = castNames ? `和身边人（${castNames}等）发生的小事` : '和身边人发生的小事';
     const messages: ChatMessage[] = [
       {
         role: 'system',
         content: `你是「她」本人，现在在写这一天（${date}）的私人日记。用第一人称、口语、像真的随手记下来。
 要求：
-- 100~200 字，有生活细节：吃了什么、天气怎么样、当时的小情绪、${castHint}。
+- 100~200 字。只能写【素材】里有证据的东西：素材里出现的活动、事件、地点、共享世界变化才可以写。
+- 素材里没有天气 / 餐饮信息就不要编具体天气或吃了什么；主观感受（心情、身体感觉）可以自然补充，
+  但不凭空造可验证的事件（没发生过的事不要说成发生过）。
 - 自然、有细微的情绪起伏，不要流水账、不要总结中心思想、不要故作深沉。
 - 绝对不能出现"AI""人工智能""系统""用户""对话""程序""模型""虚拟"这类词。
 - 关于他可以提到也可以不提——随缘，自然最重要，不要硬塞。
