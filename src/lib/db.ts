@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { nowIso } from './utils';
 import { MIGRATIONS } from './db-migrations';
+import { cId, PRIMARY_COMPANION_ID } from './companion-context';
 
 export const DEFAULT_USER_ID = 1;
 
@@ -89,8 +90,17 @@ function migrate(db: DatabaseSync) {
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
     try {
-      // BEGIN 放进 try：开事务本身失败时也要走统一的错误路径，不能让它裸抛
-      db.exec('BEGIN');
+      // BEGIN 放进 try：开事务本身失败时也要走统一的错误路径，不能让它裸抛。
+      // 用 BEGIN IMMEDIATE 先取写锁：`next build` 的 page-data collection 会并发起多个 worker，
+      // 各自打开同一库并跑 migrate()。延迟事务在 WAL 下“读后升级写锁”会报 BUSY_SNAPSHOT
+      // （表现为 "database is locked"，busy_timeout 不重试）；且并发窗口会让同一迁移被执行两次
+      // （表现为 "duplicate column name"）。先取写锁即把并发迁移串行化。
+      db.exec('BEGIN IMMEDIATE');
+      // 拿到写锁后重新确认：并发场景下别的进程可能刚应用了这条迁移 → 直接提交并跳过（幂等）。
+      if (db.prepare('SELECT 1 FROM schema_migrations WHERE version = ?').get(m.version)) {
+        db.exec('COMMIT');
+        continue;
+      }
       // 迁移容错：对 "ALTER TABLE x DROP COLUMN y" 先查列是否存在，不存在就跳过
       // （SQLite 不支持 DROP COLUMN IF EXISTS；历史分叉/手工改库导致列缺失时，原来会直接崩在启动阶段）
       // 正则只匹配到列名为止（用前瞻断言语句终结符），因此列存在时原样返回、SQL 语义零改动；
@@ -174,26 +184,35 @@ function seed(db: DatabaseSync) {
     '你',
     now
   );
+  // 主女友档案（companion_id = PRIMARY_COMPANION_ID = 1）：全新库与老库升级都落到主女友。
+  // age 取常量 24（>=18，满足 DB 层 CHECK(age>=18) 红线）；is_primary=1 标记「既有那份数据」。
+  db.prepare(
+    `INSERT OR IGNORE INTO companions
+     (id, user_id, name, age, gender, status, is_primary, is_discovered, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'female', 'girlfriend', 1, 1, ?, ?)`
+  ).run(PRIMARY_COMPANION_ID, DEFAULT_USER_ID, '她', 24, now, now);
   db.prepare(
     'INSERT OR IGNORE INTO personas (id, user_id, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
   ).run(1, DEFAULT_USER_ID, null, now, now);
+  // 主键已由 user_id 改为 companion_id（见 v14 重建）→ 这里必须显式写 companion_id，
+  // 否则 INSERT OR IGNORE 在重新 seed（每次进程启动 / wipe 后）时会因主键不冲突而插入重复行。
   db.prepare(
     `INSERT OR IGNORE INTO relationship_state
-     (user_id, intimacy, trust, mood, stage, stage_entered_at, stage_cap_since, pending_stage_confirm,
+     (companion_id, user_id, intimacy, trust, mood, stage, stage_entered_at, stage_cap_since, pending_stage_confirm,
       pending_relationship_talk, conflict_state, last_conflict_at, nickname, anniversary,
       last_interaction_at, streak_days, emotional_balance, repair_credit, unresolved_tension, updated_at)
-     VALUES (?, 0, 0, '好奇', 0, ?, NULL, 0, 0, 'none', NULL, NULL, NULL, NULL, 0, 0, 0, 0, ?)`
-  ).run(DEFAULT_USER_ID, now, now);
+     VALUES (?, ?, 0, 0, '好奇', 0, ?, NULL, 0, 0, 'none', NULL, NULL, NULL, NULL, 0, 0, 0, 0, ?)`
+  ).run(PRIMARY_COMPANION_ID, DEFAULT_USER_ID, now, now);
   db.prepare(
-    'INSERT OR IGNORE INTO attachment_state (user_id, anxiety, avoidance, style, updated_at) VALUES (?, 30, 30, ?, ?)'
-  ).run(DEFAULT_USER_ID, 'secure', now);
+    'INSERT OR IGNORE INTO attachment_state (companion_id, user_id, anxiety, avoidance, style, updated_at) VALUES (?, ?, 30, 30, ?, ?)'
+  ).run(PRIMARY_COMPANION_ID, DEFAULT_USER_ID, 'secure', now);
 
   const dims = ['warmth', 'playfulness', 'romance', 'directness', 'independence', 'emotional_intensity'];
   const insDim = db.prepare(
-    `INSERT OR IGNORE INTO personality_state (user_id, dimension, value, solidified, last_adjusted_turn, updated_at)
-     VALUES (?, ?, 50, 0, 0, ?)`
+    `INSERT OR IGNORE INTO personality_state (companion_id, user_id, dimension, value, solidified, last_adjusted_turn, updated_at)
+     VALUES (?, ?, ?, 50, 0, 0, ?)`
   );
-  for (const d of dims) insDim.run(DEFAULT_USER_ID, d, now);
+  for (const d of dims) insDim.run(PRIMARY_COMPANION_ID, DEFAULT_USER_ID, d, now);
 
   const insSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insSetting.run(k, v, now);
@@ -243,6 +262,32 @@ export function dbRun(sql: string, ...params: unknown[]): { changes: number; las
     changes: Number(r.changes),
     lastInsertRowid: Number(r.lastInsertRowid),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* 伴侣作用域存取器（cAll / cGet / cRun）                               */
+/* ------------------------------------------------------------------ */
+/**
+ * 约定：伴侣域 SQL 把 `companion_id = ?` 写在 WHERE / 列清单的**最前**，
+ * 由 cAll/cGet/cRun 自动把当前 cId() 注入为首个占位符参数。
+ *
+ * 例：
+ *   cAll('SELECT * FROM messages WHERE companion_id = ? AND role = ? ORDER BY id', 'assistant')
+ *   实际执行 dbAll('…', cId(), 'assistant')
+ *
+ * 说明：dbAll/dbGet/dbRun 的签名与语义保持不变（旧调用点零改动即落在主女友作用域）；
+ * 这里只做「补一个前置参数」的薄封装，不改写 SQL，安全可审计、不破坏预编译缓存。
+ */
+export function cAll<T = AnyRow>(sql: string, ...params: unknown[]): T[] {
+  return dbAll<T>(sql, cId(), ...params);
+}
+
+export function cGet<T = AnyRow>(sql: string, ...params: unknown[]): T | undefined {
+  return dbGet<T>(sql, cId(), ...params);
+}
+
+export function cRun(sql: string, ...params: unknown[]): { changes: number; lastInsertRowid: number } {
+  return dbRun(sql, cId(), ...params);
 }
 
 /**
@@ -472,6 +517,17 @@ export function wipeAllData(keepSettings = true): void {
     'message_generations',
     'analysis_jobs',
     'turn_operations',
+    // v13 伴侣域 / 群聊 / 活动新表（清空后由 seed() 重播主伴侣 companions id=1）
+    'companions',
+    'companion_relations',
+    'companion_events',
+    'groups',
+    'group_members',
+    'group_messages',
+    'group_runs',
+    'activities',
+    'activity_participants',
+    'activity_schedule_items',
   ];
   db.exec('BEGIN');
   try {

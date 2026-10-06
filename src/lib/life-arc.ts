@@ -1,6 +1,7 @@
 // 生活系统 · 跨天剧情线（Life Arc）与她的日记：后台静默任务
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getCounter, setCounter } from './db';
+import { dbRun, DEFAULT_USER_ID, cAll, cGet, cRun, getCounter, setCounter } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, localDateStr, errMsg } from './utils';
 import { chatJson, type ChatMessage } from './llm';
 import { getHealth, getPsychology, logLife, currentLifeTemplate, lifeTemplateLabel, type LifeLogRow, type DailyEventRow } from './life-core';
@@ -23,9 +24,8 @@ export interface LifeArcRow {
 }
 
 export function getActiveArc(): LifeArcRow | null {
-  const row = dbGet<LifeArcRow>(
-    "SELECT * FROM life_arcs WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
-    DEFAULT_USER_ID
+  const row = cGet<LifeArcRow>(
+    "SELECT * FROM life_arcs WHERE companion_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1"
   );
   return row || null;
 }
@@ -86,8 +86,8 @@ async function generateLifeArc(): Promise<boolean> {
     if (!title || title.length > 12) return false;
     const days = Math.round(clamp(Number(raw.planned_days) || 5, 3, 7));
     const now = nowIso();
-    dbRun(
-      'INSERT INTO life_arcs (user_id, title, description, status, progress, planned_days, meta_json, started_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)',
+    cRun(
+      'INSERT INTO life_arcs (companion_id, user_id, title, description, status, progress, planned_days, meta_json, started_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)',
       DEFAULT_USER_ID, title, description.slice(0, 60), 'active', days, JSON.stringify({ source: 'llm' }), now, now
     );
     // 新建当天不推进，明天才算"第 2 天"
@@ -121,8 +121,8 @@ export async function tickLifeArc(): Promise<void> {
         if (next >= arc.planned_days) {
           dbRun("UPDATE life_arcs SET status = 'finished', progress = ?, updated_at = ? WHERE id = ?", next, nowIso(), arc.id);
           // 用现有日常事件写入方式记一条（她能自然聊起"那件事告一段落"）
-          dbRun(
-            'INSERT INTO agent_daily_events (user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?)',
+          cRun(
+            'INSERT INTO agent_daily_events (companion_id, user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
             DEFAULT_USER_ID, '生活', `她最近在忙的事告一段落：${arc.title}`, JSON.stringify({ note: 'life_arc_finished' }), nowIso()
           );
           logLife('life_arc', arc.title, '已完成', '生活线告一段落');
@@ -173,14 +173,14 @@ export function hasForbiddenDiaryTerm(text: string): boolean {
 /** 写某一天的日记；成功返回 true */
 async function generateDiary(date: string): Promise<boolean> {
   try {
-    const events = dbAll<DailyEventRow>(
-      "SELECT event_type, content FROM agent_daily_events WHERE user_id = ? AND date(created_at, 'localtime') = ? ORDER BY id ASC",
-      DEFAULT_USER_ID, date
+    const events = cAll<DailyEventRow>(
+      "SELECT event_type, content FROM agent_daily_events WHERE companion_id = ? AND date(created_at, 'localtime') = ? ORDER BY id ASC",
+      date
     );
-    const sum = dbGet<{ summary: string }>('SELECT summary FROM daily_summaries WHERE user_id = ? AND date = ?', DEFAULT_USER_ID, date);
-    const logs = dbAll<LifeLogRow>(
-      "SELECT field, new_value, reason FROM life_state_logs WHERE user_id = ? AND date(created_at, 'localtime') = ? AND field IN ('activity', 'illness', 'care') ORDER BY id ASC",
-      DEFAULT_USER_ID, date
+    const sum = cGet<{ summary: string }>('SELECT summary FROM daily_summaries WHERE companion_id = ? AND date = ?', date);
+    const logs = cAll<LifeLogRow>(
+      "SELECT field, new_value, reason FROM life_state_logs WHERE companion_id = ? AND date(created_at, 'localtime') = ? AND field IN ('activity', 'illness', 'care') ORDER BY id ASC",
+      date
     );
     if (!events.length && !sum && !logs.length) return true; // 没有素材，跳过不算失败
 
@@ -222,11 +222,12 @@ async function generateDiary(date: string): Promise<boolean> {
     if (hasForbiddenDiaryTerm(content)) return false; // 违反硬约束 → 当作失败重试
 
     const now = nowIso();
-    dbRun(
-      `INSERT INTO agent_diaries (user_id, date, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(user_id, date) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
-      DEFAULT_USER_ID, date, content.slice(0, 800), now, now
-    );
+    // v14 起 agent_diaries 唯一索引为 (companion_id, date) → 显式写入 companion_id（T01：主女友=1）
+      cRun(
+        `INSERT INTO agent_diaries (companion_id, user_id, date, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(companion_id, date) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
+        DEFAULT_USER_ID, date, content.slice(0, 800), now, now
+      );
     return true;
   } catch (e) {
     console.warn('[life] 日记生成失败:', errMsg(e));
@@ -248,19 +249,19 @@ export async function ensureDailyDiaries(): Promise<void> {
     const today = localDateStr();
     const start = localDateStr(new Date(now - 6 * 86400000));
     // 最近 7 天内：有日常事件或每日摘要、但还没有日记的日子，按正序补齐
-    const missing = dbAll<{ d: string }>(
+    const missing = cAll<{ d: string }>(
       `SELECT d FROM (
          SELECT date(created_at, 'localtime') AS d FROM agent_daily_events
-         WHERE user_id = ? AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?
+         WHERE companion_id = ? AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?
          UNION
          SELECT date AS d FROM daily_summaries
-         WHERE user_id = ? AND date >= ? AND date <= ?
+         WHERE companion_id = ? AND date >= ? AND date <= ?
        )
-       WHERE d NOT IN (SELECT date FROM agent_diaries WHERE user_id = ?)
+       WHERE d NOT IN (SELECT date FROM agent_diaries WHERE companion_id = ?)
        ORDER BY d ASC LIMIT 2`,
-      DEFAULT_USER_ID, start, today,
-      DEFAULT_USER_ID, start, today,
-      DEFAULT_USER_ID
+      start, today,
+      cId(), start, today,
+      cId()
     );
     if (!missing.length) return;
 

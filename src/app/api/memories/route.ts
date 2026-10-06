@@ -10,7 +10,7 @@ import {
   listDailySummaries,
   wipeAllMemories,
 } from '@/lib/memory';
-import { dbAll, DEFAULT_USER_ID } from '@/lib/db';
+import { cAll } from '@/lib/db';
 import { clamp, truncate } from '@/lib/utils';
 
 export const runtime = 'nodejs';
@@ -41,9 +41,8 @@ function starStats() {
 
   // 状态计数：active / archived / superseded（active、archived 复用 memoryStats 的结果）
   const superseded = Number(
-    dbAll<{ c: number }>(
-      "SELECT COUNT(*) AS c FROM memories WHERE user_id = ? AND status = 'superseded'",
-      DEFAULT_USER_ID
+    cAll<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM memories WHERE companion_id = ? AND status = 'superseded'"
     )[0]?.c || 0
   );
   const counts = {
@@ -53,11 +52,10 @@ function starStats() {
   };
 
   // 最常想起：active 记忆按 access_count 倒序取前 10
-  const topAccessed = dbAll<TopAccessedRow>(
+  const topAccessed = cAll<TopAccessedRow>(
     `SELECT id, content, importance, access_count, type FROM memories
-     WHERE user_id = ? AND status = 'active'
-     ORDER BY access_count DESC, importance DESC, id DESC LIMIT 10`,
-    DEFAULT_USER_ID
+     WHERE companion_id = ? AND status = 'active'
+     ORDER BY access_count DESC, importance DESC, id DESC LIMIT 10`
   ).map((m) => ({
     id: m.id,
     content: truncate(String(m.content || ''), 60),
@@ -67,16 +65,15 @@ function starStats() {
   }));
 
   // 重要度分布：0-2 / 3-5 / 6-8 / 9-10 四档的 active 计数
-  const bucketRows = dbAll<{ b: number; c: number }>(
+  const bucketRows = cAll<{ b: number; c: number }>(
     `SELECT CASE
         WHEN importance <= 2 THEN 0
         WHEN importance <= 5 THEN 1
         WHEN importance <= 8 THEN 2
         ELSE 3 END AS b,
        COUNT(*) AS c
-     FROM memories WHERE user_id = ? AND status = 'active'
-     GROUP BY b`,
-    DEFAULT_USER_ID
+     FROM memories WHERE companion_id = ? AND status = 'active'
+     GROUP BY b`
   );
   const importanceBuckets = ['0-2', '3-5', '6-8', '9-10'].map((label, i) => ({
     label,
@@ -84,11 +81,10 @@ function starStats() {
   }));
 
   // 散点：active 记忆按重要度倒序取最多 200 条
-  const scatter = dbAll<ScatterRow>(
+  const scatter = cAll<ScatterRow>(
     `SELECT id, importance, access_count, content FROM memories
-     WHERE user_id = ? AND status = 'active'
-     ORDER BY importance DESC, access_count DESC, id DESC LIMIT 200`,
-    DEFAULT_USER_ID
+     WHERE companion_id = ? AND status = 'active'
+     ORDER BY importance DESC, access_count DESC, id DESC LIMIT 200`
   ).map((m) => ({
     id: m.id,
     importance: Number(m.importance || 0),
@@ -106,13 +102,13 @@ export async function GET(req: Request) {
   const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 100));
   const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
   const memories = type
-    ? dbAll(
-        'SELECT * FROM memories WHERE user_id = ? AND status = ? AND type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        DEFAULT_USER_ID, status, type, limit, offset
+    ? cAll(
+        'SELECT * FROM memories WHERE companion_id = ? AND status = ? AND type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+        status, type, limit, offset
       )
-    : dbAll(
-        'SELECT * FROM memories WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        DEFAULT_USER_ID, status, limit, offset
+    : cAll(
+        'SELECT * FROM memories WHERE companion_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+        status, limit, offset
       );
   return Response.json({ memories, stats: starStats(), summaries: listDailySummaries(30) });
 }

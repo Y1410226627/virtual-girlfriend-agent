@@ -1,5 +1,5 @@
 // 关系页：状态 / 阶段 / 昵称 / 纪念日 / 事件 / 关系日志 / 冲突
-import { dbAll, dbGet, tx, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
+import { tx, cAll, cGet, getSetting, setSetting } from '@/lib/db';
 import { detectScene } from '@/lib/scene';
 import { getRelationshipState, saveRelationshipState, logRelationship, getPersona, setPersonaField, setUserName, checkStageTransition, addEvent, deleteEvent } from '@/lib/relationship';
 import { listConflicts } from '@/lib/conflict';
@@ -41,16 +41,14 @@ export async function GET() {
     stages: stageListForUi(),
     persona: getPersona(),
     user: { name: getSetting('user_name') || '', profile: getSetting('user_profile') || '' },
-    logs: dbAll(
-      'SELECT * FROM relationship_logs WHERE user_id = ? ORDER BY id DESC LIMIT 80',
-      DEFAULT_USER_ID
+    logs: cAll(
+      'SELECT * FROM relationship_logs WHERE companion_id = ? ORDER BY id DESC LIMIT 80'
     ),
     conflicts: listConflicts(20),
     bank: { stats: bankStats(), recent: listBankEntries(40) },
-    events: dbAll('SELECT * FROM events WHERE user_id = ? ORDER BY event_date ASC', DEFAULT_USER_ID),
-    memories: dbAll(
-      "SELECT * FROM memories WHERE user_id = ? AND type IN ('relationship','attachment') AND status = 'active' ORDER BY id DESC LIMIT 40",
-      DEFAULT_USER_ID
+    events: cAll('SELECT * FROM events WHERE companion_id = ? ORDER BY event_date ASC'),
+    memories: cAll(
+      "SELECT * FROM memories WHERE companion_id = ? AND type IN ('relationship','attachment') AND status = 'active' ORDER BY id DESC LIMIT 40"
     ),
     summaries: listDailySummaries(20),
   });
@@ -127,9 +125,8 @@ export async function POST(req: Request) {
       s.scene_updated_at = nowIso();
     } else {
       // 切回自动：立刻用最后一条消息重新判断一次，避免标签停留在旧的手动值
-      const last = dbGet<MessageRow>(
-        "SELECT content FROM messages WHERE user_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
-        DEFAULT_USER_ID
+      const last = cGet<MessageRow>(
+        "SELECT content FROM messages WHERE companion_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1"
       );
       const d = detectScene(String(last?.content || ''), 'online');
       s.scene = d.confidence > 0 ? d.scene : 'online';

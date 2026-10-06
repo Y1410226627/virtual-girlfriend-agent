@@ -1,7 +1,8 @@
 // 动态性格系统：累积层 → 确认层 → 固化层 三层机制
 // 关键原则：绝不在每轮对话里直接改性格。
 // 读取层与周快照已拆至 personality-core.ts / personality-snapshots.ts，本文件保留原有导出面。
-import { dbAll, dbRun, DEFAULT_USER_ID, getCounter, setCounter, numSetting, customModeOn, tx } from './db';
+import { dbRun, DEFAULT_USER_ID, getCounter, setCounter, numSetting, customModeOn, tx, cAll, cRun } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, round1 } from './utils';
 import { stageOf } from './stages';
 import { getRelationshipState, logRelationship } from './relationship';
@@ -48,9 +49,9 @@ export function addSignals(signals: PersonalitySignal[], messageId?: number | nu
     const strength = clamp(Number(sig.strength) || 0.5, 0, 1);
     // 用户明确反馈（"我喜欢你这样"/"别这样"）权重 3
     const weight = sig.is_direct_feedback ? 3 : 1;
-    dbRun(
-      `INSERT INTO personality_signals (user_id, message_id, dimension, direction, strength, weight, context, reasoning, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    cRun(
+      `INSERT INTO personality_signals (companion_id, user_id, message_id, dimension, direction, strength, weight, context, reasoning, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       DEFAULT_USER_ID,
       messageId ?? null,
       dim,
@@ -100,10 +101,9 @@ export function signalProgress(): SignalProgress[] {
     const rateTurns = row?.solidified ? 30 : stage.changeRateTurns;
     const cooldownTurns = row ? Math.max(0, rateTurns - (turn - Number(row.last_adjusted_turn || 0))) : 0;
     for (const direction of ['+', '-'] as const) {
-      const rows = dbAll<SignalRow>(
+      const rows = cAll<SignalRow>(
         `SELECT strength, weight, context FROM personality_signals
-         WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0`,
-        DEFAULT_USER_ID,
+         WHERE companion_id = ? AND dimension = ? AND direction = ? AND consumed = 0`,
         dim,
         direction
       );
@@ -155,9 +155,8 @@ export function runConfirmLayer(messageId?: number | null): void {
     // 固化不是"长死"：反向信号攒到 1.5 倍阈值时自动解除固化，让长期陪伴下性格还能回退
     if (row.solidified) {
       const oppDir = Number(row.value) >= 50 ? '-' : '+';
-      const oppRows = dbAll<SignalRow>(
-        `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0`,
-        DEFAULT_USER_ID,
+      const oppRows = cAll<SignalRow>(
+        `SELECT * FROM personality_signals WHERE companion_id = ? AND dimension = ? AND direction = ? AND consumed = 0`,
         dim,
         oppDir
       );
@@ -169,14 +168,12 @@ export function runConfirmLayer(messageId?: number | null): void {
       }
     }
 
-    const pos = dbAll<SignalRow>(
-      `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
-      DEFAULT_USER_ID,
+    const pos = cAll<SignalRow>(
+      `SELECT * FROM personality_signals WHERE companion_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
       dim
     );
-    const neg = dbAll<SignalRow>(
-      `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '-' AND consumed = 0`,
-      DEFAULT_USER_ID,
+    const neg = cAll<SignalRow>(
+      `SELECT * FROM personality_signals WHERE companion_id = ? AND dimension = ? AND direction = '-' AND consumed = 0`,
       dim
     );
 
@@ -200,17 +197,15 @@ export function runConfirmLayer(messageId?: number | null): void {
       // 消解后重新取信号再判定
       pos.length = 0;
       pos.push(
-        ...dbAll<SignalRow>(
-          `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
-          DEFAULT_USER_ID,
+        ...cAll<SignalRow>(
+          `SELECT * FROM personality_signals WHERE companion_id = ? AND dimension = ? AND direction = '+' AND consumed = 0`,
           dim
         )
       );
       neg.length = 0;
       neg.push(
-        ...dbAll<SignalRow>(
-          `SELECT * FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = '-' AND consumed = 0`,
-          DEFAULT_USER_ID,
+        ...cAll<SignalRow>(
+          `SELECT * FROM personality_signals WHERE companion_id = ? AND dimension = ? AND direction = '-' AND consumed = 0`,
           dim
         )
       );
@@ -229,9 +224,8 @@ export function runConfirmLayer(messageId?: number | null): void {
       continue;
     }
 
-    const ctxSamples = dbAll<{ context: string | null }>(
-      `SELECT context FROM personality_signals WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0 LIMIT 3`,
-      DEFAULT_USER_ID,
+    const ctxSamples = cAll<{ context: string | null }>(
+      `SELECT context FROM personality_signals WHERE companion_id = ? AND dimension = ? AND direction = ? AND consumed = 0 LIMIT 3`,
       dim,
       direction
     )
@@ -249,16 +243,16 @@ export function runConfirmLayer(messageId?: number | null): void {
 
     tx(() => {
       dbRun(
-        'UPDATE personality_state SET value = ?, last_adjusted_turn = ?, updated_at = ? WHERE user_id = ? AND dimension = ?',
+        'UPDATE personality_state SET value = ?, last_adjusted_turn = ?, updated_at = ? WHERE companion_id = ? AND dimension = ?',
         newValue,
         turn,
         nowIso(),
-        DEFAULT_USER_ID,
+        cId(),
         dim
       );
-      dbRun(
-        `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, source_turns, contributing_signal_ids, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirm', ?, ?, ?)`,
+      cRun(
+        `INSERT INTO personality_logs (companion_id, user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, source_turns, contributing_signal_ids, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirm', ?, ?, ?)`,
         DEFAULT_USER_ID,
         messageId ?? null,
         dim,
@@ -296,14 +290,14 @@ function bumpSolidifyStreak(dim: string, direction: '+' | '-') {
     const row = getPersonalityRows().find((r) => r.dimension === dim);
     if (row && !row.solidified) {
       dbRun(
-        'UPDATE personality_state SET solidified = 1, updated_at = ? WHERE user_id = ? AND dimension = ?',
+        'UPDATE personality_state SET solidified = 1, updated_at = ? WHERE companion_id = ? AND dimension = ?',
         nowIso(),
-        DEFAULT_USER_ID,
+        cId(),
         dim
       );
-      dbRun(
-        `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
-         VALUES (?, NULL, ?, ?, ?, 0, NULL, ?, ?, ?, 'solidify', ?)`,
+      cRun(
+        `INSERT INTO personality_logs (companion_id, user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
+         VALUES (?, ?, NULL, ?, ?, ?, 0, NULL, ?, ?, ?, 'solidify', ?)`,
         DEFAULT_USER_ID,
         dim,
         row.value,

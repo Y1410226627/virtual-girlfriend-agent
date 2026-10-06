@@ -1,5 +1,5 @@
 // 分析模型返回值的解析与归一化：把松散 JSON 收敛成 AnalysisResult，及转录/撤销等辅助工具
-import { dbAll, dbGet, DEFAULT_USER_ID } from './db';
+import { cAll, cGet } from './db';
 import { clamp, truncate, round1 } from './utils';
 import { getRelationshipState, agentName, userName, type AffectState } from './relationship';
 import type { ConflictType, RepairQuality } from './conflict';
@@ -330,9 +330,8 @@ export function transcript(limit = 10, excludeIds: number[] = []): string {
   const ids = (excludeIds || []).filter((x) => Number.isFinite(x) && x > 0);
   const ph = ids.map(() => '?').join(',');
   const where = ids.length ? `AND id NOT IN (${ph})` : '';
-  const rows = dbAll<{ role: string; content: string }>(
-    `SELECT role, content FROM messages WHERE user_id = ? ${where} ORDER BY id DESC LIMIT ?`,
-    DEFAULT_USER_ID,
+  const rows = cAll<{ role: string; content: string }>(
+    `SELECT role, content FROM messages WHERE companion_id = ? ${where} ORDER BY id DESC LIMIT ?`,
     ...ids,
     limit
   ).reverse();
@@ -360,6 +359,6 @@ export function snapshotForUndo() {
 }
 
 export function maxId(table: string): number {
-  const row = dbGet<{ m: number | null }>(`SELECT MAX(id) AS m FROM ${table} WHERE user_id = ?`, DEFAULT_USER_ID);
+  const row = cGet<{ m: number | null }>(`SELECT MAX(id) AS m FROM ${table} WHERE companion_id = ?`);
   return Number(row?.m || 0);
 }

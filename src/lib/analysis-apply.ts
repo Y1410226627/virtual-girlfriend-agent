@@ -1,7 +1,7 @@
 // 分析管线的「应用阶段」子模块（从 analysis.ts 拆出）：
 // 把一轮分析结果的全部本地写入包进一个事务（P0-07 原子化），并把每处真实变化写入操作账本（P0-08）。
 // 依赖方向：analysis.ts → analysis-apply.ts（单向，无环）。
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, setCounter, getSetting } from './db';
+import { dbRun, tx, DEFAULT_USER_ID, setCounter, getSetting, cAll, cGet, cRun } from './db';
 import { clamp, nowIso, round1, errMsg } from './utils';
 import { applyRelationshipDelta, checkStageTransition, getRelationshipState, saveRelationshipState, logRelationship, saveAffectState } from './relationship';
 import { addBankEntry } from './emotionalBank';
@@ -61,13 +61,13 @@ export interface ApplyOutcome {
 
 /** shared_world 单行快照（供操作账本记录 / 反向） */
 function sharedWorldSnapshot() {
-  const r = dbGet<{
+  const r = cGet<{
     shared_places_json: string | null;
     shared_plans_json: string | null;
     shared_rituals_json: string | null;
     shared_items_json: string | null;
     cast_json: string | null;
-  }>('SELECT shared_places_json, shared_plans_json, shared_rituals_json, shared_items_json, cast_json FROM shared_world WHERE user_id = ?', DEFAULT_USER_ID);
+  }>('SELECT shared_places_json, shared_plans_json, shared_rituals_json, shared_items_json, cast_json FROM shared_world WHERE companion_id = ?');
   return {
     shared_places_json: r?.shared_places_json ?? null,
     shared_plans_json: r?.shared_plans_json ?? null,
@@ -171,9 +171,8 @@ export function applyAnalysisResult(
     }
     if (doRepair) {
       // 记录"修复前仍未解决"的冲突（含刚开的那条），修复会一次性结清它们
-      const openBeforeRepair = dbAll<{ id: number }>(
-        "SELECT id FROM conflict_logs WHERE user_id = ? AND status = 'open'",
-        DEFAULT_USER_ID
+      const openBeforeRepair = cAll<{ id: number }>(
+        "SELECT id FROM conflict_logs WHERE companion_id = ? AND status = 'open'"
       ).map((r) => Number(r.id));
       registerRepair(result.repair_quality || 'sweet', result.reasoning || '双方主动修复');
       outcome.applied.repaired = true;
@@ -229,9 +228,8 @@ export function applyAnalysisResult(
 
     // 8) 场景校正（带上下文判断；但如果这一轮已经不是最新一轮，就别覆盖更新的场景）
     if (result.scene && (result.scene === 'online' || result.scene === 'offline')) {
-      const newest = dbGet<{ id: number | null }>(
-        'SELECT MAX(id) AS id FROM messages WHERE user_id = ?',
-        DEFAULT_USER_ID
+      const newest = cGet<{ id: number | null }>(
+        'SELECT MAX(id) AS id FROM messages WHERE companion_id = ?'
       );
       const stale = Number(newest?.id || 0) > Number(assistantMessageId || 0);
       const cur = getRelationshipState();
@@ -328,30 +326,26 @@ export function applyAnalysisResult(
     /* ---------------- 操作账本（P0-08）：记录本轮真实产生的状态变化 ---------------- */
     // turnId / generationId 可能为空（老调用方 / 无回合上下文）——仍照记，便于按消息来源反向；
     // 为空时无法按 generation 精确定位（rollbackOperationsForGeneration 会跳过）。
-    for (const r of dbAll<{ id: number; delta: number; balance_after: number }>(
-      'SELECT id, delta, balance_after FROM emotional_bank WHERE user_id = ? AND id > ?',
-      DEFAULT_USER_ID,
+    for (const r of cAll<{ id: number; delta: number; balance_after: number }>(
+      'SELECT id, delta, balance_after FROM emotional_bank WHERE companion_id = ? AND id > ?',
       bankMaxBefore
     )) {
       recordOperation({ ...led, operationType: 'emotional_bank.create', targetTable: 'emotional_bank', targetId: Number(r.id), after: { delta: Number(r.delta), balance_after: Number(r.balance_after) } });
     }
-    for (const r of dbAll<{ id: number; dimension: string; old_value: number; new_value: number }>(
-      'SELECT id, dimension, old_value, new_value FROM personality_logs WHERE user_id = ? AND id > ?',
-      DEFAULT_USER_ID,
+    for (const r of cAll<{ id: number; dimension: string; old_value: number; new_value: number }>(
+      'SELECT id, dimension, old_value, new_value FROM personality_logs WHERE companion_id = ? AND id > ?',
       plogMaxBefore
     )) {
       recordOperation({ ...led, operationType: 'personality_log.create', targetTable: 'personality_logs', targetId: Number(r.id), meta: { dimension: String(r.dimension), old_value: Number(r.old_value), new_value: Number(r.new_value) } });
     }
-    for (const r of dbAll<{ id: number; old_anxiety: number; new_anxiety: number; old_avoidance: number; new_avoidance: number }>(
-      'SELECT id, old_anxiety, new_anxiety, old_avoidance, new_avoidance FROM attachment_logs WHERE user_id = ? AND id > ?',
-      DEFAULT_USER_ID,
+    for (const r of cAll<{ id: number; old_anxiety: number; new_anxiety: number; old_avoidance: number; new_avoidance: number }>(
+      'SELECT id, old_anxiety, new_anxiety, old_avoidance, new_avoidance FROM attachment_logs WHERE companion_id = ? AND id > ?',
       attLogFrom
     )) {
       recordOperation({ ...led, operationType: 'attachment_log.create', targetTable: 'attachment_logs', targetId: Number(r.id), meta: { old_anxiety: Number(r.old_anxiety), new_anxiety: Number(r.new_anxiety), old_avoidance: Number(r.old_avoidance), new_avoidance: Number(r.new_avoidance) } });
     }
-    for (const r of dbAll<{ id: number }>(
-      'SELECT id FROM agent_daily_events WHERE user_id = ? AND id > ?',
-      DEFAULT_USER_ID,
+    for (const r of cAll<{ id: number }>(
+      'SELECT id FROM agent_daily_events WHERE companion_id = ? AND id > ?',
       dailyMaxBefore
     )) {
       recordOperation({ ...led, operationType: 'agent_daily_events.create', targetTable: 'agent_daily_events', targetId: Number(r.id) });
@@ -367,16 +361,15 @@ export function applyAnalysisResult(
 
     // 12) 记录本轮实际产生的影响（供"删除消息并撤销影响"旧推断路径使用；保留）
     try {
-      const conflict = dbGet<{ id: number }>(
-        'SELECT id FROM conflict_logs WHERE user_id = ? ORDER BY id DESC LIMIT 1',
-        DEFAULT_USER_ID
+      const conflict = cGet<{ id: number }>(
+        'SELECT id FROM conflict_logs WHERE companion_id = ? ORDER BY id DESC LIMIT 1'
       );
-      dbRun(
-        `INSERT INTO turn_effects (user_id, message_id, user_message_id,
+      cRun(
+        `INSERT INTO turn_effects (companion_id, user_id, message_id, user_message_id,
            intimacy_delta, trust_delta, balance_delta, tension_delta, repair_delta,
            mood_before, mood_after, stage_before, stage_after,
            rel_log_from, rel_log_to, att_log_from, att_log_to, conflict_id, created_at, meta)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         DEFAULT_USER_ID,
         assistantMessageId ?? null,
         ctx.userMessageId ?? null,

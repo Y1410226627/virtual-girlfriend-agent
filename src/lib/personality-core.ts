@@ -1,5 +1,6 @@
 // 性格系统：读取层与公共辅助（供 personality.ts 与 personality-snapshots.ts 使用）
-import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, setCounter } from './db';
+import { dbRun, DEFAULT_USER_ID, setCounter, cAll, cGet, cRun } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, round1 } from './utils';
 import { getRelationshipState } from './relationship';
 import { attachmentStyleOf, DIMENSIONS, type DimensionKey } from './types';
@@ -37,7 +38,7 @@ export interface PersonalityLogRow {
 
 /* ---------------------- 读取 ---------------------- */
 export function getPersonalityRows(): PersonalityRow[] {
-  return dbAll<PersonalityRow>('SELECT * FROM personality_state WHERE user_id = ? ORDER BY rowid', DEFAULT_USER_ID);
+  return cAll<PersonalityRow>('SELECT * FROM personality_state WHERE companion_id = ? ORDER BY rowid');
 }
 
 export function personalityMap(): Record<string, number> {
@@ -68,37 +69,36 @@ export function personalityPromptBlock(): string {
 
 export function consumeSignals(dim: string, direction: string) {
   dbRun(
-    'UPDATE personality_signals SET consumed = 1 WHERE user_id = ? AND dimension = ? AND direction = ? AND consumed = 0',
-    DEFAULT_USER_ID,
+    'UPDATE personality_signals SET consumed = 1 WHERE companion_id = ? AND dimension = ? AND direction = ? AND consumed = 0',
+    cId(),
     dim,
     direction
   );
 }
 
 export function currentAttachmentStyle(): string {
-  const a = dbGet<{ anxiety: number; avoidance: number }>(
-    'SELECT anxiety, avoidance FROM attachment_state WHERE user_id = ?',
-    DEFAULT_USER_ID
+  const a = cGet<{ anxiety: number; avoidance: number }>(
+    'SELECT anxiety, avoidance FROM attachment_state WHERE companion_id = ?'
   );
   return attachmentStyleOf(Number(a?.anxiety ?? 30), Number(a?.avoidance ?? 30));
 }
 
 export function unsolidify(dim: string): void {
   dbRun(
-    'UPDATE personality_state SET solidified = 0, updated_at = ? WHERE user_id = ? AND dimension = ?',
+    'UPDATE personality_state SET solidified = 0, updated_at = ? WHERE companion_id = ? AND dimension = ?',
     nowIso(),
-    DEFAULT_USER_ID,
+    cId(),
     dim
   );
   setCounter(`solidify_streak_${dim}`, 0);
-  dbRun(
-    `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
-     SELECT ?, NULL, dimension, value, value, 0, NULL, '用户手动解除固化', ?, ?, 'manual', ? FROM personality_state WHERE user_id = ? AND dimension = ?`,
+  cRun(
+    `INSERT INTO personality_logs (companion_id, user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
+     SELECT ?, ?, NULL, dimension, value, value, 0, NULL, '用户手动解除固化', ?, ?, 'manual', ? FROM personality_state WHERE companion_id = ? AND dimension = ?`,
     DEFAULT_USER_ID,
     getRelationshipState().stage,
     currentAttachmentStyle(),
     nowIso(),
-    DEFAULT_USER_ID,
+    cId(),
     dim
   );
 }
@@ -110,15 +110,15 @@ export function manualAdjust(dim: string, value: number, reason = '用户手动�
   const oldValue = Number(row.value);
   const newValue = clamp(value, 0, 100);
   dbRun(
-    'UPDATE personality_state SET value = ?, updated_at = ? WHERE user_id = ? AND dimension = ?',
+    'UPDATE personality_state SET value = ?, updated_at = ? WHERE companion_id = ? AND dimension = ?',
     newValue,
     nowIso(),
-    DEFAULT_USER_ID,
+    cId(),
     dim
   );
-  dbRun(
-    `INSERT INTO personality_logs (user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
-     VALUES (?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, 'manual', ?)`,
+  cRun(
+    `INSERT INTO personality_logs (companion_id, user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
+     VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, 'manual', ?)`,
     DEFAULT_USER_ID,
     dim,
     oldValue,
@@ -132,18 +132,16 @@ export function manualAdjust(dim: string, value: number, reason = '用户手动�
 }
 
 export function listPersonalityLogs(limit = 100) {
-  return dbAll<PersonalityLogRow>(
-    'SELECT * FROM personality_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  return cAll<PersonalityLogRow>(
+    'SELECT * FROM personality_logs WHERE companion_id = ? ORDER BY id DESC LIMIT ?',
     limit
   );
 }
 
 /** 每个维度的演化曲线数据 */
 export function evolutionSeries() {
-  const logs = dbAll<{ dimension: string; created_at: string; new_value: number }>(
-    'SELECT dimension, old_value, new_value, created_at FROM personality_logs WHERE user_id = ? ORDER BY id ASC',
-    DEFAULT_USER_ID
+  const logs = cAll<{ dimension: string; created_at: string; new_value: number }>(
+    'SELECT dimension, old_value, new_value, created_at FROM personality_logs WHERE companion_id = ? ORDER BY id ASC'
   );
   const series: Record<string, { t: string; v: number }[]> = {};
   for (const dim of DIMENSION_KEYS) series[dim] = [];

@@ -1,6 +1,7 @@
 // 亲密系统：性是亲密关系的一个维度，从属于关系、强调情感连接
 // 内容分级 0/1/2/3（暧昧→亲密氛围、具体行为）；可以生成露骨色情描写
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
+import { dbRun, tx, DEFAULT_USER_ID, getSetting, setSetting, customModeOn, cGet, cAll, cRun } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, round1, hoursSince } from './utils';
 import { getRelationshipState, logRelationship, saveRelationshipState } from './relationship';
 import { attachmentStyle } from './attachment';
@@ -29,8 +30,13 @@ interface IntimacyAftercareRow {
 }
 
 export function getIntimacy(): IntimacyRow {
-  dbRun('INSERT OR IGNORE INTO intimacy_state (user_id, updated_at) VALUES (?, ?)', DEFAULT_USER_ID, nowIso());
-  return dbGet<IntimacyRow>('SELECT * FROM intimacy_state WHERE user_id = ?', DEFAULT_USER_ID)!;
+  // v14 起 intimacy_state 主键为 companion_id
+  cRun(
+    'INSERT OR IGNORE INTO intimacy_state (companion_id, user_id, updated_at) VALUES (?, ?, ?)',
+    DEFAULT_USER_ID,
+    nowIso()
+  );
+  return cGet<IntimacyRow>('SELECT * FROM intimacy_state WHERE companion_id = ?')!;
 }
 
 /* ------------------------------------------------------------------ */
@@ -47,7 +53,7 @@ export function stageMaxLevel(stage: number): Level {
 }
 
 export function getLevel(): { level: Level; stageMax: Level; effective: Level } {
-  const row = dbGet<{ level: number }>('SELECT * FROM intimacy_content_level WHERE user_id = ?', DEFAULT_USER_ID);
+  const row = cGet<{ level: number }>('SELECT * FROM intimacy_content_level WHERE companion_id = ?');
   const raw = Number(row?.level ?? Number(getSetting('intimacy_level') || 0));
   const level = (clamp(raw, 0, 3) | 0) as Level;
   const stage = getRelationshipState().stage;
@@ -57,9 +63,10 @@ export function getLevel(): { level: Level; stageMax: Level; effective: Level } 
 
 export function setLevel(level: number): void {
   const lv = clamp(Math.round(level), 0, 3);
-  dbRun(
-    `INSERT INTO intimacy_content_level (user_id, level, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at`,
+  // v14 起 intimacy_content_level 主键为 companion_id + ON CONFLICT(companion_id)
+  cRun(
+    `INSERT INTO intimacy_content_level (companion_id, user_id, level, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(companion_id) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at`,
     DEFAULT_USER_ID, lv, nowIso()
   );
   setSetting('intimacy_level', String(lv));
@@ -88,7 +95,7 @@ export function startAftercare(quality: 'good' | 'neutral' | 'ignored' = 'neutra
   return tx(() => {
     const s = getIntimacy();
     dbRun(
-      'UPDATE intimacy_state SET aftercare_until = ?, aftercare_state = ?, last_intimacy_at = ?, sexual_satisfaction = ?, sexual_stress = ?, libido = ?, intimacy_need = ?, updated_at = ? WHERE user_id = ?',
+      'UPDATE intimacy_state SET aftercare_until = ?, aftercare_state = ?, last_intimacy_at = ?, sexual_satisfaction = ?, sexual_stress = ?, libido = ?, intimacy_need = ?, updated_at = ? WHERE companion_id = ?',
       new Date(Date.now() + minutes * 60000).toISOString(),
       state,
       nowIso(),
@@ -97,14 +104,14 @@ export function startAftercare(quality: 'good' | 'neutral' | 'ignored' = 'neutra
       round1(clamp(s.libido - 25, 0, 100)),
       round1(clamp(s.intimacy_need - (quality === 'good' ? 25 : quality === 'neutral' ? 12 : 0), 0, 100)),
       nowIso(),
-      DEFAULT_USER_ID
+      cId()
     );
     const p = getPsychology();
     dbRun(
-      'UPDATE agent_psychology SET security = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
+      'UPDATE agent_psychology SET security = ?, loneliness = ?, updated_at = ? WHERE companion_id = ?',
       round1(clamp(p.security + (quality === 'good' ? 5 : quality === 'ignored' ? -8 : 1), 0, 100)),
       round1(clamp(p.loneliness - (quality === 'good' ? 5 : 0), 0, 100)),
-      nowIso(), DEFAULT_USER_ID
+      nowIso(), cId()
     );
     const rel = getRelationshipState();
     if (quality === 'ignored') {
@@ -115,8 +122,8 @@ export function startAftercare(quality: 'good' | 'neutral' | 'ignored' = 'neutra
     }
     addBankEntry(quality === 'good' ? 3 : quality === 'ignored' ? -3 : 1, '亲密后的关怀', quality === 'good' ? '亲密之后有确认感受与陪伴' : quality === 'ignored' ? '亲密之后感到被忽视' : '亲密之后得到基本回应');
     // session_id 暂为 NULL：当前没有"活跃亲密会话"概念（intimacy_state.active_session_id 已在 v8 移除），列保留待将来关联
-    dbRun(
-      'INSERT INTO intimacy_aftercare (user_id, session_id, aftercare_quality, user_response, agent_state, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    cRun(
+      'INSERT INTO intimacy_aftercare (companion_id, user_id, session_id, aftercare_quality, user_response, agent_state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       DEFAULT_USER_ID, null, quality, null, state, nowIso()
     );
     logRelationship('milestone', `亲密互动后的关怀状态：${quality}`, null, state, '亲密系统');
@@ -130,7 +137,7 @@ export function inAftercare(): boolean {
 }
 
 export function listAftercare(limit = 20) {
-  return dbAll<IntimacyAftercareRow>('SELECT * FROM intimacy_aftercare WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
+  return cAll<IntimacyAftercareRow>('SELECT * FROM intimacy_aftercare WHERE companion_id = ? ORDER BY id DESC LIMIT ?', limit);
 }
 
 /* ------------------------------------------------------------------ */
@@ -169,8 +176,8 @@ export function advanceIntimacy(): void {
   stress = clamp(stress, 0, 100);
 
   dbRun(
-    'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_stress = ?, updated_at = ? WHERE user_id = ?',
-    round1(libido), round1(need), round1(stress), nowIso(), DEFAULT_USER_ID
+    'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_stress = ?, updated_at = ? WHERE companion_id = ?',
+    round1(libido), round1(need), round1(stress), nowIso(), cId()
   );
 }
 
@@ -181,13 +188,13 @@ export function applyIntimacyDelta(d: Record<string, number>): void {
   const s = getIntimacy();
   const delta = (key: string) => clamp(Number(d[key]) || 0, -5, 5);
   dbRun(
-    'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_satisfaction = ?, sexual_stress = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_satisfaction = ?, sexual_stress = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(s.libido + delta('libido'), 0, 100)),
     round1(clamp(s.intimacy_need + delta('intimacy_need'), 0, 100)),
     round1(clamp(s.sexual_satisfaction + delta('sexual_satisfaction'), 0, 100)),
     round1(clamp(s.sexual_stress + delta('sexual_stress'), 0, 100)),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }
 
@@ -248,8 +255,8 @@ export function addPreference(opts: { type: string; content: string; revealed: b
   // 关系阶段没到门槛时，即便请求里标了 revealed 也不能直接算"已揭露"（越权保护）→ 落库为 hidden。
   const revealStage = 2;
   const revealed = opts.revealed && getRelationshipState().stage >= revealStage;
-  dbRun(
-    'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, reveal_stage, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  cRun(
+    'INSERT INTO intimacy_preferences (companion_id, user_id, preference_type, content, reveal_status, reveal_stage, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID,
     opts.type.slice(0, 24),
     opts.content.slice(0, 120),
@@ -262,7 +269,7 @@ export function addPreference(opts: { type: string; content: string; revealed: b
 /** 删除一条亲密偏好；返回是否真的删了一行 */
 export function deletePreference(id: number): boolean {
   if (!Number.isInteger(id) || id <= 0) return false;
-  const r = dbRun('DELETE FROM intimacy_preferences WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  const r = dbRun('DELETE FROM intimacy_preferences WHERE id = ? AND companion_id = ?', id, cId());
   return r.changes > 0;
 }
 
@@ -270,10 +277,10 @@ export function deletePreference(id: number): boolean {
 export function logAftercareResponse(id: number, response: string): boolean {
   if (!Number.isInteger(id) || id <= 0) return false;
   const r = dbRun(
-    'UPDATE intimacy_aftercare SET user_response = ? WHERE id = ? AND user_id = ?',
+    'UPDATE intimacy_aftercare SET user_response = ? WHERE id = ? AND companion_id = ?',
     response.slice(0, 120),
     id,
-    DEFAULT_USER_ID
+    cId()
   );
   return r.changes > 0;
 }
@@ -286,12 +293,12 @@ export function setIntimacyState(v: Partial<{ libido: number; intimacy_need: num
     return isFinite(n) ? n : fallback;
   };
   dbRun(
-    'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_satisfaction = ?, sexual_stress = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE intimacy_state SET libido = ?, intimacy_need = ?, sexual_satisfaction = ?, sexual_stress = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(numOr(v.libido, cur.libido), 0, 100)),
     round1(clamp(numOr(v.intimacy_need, cur.intimacy_need), 0, 100)),
     round1(clamp(numOr(v.sexual_satisfaction, cur.sexual_satisfaction), 0, 100)),
     round1(clamp(numOr(v.sexual_stress, cur.sexual_stress), 0, 100)),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }

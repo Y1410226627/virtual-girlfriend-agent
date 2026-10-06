@@ -1,5 +1,5 @@
 // 设置：模型档案（随时切换 + 自动备用链）/ 主动频率 / 场景 / 隐私
-import { getAllSettings, getSetting, setSetting, llmConfig, wipeAllData, dbAll, bumpCounter, DEFAULT_USER_ID, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient, customModeOn } from '@/lib/db';
+import { getAllSettings, getSetting, setSetting, llmConfig, wipeAllData, cAll, bumpCounter, SECRET_SETTING_KEYS, looksLikeMask, maskSecret, maskSettingsForClient, customModeOn } from '@/lib/db';
 import { setPersonaField, setUserName, getPersona, getRelationshipState, saveRelationshipState, logRelationship } from '@/lib/relationship';
 import { clamp } from '@/lib/utils';
 import { STAGES } from '@/lib/stages';
@@ -430,7 +430,7 @@ export async function POST(req: Request) {
       'conflict_logs',
       'proactive_messages',
     ]) {
-      data[t] = dbAll(`SELECT * FROM ${t} WHERE user_id = ?`, DEFAULT_USER_ID);
+      data[t] = cAll(`SELECT * FROM ${t} WHERE companion_id = ?`);
     }
     return Response.json({ ok: true, data });
   }

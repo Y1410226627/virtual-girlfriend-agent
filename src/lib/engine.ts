@@ -1,5 +1,6 @@
 // 聊天引擎：上下文组装 + 回复生成（流式）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, numSetting, getSetting } from './db';
+import { dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, numSetting, getSetting, cAll, cGet, cRun } from './db';
+import { cId } from './companion-context';
 import { nowIso, truncateMiddle, hoursSince, errMsg } from './utils';
 import { chat, chatStream, contentText, IMAGE_PLACEHOLDER, type ChatMessage, type MessageContentPart } from './llm';
 import { buildReplyMessages, buildHints } from './prompts';
@@ -52,9 +53,9 @@ export function insertMessage(
   content: string,
   opts: { isProactive?: boolean; emotion?: string; meta?: unknown } = {}
 ): number {
-  const { lastInsertRowid } = dbRun(
-    `INSERT INTO messages (user_id, role, content, emotion, is_proactive, read_at, meta, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  const { lastInsertRowid } = cRun(
+    `INSERT INTO messages (companion_id, user_id, role, content, emotion, is_proactive, read_at, meta, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     DEFAULT_USER_ID,
     role,
     content,
@@ -74,44 +75,41 @@ export function saveAssistantMessage(content: string, opts: { isProactive?: bool
 /** 删除一条消息（生成失败时把刚落库的用户消息撤掉，避免留下"孤儿消息"） */
 export function deleteMessageById(id: number): void {
   if (!Number.isFinite(id) || id <= 0) return;
-  dbRun('DELETE FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  dbRun('DELETE FROM messages WHERE id = ? AND companion_id = ?', id, cId());
 }
 
 export function listMessages(opts: { afterId?: number; limit?: number } = {}): MessageRow[] {
   const { afterId, limit = 60 } = opts;
   if (afterId) {
-    return dbAll<MessageRow>(
-      'SELECT * FROM messages WHERE user_id = ? AND id > ? ORDER BY id ASC LIMIT ?',
-      DEFAULT_USER_ID,
+    return cAll<MessageRow>(
+      'SELECT * FROM messages WHERE companion_id = ? AND id > ? ORDER BY id ASC LIMIT ?',
       afterId,
       limit
     );
   }
-  return dbAll<MessageRow>(
-    'SELECT * FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  return cAll<MessageRow>(
+    'SELECT * FROM messages WHERE companion_id = ? ORDER BY id DESC LIMIT ?',
     limit
   ).reverse();
 }
 
 export function messageCount(): number {
-  const r = dbGet<{ c: number }>('SELECT COUNT(*) AS c FROM messages WHERE user_id = ?', DEFAULT_USER_ID);
+  const r = cGet<{ c: number }>('SELECT COUNT(*) AS c FROM messages WHERE companion_id = ?');
   return Number(r?.c || 0);
 }
 
 /** 最后一条消息（重新生成时用来校验角色） */
 export function getLastMessage(): MessageRow | null {
   return (
-    dbGet<MessageRow>('SELECT * FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1', DEFAULT_USER_ID) || null
+    cGet<MessageRow>('SELECT * FROM messages WHERE companion_id = ? ORDER BY id DESC LIMIT 1') || null
   );
 }
 
 /** 指定消息之前最近的一条用户消息（重新生成时作为内容，不重复保存） */
 export function getLastUserMessageBefore(id: number): MessageRow | null {
   return (
-    dbGet<MessageRow>(
-      "SELECT * FROM messages WHERE user_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1",
-      DEFAULT_USER_ID,
+    cGet<MessageRow>(
+      "SELECT * FROM messages WHERE companion_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1",
       id
     ) || null
   );
@@ -120,14 +118,14 @@ export function getLastUserMessageBefore(id: number): MessageRow | null {
 /** 删除引用了某条消息的主动消息记录（重新生成时清理它这条回复） */
 export function deleteProactiveMessagesByMessageId(id: number): void {
   if (!Number.isFinite(id) || id <= 0) return;
-  dbRun('DELETE FROM proactive_messages WHERE user_id = ? AND message_id = ?', DEFAULT_USER_ID, id);
+  dbRun('DELETE FROM proactive_messages WHERE companion_id = ? AND message_id = ?', cId(), id);
 }
 
 export function markAssistantMessagesRead(): void {
   dbRun(
-    "UPDATE messages SET read_at = ? WHERE user_id = ? AND role = 'assistant' AND read_at IS NULL",
+    "UPDATE messages SET read_at = ? WHERE companion_id = ? AND role = 'assistant' AND read_at IS NULL",
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }
 
@@ -141,9 +139,8 @@ export function recentMessagesForPrompt(limit?: number): ChatMessage[] {
   // 先多取候选（limit*3，上限 120），过滤出 user/assistant 后再取最近 limit 条：
   // 主动消息 / 系统消息不再挤占额度，保证拿到的是真实对话轮。
   const candidateLimit = Math.min(120, Math.max(n * 3, n));
-  const rows = dbAll<MessageRow>(
-    'SELECT role, content, is_proactive, meta, created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  const rows = cAll<MessageRow>(
+    'SELECT role, content, is_proactive, meta, created_at FROM messages WHERE companion_id = ? ORDER BY id DESC LIMIT ?',
     candidateLimit
   );
   return rows
@@ -164,10 +161,9 @@ export function recentMessagesForPrompt(limit?: number): ChatMessage[] {
 /** 读取某条用户消息 meta 里记录的图片相对路径（重新生成时用它还原图片上下文） */
 function readUserMessageImages(userMessageId: number | null | undefined): string[] {
   if (!userMessageId) return [];
-  const row = dbGet<{ meta: string | null }>(
-    'SELECT meta FROM messages WHERE id = ? AND user_id = ?',
-    userMessageId,
-    DEFAULT_USER_ID
+  const row = cGet<{ meta: string | null }>(
+    'SELECT meta FROM messages WHERE companion_id = ? AND id = ?',
+    userMessageId
   );
   return parseMetaImages(row?.meta);
 }
@@ -207,9 +203,8 @@ export function withImagesOnLastUserMessage(
 
 /** 从她最近说过的话里，抽出用过的括号动作，避免反复用同一批描写（最近的排在最前） */
 export function recentActionPhrases(limit = 10): string[] {
-  const rows = dbAll<{ content: string }>(
-    "SELECT content FROM messages WHERE user_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 20",
-    DEFAULT_USER_ID
+  const rows = cAll<{ content: string }>(
+    "SELECT content FROM messages WHERE companion_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 20"
   );
   const seen: string[] = [];
   for (const r of rows) {
@@ -343,9 +338,8 @@ export function isFirstMeeting(): boolean {
 
 /** 她最近说过的原话（用于查重，避免复读） */
 export function recentReplies(limit = 6): string[] {
-  return dbAll<{ content: string }>(
-    "SELECT content FROM messages WHERE user_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT ?",
-    DEFAULT_USER_ID,
+  return cAll<{ content: string }>(
+    "SELECT content FROM messages WHERE companion_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT ?",
     limit
   ).map((r) => String(r.content || ''));
 }
@@ -377,9 +371,8 @@ interface SceneDetectionExt {
 
 /** 读取场景过期时间（readRelationshipState 不含该列，单独查一次） */
 function readSceneExpiry(): string | null {
-  const row = dbGet<{ scene_expires_at: string | null }>(
-    'SELECT scene_expires_at FROM relationship_state WHERE user_id = ?',
-    DEFAULT_USER_ID
+  const row = cGet<{ scene_expires_at: string | null }>(
+    'SELECT scene_expires_at FROM relationship_state WHERE companion_id = ?'
   );
   return row?.scene_expires_at ?? null;
 }
@@ -464,11 +457,11 @@ export function commitScene(update: SceneUpdate): void {
   saveRelationshipState(rel);
   // saveRelationshipState 不写 TTL 三列，这里单独补写
   dbRun(
-    'UPDATE relationship_state SET scene_confidence = ?, scene_source = ?, scene_expires_at = ? WHERE user_id = ?',
+    'UPDATE relationship_state SET scene_confidence = ?, scene_source = ?, scene_expires_at = ? WHERE companion_id = ?',
     update.confidence,
     update.source,
     update.expiresAt,
-    DEFAULT_USER_ID
+    cId()
   );
 }
 

@@ -1,5 +1,6 @@
 // 冲突-修复机制：真实恋爱必然有冲突，不能只甜不吵
-import { dbAll, dbRun, dbGet, tx, DEFAULT_USER_ID } from './db';
+import { tx, DEFAULT_USER_ID, dbRun, cRun, cGet, cAll } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, round1 } from './utils';
 import { getRelationshipState, saveRelationshipState, logRelationship } from './relationship';
 import { addBankEntry, tensionEffectGuide } from './emotionalBank';
@@ -30,14 +31,16 @@ function recomputeConflictState(tension: number): string {
 
 /** 批量关闭未解决的冲突（修复时全部结清；自然淡出时标记 faded） */
 function closeOpenConflicts(status: 'repaired' | 'faded', tensionAfter: number, quality?: string): number {
+  // UPDATE 的 companion_id 占位符语法上只能排在 SET 之后，无法享受 cRun 的「首参注入」，
+  // 故用 dbRun + 显式 cId() 放在正确位置（SELECT/INSERT 才用 cAll/cGet/cRun 的首参注入约定）
   const r = dbRun(
     `UPDATE conflict_logs SET status = ?, resolved_at = ?, tension_after = ?, repair_quality = COALESCE(?, repair_quality)
-     WHERE user_id = ? AND status = 'open'`,
+     WHERE companion_id = ? AND status = 'open'`,
     status,
     nowIso(),
     round1(tensionAfter),
     quality ?? null,
-    DEFAULT_USER_ID
+    cId()
   );
   return Number(r.changes || 0);
 }
@@ -59,9 +62,9 @@ export function registerConflict(type: ConflictType, description: string): void 
   // 余额仍只由 addBankEntry 这一个记账点修改，不在这里重复改。
   tx(() => {
     saveRelationshipState(s);
-    dbRun(
-      `INSERT INTO conflict_logs (user_id, type, status, description, tension_at_start, started_at)
-       VALUES (?, ?, 'open', ?, ?, ?)`,
+    cRun(
+      `INSERT INTO conflict_logs (companion_id, user_id, type, status, description, tension_at_start, started_at)
+       VALUES (?, ?, ?, 'open', ?, ?, ?)`,
       DEFAULT_USER_ID,
       type,
       description,
@@ -110,13 +113,12 @@ export function registerRepair(quality: RepairQuality, description: string): voi
 }
 
 export function listConflicts(limit = 30): ConflictRow[] {
-  return dbAll<ConflictRow>('SELECT * FROM conflict_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
+  return cAll<ConflictRow>('SELECT * FROM conflict_logs WHERE companion_id = ? ORDER BY id DESC LIMIT ?', limit);
 }
 
 export function openConflictCount(): number {
-  const r = dbGet<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM conflict_logs WHERE user_id = ? AND status = 'open'",
-    DEFAULT_USER_ID
+  const r = cGet<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM conflict_logs WHERE companion_id = ? AND status = 'open'"
   );
   return Number(r?.c || 0);
 }
@@ -139,9 +141,8 @@ export function fadeTension(delta = -1): void {
  */
 export function conflictBehaviorGuide(): string {
   const s = getRelationshipState();
-  const a = dbGet<{ anxiety: number; avoidance: number }>(
-    'SELECT anxiety, avoidance FROM attachment_state WHERE user_id = ?',
-    DEFAULT_USER_ID
+  const a = cGet<{ anxiety: number; avoidance: number }>(
+    'SELECT anxiety, avoidance FROM attachment_state WHERE companion_id = ?'
   );
   const style = attachmentStyleOf(Number(a?.anxiety ?? 30), Number(a?.avoidance ?? 30));
   const base = tensionEffectGuide(s.unresolved_tension, s.conflict_state);

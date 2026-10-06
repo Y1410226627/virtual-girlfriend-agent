@@ -9,7 +9,7 @@ import { conflictBehaviorGuide, openConflictCount } from './conflict';
 import { memoriesByType, stableFacts, dailySummaryBlock } from './memory';
 import { ATTACHMENT_STYLES, attachmentStyleOf } from './types';
 import { round1, humanTime, hoursSince, localTimeStr, localDateStr, truncate } from './utils';
-import { dbAll, DEFAULT_USER_ID, getSetting } from './db';
+import { cAll, getSetting } from './db';
 import { sceneBlock, type Scene } from './scene';
 import { stickerPromptBlock } from './stickers';
 import { lifePromptBlock, profilePromptBlock, preferencePromptBlock } from './life';
@@ -116,9 +116,8 @@ export function buildReplySystemPrompt(
         ? `现在是 ${localDateStr()} ${localTimeStr()}，你们上次说话是${humanTime(rel.last_interaction_at)}。`
         : `现在是 ${localDateStr()} ${localTimeStr()}，你们正在连续聊天。`;
 
-  const events = dbAll<{ event_date: string; kind: string; title: string }>(
-    'SELECT * FROM events WHERE user_id = ? AND (event_date >= ? OR repeat_yearly = 1) ORDER BY event_date ASC LIMIT 5',
-    DEFAULT_USER_ID,
+  const events = cAll<{ event_date: string; kind: string; title: string }>(
+    'SELECT * FROM events WHERE companion_id = ? AND (event_date >= ? OR repeat_yearly = 1) ORDER BY event_date ASC LIMIT 5',
     localDateStr()
   );
   const eventBlock = events.length

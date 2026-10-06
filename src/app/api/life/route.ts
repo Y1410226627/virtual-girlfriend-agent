@@ -1,5 +1,5 @@
 // 她的世界：健康 / 心理 / 位置 / 活动 / 日常事件 / 档案里逐步揭露的信息 / 共享世界
-import { dbAll, DEFAULT_USER_ID, getSetting, setSetting } from '@/lib/db';
+import { cAll, getSetting, setSetting } from '@/lib/db';
 import { round1, clamp, calendarDaysBetween } from '@/lib/utils';
 import {
   ensureLife,
@@ -144,7 +144,7 @@ export async function GET(req: Request) {
           }
         : null;
     })(),
-    weeklySnapshots: dbAll<WeeklySnapshotRow>('SELECT week, state_json, created_at FROM world_weekly_snapshots WHERE user_id = ? ORDER BY week DESC LIMIT 8', DEFAULT_USER_ID),
+    weeklySnapshots: cAll<WeeklySnapshotRow>('SELECT week, state_json, created_at FROM world_weekly_snapshots WHERE companion_id = ? ORDER BY week DESC LIMIT 8'),
     settings: {
       lifeEnabled: getSetting('life_enabled') === 'true',
       cycleEnabled: getSetting('cycle_enabled') === 'true',

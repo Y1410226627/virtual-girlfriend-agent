@@ -1,6 +1,7 @@
 // 记忆系统：向量检索 + 关键词/重要度/新鲜度/阶段相关度评分 + 去重 + 遗忘 + 摘要
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID, numSetting } from './db';
+import { dbRun, tx, DEFAULT_USER_ID, numSetting, cAll, cGet, cRun } from './db';
 import { cosine, nowIso, daysSince, clamp, truncate, errMsg } from './utils';
+import { cId } from './companion-context';
 import { embed, embedOne } from './llm';
 import type { MemoryRow, MessageRow, MemoryUpdate } from './types';
 import { getRelationshipState } from './relationship';
@@ -81,9 +82,8 @@ function writeMemorySync(
 
   // ---- P1-20：有事实键时以事实键判重（同一事实换说法 → 覆盖旧条，保留历史版本） ----
   if (factKey) {
-    const sameFact = dbAll<MemoryRow>(
-      `SELECT * FROM memories WHERE user_id = ? AND status = 'active' AND fact_key = ? ORDER BY id DESC LIMIT 20`,
-      DEFAULT_USER_ID,
+    const sameFact = cAll<MemoryRow>(
+      `SELECT * FROM memories WHERE companion_id = ? AND status = 'active' AND fact_key = ? ORDER BY id DESC LIMIT 20`,
       factKey
     );
     const target = sameFact[0];
@@ -92,9 +92,9 @@ function writeMemorySync(
       dbRun('UPDATE memories SET last_accessed_at = ?, access_count = access_count + 1 WHERE id = ?', now, target.id);
       return target.id;
     }
-    const { lastInsertRowid: id } = dbRun(
-      `INSERT INTO memories (user_id, type, content, importance, emotion, source_message_id, fact_key, created_at, last_accessed_at, expires_at, status, access_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'active', 0)`,
+    const { lastInsertRowid: id } = cRun(
+      `INSERT INTO memories (companion_id, user_id, type, content, importance, emotion, source_message_id, fact_key, created_at, last_accessed_at, expires_at, status, access_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'active', 0)`,
       DEFAULT_USER_ID,
       type,
       content,
@@ -122,12 +122,11 @@ function writeMemorySync(
   }
 
   // ---- 无事实键：原向量相似度路径（保持旧行为） ----
-  const existing = dbAll<MemoryRow & { vector: string | null }>(
+  const existing = cAll<MemoryRow & { vector: string | null }>(
     `SELECT m.*, e.vector AS vector FROM memories m
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE m.user_id = ? AND m.status = 'active' AND m.type = ?
+     WHERE m.companion_id = ? AND m.status = 'active' AND m.type = ?
      ORDER BY m.id DESC LIMIT 200`,
-    DEFAULT_USER_ID,
     type
   );
 
@@ -181,9 +180,9 @@ function writeMemorySync(
     return best.row.id;
   }
 
-  const { lastInsertRowid: id } = dbRun(
-    `INSERT INTO memories (user_id, type, content, importance, emotion, source_message_id, created_at, last_accessed_at, expires_at, status, access_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 'active', 0)`,
+  const { lastInsertRowid: id } = cRun(
+    `INSERT INTO memories (companion_id, user_id, type, content, importance, emotion, source_message_id, created_at, last_accessed_at, expires_at, status, access_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'active', 0)`,
     DEFAULT_USER_ID,
     type,
     content,
@@ -311,9 +310,8 @@ export async function applyMemoryCorrection(
     // 1) 有 old_fact_key → 优先按事实键精确命中目标记忆
     let target: MemoryRow | null = null;
     if (oldKey) {
-      const byKey = dbGet<MemoryRow>(
-        `SELECT * FROM memories WHERE user_id = ? AND status = 'active' AND fact_key = ? ORDER BY id DESC LIMIT 1`,
-        DEFAULT_USER_ID,
+      const byKey = cGet<MemoryRow>(
+        `SELECT * FROM memories WHERE companion_id = ? AND status = 'active' AND fact_key = ? ORDER BY id DESC LIMIT 1`,
         oldKey
       );
       if (byKey) target = byKey;
@@ -321,12 +319,11 @@ export async function applyMemoryCorrection(
 
     // 2) 无键 / 键没命中 → 回退：在 active 语义记忆里找最相近的旧记忆（向量优先，缺失/失败用文本兜底）
     if (!target) {
-      const candidates = dbAll<MemoryRow & { vector: string | null }>(
+      const candidates = cAll<MemoryRow & { vector: string | null }>(
         `SELECT m.*, e.vector AS vector FROM memories m
          LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-         WHERE m.user_id = ? AND m.status = 'active' AND m.type = 'semantic'
-         ORDER BY m.id DESC LIMIT 400`,
-        DEFAULT_USER_ID
+         WHERE m.companion_id = ? AND m.status = 'active' AND m.type = 'semantic'
+         ORDER BY m.id DESC LIMIT 400`
       );
 
       let best: { row: MemoryRow; sim: number } | null = null;
@@ -343,9 +340,9 @@ export async function applyMemoryCorrection(
     }
 
     // 3) 插入新的正确记忆（importance 8；沿用 old_fact_key，保持该事实的稳定标识）
-    const { lastInsertRowid: newId } = dbRun(
-      `INSERT INTO memories (user_id, type, content, importance, emotion, source_message_id, fact_key, created_at, last_accessed_at, expires_at, status, access_count)
-       VALUES (?, 'semantic', ?, 8, NULL, ?, ?, ?, NULL, NULL, 'active', 0)`,
+    const { lastInsertRowid: newId } = cRun(
+      `INSERT INTO memories (companion_id, user_id, type, content, importance, emotion, source_message_id, fact_key, created_at, last_accessed_at, expires_at, status, access_count)
+       VALUES (?, ?, 'semantic', ?, 8, NULL, ?, ?, ?, NULL, NULL, 'active', 0)`,
       DEFAULT_USER_ID,
       fact,
       sourceMessageId ?? null,
@@ -431,20 +428,19 @@ export async function retrieveMemories(
 
   const stage = getRelationshipState().stage;
 
-  const rows = dbAll<MemoryRow & { vector: string | null }>(
+  const rows = cAll<MemoryRow & { vector: string | null }>(
     `SELECT m.*, e.vector AS vector FROM memories m
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE m.user_id = ? AND m.status = 'active'
+     WHERE m.companion_id = ? AND m.status = 'active'
        AND (m.expires_at IS NULL OR m.expires_at > ?)
        AND (
-         m.id IN (SELECT id FROM memories WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 600)
+         m.id IN (SELECT id FROM memories WHERE companion_id = ? AND status = 'active' ORDER BY id DESC LIMIT 600)
          OR m.importance >= 7
          OR (m.last_accessed_at IS NOT NULL AND m.last_accessed_at > ?)
        )
      ORDER BY m.id DESC LIMIT 1500`,
-    DEFAULT_USER_ID,
     nowIso(),
-    DEFAULT_USER_ID,
+    cId(),
     new Date(Date.now() - 30 * 86400000).toISOString()
   );
 
@@ -504,10 +500,9 @@ export async function retrieveMemories(
 /** 与当前话题相关的记忆（不做向量，纯类型筛选，用于关系/依恋记忆注入） */
 export function memoriesByType(types: string[], limit = 6): MemoryRow[] {
   const placeholders = types.map(() => '?').join(',');
-  return dbAll<MemoryRow>(
-    `SELECT * FROM memories WHERE user_id = ? AND status = 'active' AND type IN (${placeholders})
+  return cAll<MemoryRow>(
+    `SELECT * FROM memories WHERE companion_id = ? AND status = 'active' AND type IN (${placeholders})
      ORDER BY importance DESC, id DESC LIMIT ?`,
-    DEFAULT_USER_ID,
     ...types,
     limit
   );
@@ -518,10 +513,9 @@ export function memoriesByType(types: string[], limit = 6): MemoryRow[] {
  * 与"按当前话题检索"互补——保证无论聊什么，这些事永远在她的脑子里，不会重复问。
  */
 export function stableFacts(limit = 12): MemoryRow[] {
-  return dbAll<MemoryRow>(
-    `SELECT * FROM memories WHERE user_id = ? AND status = 'active' AND type = 'semantic' AND importance >= 5
+  return cAll<MemoryRow>(
+    `SELECT * FROM memories WHERE companion_id = ? AND status = 'active' AND type = 'semantic' AND importance >= 5
      ORDER BY importance DESC, id DESC LIMIT ?`,
-    DEFAULT_USER_ID,
     limit
   );
 }
@@ -547,17 +541,17 @@ export function formatMemoryBlock(list: MemoryRow[]): string {
 /** 低重要度且 30 天未检索 → 归档；过期的 → 归档 */
 export function forgetSweep(): number {
   const { changes: c1 } = dbRun(
-    `UPDATE memories SET status = 'archived' WHERE user_id = ? AND status = 'active'
+    `UPDATE memories SET status = 'archived' WHERE companion_id = ? AND status = 'active'
        AND importance <= 3
        AND (last_accessed_at IS NULL OR last_accessed_at < ?)
        AND created_at < ?`,
-    DEFAULT_USER_ID,
+    cId(),
     new Date(Date.now() - 30 * 86400000).toISOString(),
     new Date(Date.now() - 30 * 86400000).toISOString()
   );
   const { changes: c2 } = dbRun(
-    `UPDATE memories SET status = 'archived' WHERE user_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at < ?`,
-    DEFAULT_USER_ID,
+    `UPDATE memories SET status = 'archived' WHERE companion_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at < ?`,
+    cId(),
     nowIso()
   );
   return c1 + c2;
@@ -567,24 +561,22 @@ export function forgetSweep(): number {
 export function listMemories(opts: { type?: string; status?: string; limit?: number } = {}): MemoryRow[] {
   const { type, status = 'active', limit = 300 } = opts;
   if (type) {
-    return dbAll<MemoryRow>(
-      'SELECT * FROM memories WHERE user_id = ? AND status = ? AND type = ? ORDER BY created_at DESC LIMIT ?',
-      DEFAULT_USER_ID,
+    return cAll<MemoryRow>(
+      'SELECT * FROM memories WHERE companion_id = ? AND status = ? AND type = ? ORDER BY created_at DESC LIMIT ?',
       status,
       type,
       limit
     );
   }
-  return dbAll<MemoryRow>(
-    'SELECT * FROM memories WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  return cAll<MemoryRow>(
+    'SELECT * FROM memories WHERE companion_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?',
     status,
     limit
   );
 }
 
 export function updateMemory(id: number, fields: { content?: string; importance?: number; emotion?: string; status?: string }) {
-  const cur = dbGet<MemoryRow>('SELECT * FROM memories WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  const cur = cGet<MemoryRow>('SELECT * FROM memories WHERE companion_id = ? AND id = ?', id);
   if (!cur) return false;
   dbRun(
     'UPDATE memories SET content = ?, importance = ?, emotion = ?, status = ? WHERE id = ?',
@@ -600,7 +592,7 @@ export function updateMemory(id: number, fields: { content?: string; importance?
 export function deleteMemory(id: number): boolean {
   return tx(() => {
     dbRun('DELETE FROM memory_embeddings WHERE memory_id = ?', id);
-    const { changes } = dbRun('DELETE FROM memories WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+    const { changes } = cRun('DELETE FROM memories WHERE companion_id = ? AND id = ?', id);
     invalidateMemoryVectorCache(id);
     return changes > 0;
   });
@@ -609,16 +601,16 @@ export function deleteMemory(id: number): boolean {
 /** 清空该用户全部记忆及其向量（设置页"重置记忆"用；先删向量再删记忆，同一事务保证原子性） */
 export function wipeAllMemories(): void {
   tx(() => {
-    dbRun('DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)', DEFAULT_USER_ID);
-    dbRun('DELETE FROM memories WHERE user_id = ?', DEFAULT_USER_ID);
+    cRun('DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE companion_id = ?)');
+    cRun('DELETE FROM memories WHERE companion_id = ?');
   });
   clearMemoryVectorCache();
 }
 
 export function createMemoryManually(type: string, content: string, importance = 6, emotion?: string): number {
-  const { lastInsertRowid } = dbRun(
-    `INSERT INTO memories (user_id, type, content, importance, emotion, created_at, status, access_count)
-     VALUES (?, ?, ?, ?, ?, ?, 'active', 0)`,
+  const { lastInsertRowid } = cRun(
+    `INSERT INTO memories (companion_id, user_id, type, content, importance, emotion, created_at, status, access_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0)`,
     DEFAULT_USER_ID,
     type,
     content,
@@ -631,9 +623,10 @@ export function createMemoryManually(type: string, content: string, importance =
 
 /* ---------------------- 每日摘要 ---------------------- */
 export function saveDailySummary(date: string, summary: string, meta?: unknown): void {
-  dbRun(
-    `INSERT INTO daily_summaries (user_id, date, summary, meta, created_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(user_id, date) DO UPDATE SET summary = excluded.summary, meta = excluded.meta, created_at = excluded.created_at`,
+  // v14 起唯一约束为 (companion_id, date) → companion_id 由 cRun 注入（T02：当前伴侣上下文）
+  cRun(
+    `INSERT INTO daily_summaries (companion_id, user_id, date, summary, meta, created_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(companion_id, date) DO UPDATE SET summary = excluded.summary, meta = excluded.meta, created_at = excluded.created_at`,
     DEFAULT_USER_ID,
     date,
     summary,
@@ -643,9 +636,8 @@ export function saveDailySummary(date: string, summary: string, meta?: unknown):
 }
 
 export function listDailySummaries(limit = 60) {
-  return dbAll<DailySummaryRow>(
-    'SELECT * FROM daily_summaries WHERE user_id = ? ORDER BY date DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  return cAll<DailySummaryRow>(
+    'SELECT * FROM daily_summaries WHERE companion_id = ? ORDER BY date DESC LIMIT ?',
     limit
   );
 }
@@ -656,9 +648,8 @@ export function listDailySummaries(limit = 60) {
  * 摘要文本属于数据 → 包在 <DATA> 里。
  */
 export function dailySummaryBlock(days = 2): string {
-  const rows = dbAll<{ date: string; summary: string; created_at: string }>(
-    'SELECT date, summary, created_at FROM daily_summaries WHERE user_id = ? ORDER BY date DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  const rows = cAll<{ date: string; summary: string; created_at: string }>(
+    'SELECT date, summary, created_at FROM daily_summaries WHERE companion_id = ? ORDER BY date DESC LIMIT ?',
     days
   );
   if (!rows.length) return '';
@@ -672,26 +663,22 @@ export function dailySummaryBlock(days = 2): string {
 }
 
 export function recentMessagesForSummary(date: string) {
-  return dbAll<MessageRow & { agent_name: string | null }>(
+  return cAll<MessageRow & { agent_name: string | null }>(
     `SELECT m.*, p.agent_name FROM messages m LEFT JOIN personas p ON p.user_id = m.user_id
-     WHERE m.user_id = ? AND date(m.created_at, 'localtime') = ? ORDER BY m.id ASC`,
-    DEFAULT_USER_ID,
+     WHERE m.companion_id = ? AND date(m.created_at, 'localtime') = ? ORDER BY m.id ASC`,
     date
   );
 }
 
 export function memoryStats() {
-  const rows = dbAll<{ type: string; c: number }>(
-    "SELECT type, COUNT(*) AS c FROM memories WHERE user_id = ? AND status = 'active' GROUP BY type",
-    DEFAULT_USER_ID
+  const rows = cAll<{ type: string; c: number }>(
+    "SELECT type, COUNT(*) AS c FROM memories WHERE companion_id = ? AND status = 'active' GROUP BY type"
   );
-  const total = dbAll<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM memories WHERE user_id = ? AND status = 'active'",
-    DEFAULT_USER_ID
+  const total = cAll<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM memories WHERE companion_id = ? AND status = 'active'"
   )[0];
-  const archived = dbAll<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM memories WHERE user_id = ? AND status = 'archived'",
-    DEFAULT_USER_ID
+  const archived = cAll<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM memories WHERE companion_id = ? AND status = 'archived'"
   )[0];
   return {
     total: Number(total?.c || 0),

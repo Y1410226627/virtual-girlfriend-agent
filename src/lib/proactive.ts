@@ -1,5 +1,5 @@
 // 主动消息：定时任务检查是否该由她先开口（不骚扰、有节制、引用记忆、符合阶段）
-import { dbAll, dbGet, dbRun, getSetting, getCounter, setCounter, bumpCounter, DEFAULT_USER_ID } from './db';
+import { getSetting, getCounter, setCounter, bumpCounter, DEFAULT_USER_ID, dbGet, cRun, cGet, cAll } from './db';
 import { hoursSince, localDateStr, localHour, minutesSince, nowIso, errMsg, truncate } from './utils';
 import { chat } from './llm';
 import { buildProactiveMessages, type ProactiveWhyNow } from './prompts';
@@ -48,9 +48,8 @@ function ritualSlotNow(now: Date = new Date()): 'morning' | 'night' | null {
   );
   if (!hasRitual) return null;
   const today = localDateStr(now);
-  const sent = dbAll<{ created_at: string }>(
-    "SELECT created_at FROM proactive_messages WHERE user_id = ? AND kind = 'ritual' AND date(created_at, 'localtime') = ?",
-    DEFAULT_USER_ID,
+  const sent = cAll<{ created_at: string }>(
+    "SELECT created_at FROM proactive_messages WHERE companion_id = ? AND kind = 'ritual' AND date(created_at, 'localtime') = ?",
     today
   );
   const sentHours = sent.map((s) => new Date(s.created_at).getHours());
@@ -82,9 +81,8 @@ function inQuietHours(now: Date = new Date()): boolean {
 function todayEvent(now: Date = new Date()): EventRow | null {
   const today = localDateStr(now);
   const md = today.slice(5); // MM-DD
-  const rows = dbAll<EventRow>(
-    'SELECT * FROM events WHERE user_id = ? ORDER BY event_date ASC',
-    DEFAULT_USER_ID
+  const rows = cAll<EventRow>(
+    'SELECT * FROM events WHERE companion_id = ? ORDER BY event_date ASC'
   );
   for (const e of rows) {
     const d = String(e.event_date || '');
@@ -96,9 +94,8 @@ function todayEvent(now: Date = new Date()): EventRow | null {
 
 /** 最后一次用户消息之后是否有她的"主动搭话"没被回应（"她的事结束了"这类例行提醒不算） */
 function unansweredProactiveCount(): number {
-  const rows = dbAll<{ message_id: number | null }>(
-    "SELECT message_id FROM proactive_messages WHERE user_id = ? AND kind != 'event_end' ORDER BY id DESC LIMIT 3",
-    DEFAULT_USER_ID
+  const rows = cAll<{ message_id: number | null }>(
+    "SELECT message_id FROM proactive_messages WHERE companion_id = ? AND kind != 'event_end' ORDER BY id DESC LIMIT 3"
   );
   let count = 0;
   for (const p of rows) {
@@ -107,9 +104,8 @@ function unansweredProactiveCount(): number {
       count++;
       continue;
     }
-    const replied = dbGet<{ c: number }>(
-      "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND id > ? AND role = 'user'",
-      DEFAULT_USER_ID,
+    const replied = cGet<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM messages WHERE companion_id = ? AND id > ? AND role = 'user'",
       mid
     );
     if (Number(replied?.c || 0) > 0) break;
@@ -195,9 +191,8 @@ export const GENTLE_CONTEXT_HINT = '他最近好像挺忙的，别太频繁打�
 /** 取最近 N 条主动消息，逐条判定"其后 12 小时内是否有他的回复" */
 export function loadProactiveResponseSamples(limit = 10, now: Date = new Date()): ProactiveResponseSample[] {
   // 与 unansweredProactiveCount 口径一致："她的事结束了"这类例行提醒不需要他回应，不计入样本
-  const rows = dbAll<{ id: number; created_at: string }>(
-    "SELECT id, created_at FROM proactive_messages WHERE user_id = ? AND kind != 'event_end' ORDER BY id DESC LIMIT ?",
-    DEFAULT_USER_ID,
+  const rows = cAll<{ id: number; created_at: string }>(
+    "SELECT id, created_at FROM proactive_messages WHERE companion_id = ? AND kind != 'event_end' ORDER BY id DESC LIMIT ?",
     limit
   );
   const nowMs = now.getTime();
@@ -209,9 +204,8 @@ export function loadProactiveResponseSamples(limit = 10, now: Date = new Date())
       continue;
     }
     const endIso = new Date(sentMs + PROACTIVE_RESPONSE_MATURITY_HOURS * 3600000).toISOString();
-    const reply = dbGet<{ created_at: string }>(
-      "SELECT created_at FROM messages WHERE user_id = ? AND role = 'user' AND created_at > ? AND created_at <= ? ORDER BY created_at ASC LIMIT 1",
-      DEFAULT_USER_ID,
+    const reply = cGet<{ created_at: string }>(
+      "SELECT created_at FROM messages WHERE companion_id = ? AND role = 'user' AND created_at > ? AND created_at <= ? ORDER BY created_at ASC LIMIT 1",
       r.created_at,
       endIso
     );
@@ -492,9 +486,8 @@ export async function tickProactive(force = false): Promise<TickResult> {
   if (expired) {
     const endMs = new Date(expired.expected_end_at || '').getTime();
     const lateMinutes = (Date.now() - endMs) / 60000;
-    const lastAnyMsg = dbGet<{ created_at: string }>(
-      'SELECT created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1',
-      DEFAULT_USER_ID
+    const lastAnyMsg = cGet<{ created_at: string }>(
+      'SELECT created_at FROM messages WHERE companion_id = ? ORDER BY id DESC LIMIT 1'
     );
     const minsSinceMsg = lastAnyMsg ? (Date.now() - new Date(lastAnyMsg.created_at).getTime()) / 60000 : 99999;
     const notifyRetryAfter = getCounter('event_notify_retry_after');
@@ -518,9 +511,8 @@ export async function tickProactive(force = false): Promise<TickResult> {
   }
 
   const event = todayEvent(now);
-  const lastMsg = dbGet<{ created_at: string; role: string }>(
-    'SELECT created_at, role FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1',
-    DEFAULT_USER_ID
+  const lastMsg = cGet<{ created_at: string; role: string }>(
+    'SELECT created_at, role FROM messages WHERE companion_id = ? ORDER BY id DESC LIMIT 1'
   );
   const hours = hoursSince(lastMsg?.created_at || rel.last_interaction_at);
   const dayKey = `proactive_count_${localDateStr(now)}`;
@@ -633,8 +625,8 @@ export async function tickProactive(force = false): Promise<TickResult> {
   if (!content || content.length < 2) return skip('生成内容为空');
 
   const messageId = saveAssistantMessage(content, { isProactive: true });
-  dbRun(
-    `INSERT INTO proactive_messages (user_id, kind, content, message_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+  cRun(
+    `INSERT INTO proactive_messages (companion_id, user_id, kind, content, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
     DEFAULT_USER_ID,
     kind,
     content,
@@ -697,8 +689,8 @@ export async function notifyEventEnd(evt: OngoingEventRow, interrupted = false):
   const text = h.text;
   if (!text || text.length < 2) return null;
   const messageId = saveAssistantMessage(text, { isProactive: true });
-  dbRun(
-    'INSERT INTO proactive_messages (user_id, kind, content, message_id, created_at) VALUES (?, ?, ?, ?, ?)',
+  cRun(
+    'INSERT INTO proactive_messages (companion_id, user_id, kind, content, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, 'event_end', text, messageId, nowIso()
   );
   // 注：结束与 notified_at 由调用方 settleExpiredEvent() 处理（提醒失败时不会误标）
@@ -715,9 +707,8 @@ export function proactiveStatus() {
   const freq = getSetting('proactive_frequency') || 'medium';
   const limits = FREQ_LIMITS[freq] ?? FREQ_LIMITS.medium!;
   const dayKey = `proactive_count_${localDateStr()}`;
-  const rows = dbAll<{ kind: string; content: string; created_at: string }>(
-    'SELECT kind, content, created_at FROM proactive_messages WHERE user_id = ? ORDER BY id DESC LIMIT 10',
-    DEFAULT_USER_ID
+  const rows = cAll<{ kind: string; content: string; created_at: string }>(
+    'SELECT kind, content, created_at FROM proactive_messages WHERE companion_id = ? ORDER BY id DESC LIMIT 10'
   );
   const last = rows[0]?.created_at;
   return {
@@ -735,9 +726,8 @@ export function proactiveStatus() {
 }
 
 export function listProactive(limit = 20) {
-  return dbAll<ProactiveMessageRow>(
-    'SELECT * FROM proactive_messages WHERE user_id = ? ORDER BY id DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  return cAll<ProactiveMessageRow>(
+    'SELECT * FROM proactive_messages WHERE companion_id = ? ORDER BY id DESC LIMIT ?',
     limit
   );
 }

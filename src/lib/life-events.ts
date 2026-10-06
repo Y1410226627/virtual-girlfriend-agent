@@ -1,6 +1,7 @@
 // 生活系统 · 可控事件层：她开始做一件事，用户可以控制它什么时候结束、到期她会主动来说
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbGet, dbRun, DEFAULT_USER_ID, boolSetting } from './db';
+import { dbGet, dbRun, DEFAULT_USER_ID, boolSetting, cGet, cRun } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, localTimeStr, round1 } from './utils';
 import { getHealth, getPsychology, getActivity, getLocation, logLife, isWeekend } from './life-core';
 
@@ -109,20 +110,20 @@ export function applyEventEffects(eventType: string, steps: number): void {
   const h = getHealth();
   const p = getPsychology();
   dbRun(
-    'UPDATE agent_health SET energy = ?, hunger = ?, sleep_quality = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE agent_health SET energy = ?, hunger = ?, sleep_quality = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(h.energy + (eff.energy || 0) * n, 0, 100)),
     round1(clamp(h.hunger + (eff.hunger || 0) * n, 0, 100)),
     round1(clamp(h.sleep_quality + (eff.sleepQ || 0) * n, 0, 100)),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
   dbRun(
-    'UPDATE agent_psychology SET mental_energy = ?, stress = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE agent_psychology SET mental_energy = ?, stress = ?, loneliness = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(p.mental_energy + (eff.me || 0) * n, 0, 100)),
     round1(clamp(p.stress + (eff.stress || 0) * n, 0, 100)),
     round1(clamp(p.loneliness + (eff.loneliness || 0) * n, 0, 100)),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }
 
@@ -205,9 +206,8 @@ export function smartDurationMinutes(eventType: string, activity = '', from: Dat
 }
 
 export function getActiveEvent(): OngoingEventRow | null {
-  const row = dbGet<OngoingEventRow>(
-    'SELECT * FROM ongoing_events WHERE user_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1',
-    DEFAULT_USER_ID
+  const row = cGet<OngoingEventRow>(
+    'SELECT * FROM ongoing_events WHERE companion_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1'
   );
   return row || null;
 }
@@ -222,8 +222,8 @@ export function endOngoingEvent(reason: string, opts: { keepActivity?: boolean }
     const cur = getActivity();
     const post = POST_EVENT_ACTIVITY[evt.event_type] || POST_EVENT_ACTIVITY.other;
     dbRun(
-      'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = NULL, updated_at = ? WHERE user_id = ?',
-      post, evt.event_type === 'sleep' ? 'morning' : 'idle', now, now, DEFAULT_USER_ID
+      'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = NULL, updated_at = ? WHERE companion_id = ?',
+      post, evt.event_type === 'sleep' ? 'morning' : 'idle', now, now, cId()
     );
     logLife('activity', cur.current_activity, post, `事件结束（${reason}）：${evt.activity}`);
   }
@@ -254,8 +254,8 @@ export function registerOngoingEvent(activity: string, opts: { expectedEndText?:
   }
   const expected = parseExpectedEnd(opts.expectedEndText || '', now) || isoAfter(now, smartDurationMinutes(eventType, act, now));
   const iso = now.toISOString();
-  const { lastInsertRowid } = dbRun(
-    'INSERT INTO ongoing_events (user_id, activity, event_type, started_at, expected_end_at, duration_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  const { lastInsertRowid } = cRun(
+    'INSERT INTO ongoing_events (companion_id, user_id, activity, event_type, started_at, expected_end_at, duration_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, act, eventType, iso, expected, 'smart', iso, iso
   );
   logLife('event', '', act, `开始事件：${eventType}，预计 ${localTimeStr(new Date(expected))} 结束`);
@@ -282,7 +282,7 @@ export function setEventExpectedEnd(mode: 'smart' | 'manual', minutes = 0): Ongo
     'UPDATE ongoing_events SET expected_end_at = ?, duration_mode = ?, notified_at = NULL, updated_at = ? WHERE id = ?',
     endIso, mode, nowIso(), evt.id
   );
-  dbRun('UPDATE agent_activity SET expected_end_at = ?, updated_at = ? WHERE user_id = ?', endIso, nowIso(), DEFAULT_USER_ID);
+  dbRun('UPDATE agent_activity SET expected_end_at = ?, updated_at = ? WHERE companion_id = ?', endIso, nowIso(), cId());
   return dbGet<OngoingEventRow>('SELECT * FROM ongoing_events WHERE id = ?', evt.id) || null;
 }
 
@@ -373,21 +373,21 @@ export function applyLocationChange(newLocation: string, reason: string): void {
   if (cur.current_location === loc) return;
   const type = /家|宿舍/.test(loc) ? 'home' : /公司|学校|教室|图书馆|食堂/.test(loc) ? 'school' : /咖啡|店|街|商场|公园|电影院/.test(loc) ? 'out' : 'out';
   dbRun(
-    'UPDATE agent_location SET current_location = ?, location_type = ?, arrived_at = ?, expected_leave_at = NULL, updated_at = ? WHERE user_id = ?',
-    loc, type, nowIso(), nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_location SET current_location = ?, location_type = ?, arrived_at = ?, expected_leave_at = NULL, updated_at = ? WHERE companion_id = ?',
+    loc, type, nowIso(), nowIso(), cId()
   );
   const act = getActivity();
   const newAct = /家|宿舍/.test(loc) ? '刚到家，缓一缓' : `在${loc}`;
   dbRun(
-    'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = NULL, updated_at = ? WHERE user_id = ?',
-    newAct, /家|宿舍/.test(loc) ? 'home' : 'out', nowIso(), nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = NULL, updated_at = ? WHERE companion_id = ?',
+    newAct, /家|宿舍/.test(loc) ? 'home' : 'out', nowIso(), nowIso(), cId()
   );
   logLife('location', cur.current_location, loc, reason || '对话里提到');
   if (act.current_activity) logLife('activity', act.current_activity, newAct, reason || '位置变化');
   // 去某处待着也算一件事，可以控制它什么时候结束
   const evt = registerOngoingEvent(newAct, {});
   if (evt?.expected_end_at) {
-    dbRun('UPDATE agent_activity SET expected_end_at = ?, updated_at = ? WHERE user_id = ?', evt.expected_end_at, nowIso(), DEFAULT_USER_ID);
+    dbRun('UPDATE agent_activity SET expected_end_at = ?, updated_at = ? WHERE companion_id = ?', evt.expected_end_at, nowIso(), cId());
   }
 }
 
@@ -402,8 +402,8 @@ export function applyActivityChange(newActivity: string, expectedEnd: string): v
   else if (!/^刚/.test(act)) expectedIso = parseExpectedEnd(expectedEnd) || isoAfter(new Date(), smartDurationMinutes(eventTypeOf(act), act));
   if (same && cur.expected_end_at === expectedIso) return;
   dbRun(
-    'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = ?, updated_at = ? WHERE user_id = ?',
-    act, activityTypeOfEvent(eventTypeOf(act)), same ? (cur.started_at || nowIso()) : nowIso(), expectedIso, nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = ?, updated_at = ? WHERE companion_id = ?',
+    act, activityTypeOfEvent(eventTypeOf(act)), same ? (cur.started_at || nowIso()) : nowIso(), expectedIso, nowIso(), cId()
   );
   if (!same) logLife('activity', cur.current_activity, act, '对话里提到');
 }
@@ -411,8 +411,8 @@ export function applyActivityChange(newActivity: string, expectedEnd: string): v
 export function addDailyEvent(type: string, content: string, impact: string): void {
   const c = String(content || '').trim();
   if (c.length < 2) return; // "感冒/失眠/加班/搬家"这类两字小事也值得记下来
-  dbRun(
-    'INSERT INTO agent_daily_events (user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?)',
+  cRun(
+    'INSERT INTO agent_daily_events (companion_id, user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, String(type || '生活').slice(0, 12), c.slice(0, 200), JSON.stringify({ note: String(impact || '').slice(0, 120) }), nowIso()
   );
   logLife('daily_event', '', c.slice(0, 60), '对话中发生的小事');

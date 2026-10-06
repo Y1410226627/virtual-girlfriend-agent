@@ -70,3 +70,59 @@ test('P1-35 恢复出厂保留设置；清掉 model_profiles 后播种逻辑可�
   profilesMod.seedProfilesIfEmpty();
   assert.ok(count('model_profiles') > 0, 'profiles 播种逻辑应在清空后重建档案');
 });
+
+// ---- T01：新表纳入 wipeAllData 覆盖；wipe 后重播主伴侣 ----
+const countAll = (table: string): number =>
+  Number(dbMod.dbGet<{ c: number }>(`SELECT COUNT(*) AS c FROM ${table}`)?.c ?? 0);
+
+const NEW_TABLES_NO_USER = [
+  'group_members',
+  'group_messages',
+  'group_runs',
+  'activity_participants',
+  'activity_schedule_items',
+] as const;
+const NEW_TABLES_WITH_USER = [
+  'companion_relations',
+  'companion_events',
+  'groups',
+  'activities',
+] as const;
+
+test('T01 wipeAllData 纳入 10 张新表；wipe 后 companions 只剩主女友(id=1)', () => {
+  const now = new Date().toISOString();
+  // 合成一名非主伴侣（id=2）+ 各类群聊/活动数据，验证会被清掉
+  dbMod.dbRun(
+    `INSERT INTO companions (id, user_id, name, age, status, is_primary, created_at, updated_at)
+     VALUES (2, ?, '合成伴侣', 22, 'girlfriend', 0, ?, ?)`,
+    U, now, now
+  );
+  dbMod.dbRun('INSERT INTO companion_relations (user_id, a_id, b_id, value, updated_at) VALUES (?, 1, 2, 5, ?)', U, now);
+  dbMod.dbRun("INSERT INTO companion_events (user_id, companion_id, kind, summary, created_at) VALUES (?, 2, 'meet', '合成事件', ?)", U, now);
+  dbMod.dbRun('INSERT INTO groups (user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?)', U, '合成群', now, now);
+  dbMod.dbRun('INSERT INTO group_members (group_id, companion_id, joined_at) VALUES (1, 2, ?)', now);
+  dbMod.dbRun("INSERT INTO group_messages (group_id, companion_id, speaker_type, content, created_at) VALUES (1, 2, 'companion', 'hi', ?)", now);
+  dbMod.dbRun('INSERT INTO group_runs (group_id, started_at) VALUES (1, ?)', now);
+  dbMod.dbRun("INSERT INTO activities (user_id, kind, title, created_at, updated_at) VALUES (?, 'online', '合成活动', ?, ?)", U, now, now);
+  dbMod.dbRun('INSERT INTO activity_participants (activity_id, companion_id, joined_at) VALUES (1, 2, ?)', now);
+  dbMod.dbRun("INSERT INTO activity_schedule_items (activity_id, seq, title, created_at) VALUES (1, 1, '见面', ?)", now);
+
+  assert.ok(countAll('companions') >= 2, '造数据后 companions 应有主女友 + 合成伴侣');
+  for (const t of [...NEW_TABLES_WITH_USER, ...NEW_TABLES_NO_USER]) {
+    assert.ok(countAll(t) >= 1, `${t} 造数据后应有数据`);
+  }
+
+  dbMod.wipeAllData(true);
+
+  for (const t of [...NEW_TABLES_WITH_USER, ...NEW_TABLES_NO_USER]) {
+    assert.equal(countAll(t), 0, `${t} 恢复出厂后应为空`);
+  }
+  // wipe 后 seed 重播主伴侣：companions 恰好剩 id=1 那一行
+  const comps = dbMod.dbAll<{ id: number; is_primary: number; age: number }>(
+    'SELECT id, is_primary, age FROM companions'
+  );
+  assert.equal(comps.length, 1, '恢复出厂后 companions 应只剩主女友一行');
+  assert.equal(comps[0]?.id, 1, '主女友 id 应为 1');
+  assert.equal(comps[0]?.is_primary, 1, '主女友 is_primary 应为 1');
+  assert.ok((comps[0]?.age ?? 0) >= 18, '主女友 age 必须 >= 18');
+});

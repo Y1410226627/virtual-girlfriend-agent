@@ -1,8 +1,9 @@
 // 生活系统 · 核心层：表初始化 / 基础读写 / 日志 / 手动直控状态 / 生病与生理周期
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, getSetting, setSetting, setCounter, customModeOn } from './db';
+import { dbRun, DEFAULT_USER_ID, getSetting, setSetting, setCounter, customModeOn, cRun, cGet, cAll } from './db';
 import { clamp, nowIso, round1, safeJson } from './utils';
 import { logRelationship, getPersona } from './relationship';
+import { cId } from './companion-context';
 
 /* ------------------------------------------------------------------ */
 /* 表初始化                                                            */
@@ -15,29 +16,31 @@ export const DEFAULT_CAST: Array<{ name: string; role: string; note: string }> =
 
 export function ensureLife(): void {
   const now = nowIso();
-  dbRun('INSERT OR IGNORE INTO agent_health (user_id, updated_at) VALUES (?, ?)', DEFAULT_USER_ID, now);
-  dbRun('INSERT OR IGNORE INTO agent_psychology (user_id, updated_at) VALUES (?, ?)', DEFAULT_USER_ID, now);
-  dbRun('INSERT OR IGNORE INTO agent_location (user_id, current_location, location_type, arrived_at, updated_at) VALUES (?, ?, ?, ?, ?)', DEFAULT_USER_ID, '家', 'home', now, now);
-  dbRun('INSERT OR IGNORE INTO agent_activity (user_id, current_activity, activity_type, started_at, updated_at) VALUES (?, ?, ?, ?, ?)', DEFAULT_USER_ID, '发呆', 'idle', now, now);
-  dbRun('INSERT OR IGNORE INTO agent_profile (user_id, reveal_status, updated_at) VALUES (?, ?, ?)', DEFAULT_USER_ID, '{}', now);
-  dbRun(
-    'INSERT OR IGNORE INTO shared_world (user_id, shared_places_json, shared_plans_json, shared_rituals_json, shared_items_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+  // v14 起这些单行状态表主键为 companion_id → 显式写入 companion_id（T01：主女友=1），
+  // 否则 INSERT OR IGNORE 因主键缺省会被 rowid 自增成新行（重复行）。
+  cRun('INSERT OR IGNORE INTO agent_health (companion_id, user_id, updated_at) VALUES (?, ?, ?)', DEFAULT_USER_ID, now);
+  cRun('INSERT OR IGNORE INTO agent_psychology (companion_id, user_id, updated_at) VALUES (?, ?, ?)', DEFAULT_USER_ID, now);
+  cRun('INSERT OR IGNORE INTO agent_location (companion_id, user_id, current_location, location_type, arrived_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', DEFAULT_USER_ID, '家', 'home', now, now);
+  cRun('INSERT OR IGNORE INTO agent_activity (companion_id, user_id, current_activity, activity_type, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', DEFAULT_USER_ID, '发呆', 'idle', now, now);
+  cRun('INSERT OR IGNORE INTO agent_profile (companion_id, user_id, reveal_status, updated_at) VALUES (?, ?, ?, ?)', DEFAULT_USER_ID, '{}', now);
+  cRun(
+    'INSERT OR IGNORE INTO shared_world (companion_id, user_id, shared_places_json, shared_plans_json, shared_rituals_json, shared_items_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, '[]', '[]', '[]', '[]', now
   );
   // 她身边的人：只在"从未播种过"时种一次（用户把 cast 清空/删光后，重启不该被种回来）
   if (getSetting('cast_seeded') !== '1') {
     setSetting('cast_seeded', '1');
-    const worldRow = dbGet<{ cast_json: string | null }>('SELECT cast_json FROM shared_world WHERE user_id = ?', DEFAULT_USER_ID);
+    const worldRow = cGet<{ cast_json: string | null }>('SELECT cast_json FROM shared_world WHERE companion_id = ?');
     if (!worldRow || !worldRow.cast_json || safeJson<CastMember[]>(worldRow.cast_json, []).length === 0) {
-      dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(DEFAULT_CAST), nowIso(), DEFAULT_USER_ID);
+      dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(DEFAULT_CAST), nowIso(), cId());
     }
   }
-  dbRun('INSERT OR IGNORE INTO intimacy_state (user_id, updated_at) VALUES (?, ?)', DEFAULT_USER_ID, now);
-  dbRun('INSERT OR IGNORE INTO intimacy_content_level (user_id, level, updated_at) VALUES (?, 0, ?)', DEFAULT_USER_ID, now);
+  cRun('INSERT OR IGNORE INTO intimacy_state (companion_id, user_id, updated_at) VALUES (?, ?, ?)', DEFAULT_USER_ID, now);
+  cRun('INSERT OR IGNORE INTO intimacy_content_level (companion_id, user_id, level, updated_at) VALUES (?, ?, 0, ?)', DEFAULT_USER_ID, now);
   // 只在"从未播种过"时种一次：用户删掉自己的偏好后，重启不该被种回来
   if (getSetting('prefs_seeded') !== '1') {
     setSetting('prefs_seeded', '1');
-    if (!dbGet('SELECT id FROM intimacy_preferences WHERE user_id = ? LIMIT 1', DEFAULT_USER_ID)) {
+    if (!cGet('SELECT id FROM intimacy_preferences WHERE companion_id = ? LIMIT 1')) {
       seedPreferences();
     }
   }
@@ -60,34 +63,34 @@ export interface LocationRow { current_location: string; location_type: string; 
 export interface ActivityRow { current_activity: string; activity_type: string; started_at: string | null; expected_end_at: string | null; updated_at: string }
 
 export function getHealth(): HealthRow {
-  let row = dbGet<HealthRow>('SELECT * FROM agent_health WHERE user_id = ?', DEFAULT_USER_ID);
+  let row = cGet<HealthRow>('SELECT * FROM agent_health WHERE companion_id = ?');
   if (!row) {
     ensureLife();
-    row = dbGet<HealthRow>('SELECT * FROM agent_health WHERE user_id = ?', DEFAULT_USER_ID);
+    row = cGet<HealthRow>('SELECT * FROM agent_health WHERE companion_id = ?');
   }
   return row!;
 }
 export function getPsychology(): PsychRow {
-  let row = dbGet<PsychRow>('SELECT * FROM agent_psychology WHERE user_id = ?', DEFAULT_USER_ID);
+  let row = cGet<PsychRow>('SELECT * FROM agent_psychology WHERE companion_id = ?');
   if (!row) {
     ensureLife();
-    row = dbGet<PsychRow>('SELECT * FROM agent_psychology WHERE user_id = ?', DEFAULT_USER_ID);
+    row = cGet<PsychRow>('SELECT * FROM agent_psychology WHERE companion_id = ?');
   }
   return row!;
 }
 export function getLocation(): LocationRow {
-  let row = dbGet<LocationRow>('SELECT * FROM agent_location WHERE user_id = ?', DEFAULT_USER_ID);
+  let row = cGet<LocationRow>('SELECT * FROM agent_location WHERE companion_id = ?');
   if (!row) {
     ensureLife();
-    row = dbGet<LocationRow>('SELECT * FROM agent_location WHERE user_id = ?', DEFAULT_USER_ID);
+    row = cGet<LocationRow>('SELECT * FROM agent_location WHERE companion_id = ?');
   }
   return row!;
 }
 export function getActivity(): ActivityRow {
-  let row = dbGet<ActivityRow>('SELECT * FROM agent_activity WHERE user_id = ?', DEFAULT_USER_ID);
+  let row = cGet<ActivityRow>('SELECT * FROM agent_activity WHERE companion_id = ?');
   if (!row) {
     ensureLife();
-    row = dbGet<ActivityRow>('SELECT * FROM agent_activity WHERE user_id = ?', DEFAULT_USER_ID);
+    row = cGet<ActivityRow>('SELECT * FROM agent_activity WHERE companion_id = ?');
   }
   return row!;
 }
@@ -114,7 +117,7 @@ export interface ProfileSeed {
 }
 
 export function getProfileSeed(): ProfileSeed {
-  const row = dbGet<Record<string, string | null>>('SELECT * FROM agent_profile WHERE user_id = ?', DEFAULT_USER_ID);
+  const row = cGet<Record<string, string | null>>('SELECT * FROM agent_profile WHERE companion_id = ?');
   if (!row) return { reveal: {} };
   return { ...row, reveal: normalizeRevealMap(safeJson<unknown>(row.reveal_status, {})) };
 }
@@ -128,17 +131,17 @@ export interface DailyEventRow { id: number; event_type: string; content: string
 
 export function listLifeLogs(limit = 60, sinceIso?: string) {
   return sinceIso
-    ? dbAll<LifeLogRow>('SELECT * FROM life_state_logs WHERE user_id = ? AND created_at >= ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, sinceIso, limit)
-    : dbAll<LifeLogRow>('SELECT * FROM life_state_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
+    ? cAll<LifeLogRow>('SELECT * FROM life_state_logs WHERE companion_id = ? AND created_at >= ? ORDER BY id DESC LIMIT ?', sinceIso, limit)
+    : cAll<LifeLogRow>('SELECT * FROM life_state_logs WHERE companion_id = ? ORDER BY id DESC LIMIT ?', limit);
 }
 export function listDailyEvents(limit = 30, sinceIso?: string) {
   return sinceIso
-    ? dbAll<DailyEventRow>('SELECT * FROM agent_daily_events WHERE user_id = ? AND created_at >= ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, sinceIso, limit)
-    : dbAll<DailyEventRow>('SELECT * FROM agent_daily_events WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
+    ? cAll<DailyEventRow>('SELECT * FROM agent_daily_events WHERE companion_id = ? AND created_at >= ? ORDER BY id DESC LIMIT ?', sinceIso, limit)
+    : cAll<DailyEventRow>('SELECT * FROM agent_daily_events WHERE companion_id = ? ORDER BY id DESC LIMIT ?', limit);
 }
 /** 日常事件真实总数（接口返回最多 30 条明细时，用真实总数给前端显示"共 N 条"） */
 export function countDailyEvents(): number {
-  const row = dbGet<{ c: number }>('SELECT COUNT(*) AS c FROM agent_daily_events WHERE user_id = ?', DEFAULT_USER_ID);
+  const row = cGet<{ c: number }>('SELECT COUNT(*) AS c FROM agent_daily_events WHERE companion_id = ?');
   return Number(row?.c || 0);
 }
 
@@ -154,14 +157,14 @@ export function setHealthStates(h: Partial<HealthRow> & { cycle_day?: number }):
     return isFinite(n) ? n : fallback;
   };
   dbRun(
-    'UPDATE agent_health SET energy = ?, sleep_quality = ?, hunger = ?, exercise = ?, cycle_day = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE agent_health SET energy = ?, sleep_quality = ?, hunger = ?, exercise = ?, cycle_day = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(numOr(h.energy, cur.energy), 0, 100)),
     round1(clamp(numOr(h.sleep_quality, cur.sleep_quality), 0, 100)),
     round1(clamp(numOr(h.hunger, cur.hunger), 0, 100)),
     round1(clamp(numOr(h.exercise, cur.exercise), 0, 100)),
     Math.round(clamp(numOr(h.cycle_day, cur.cycle_day), 1, 60)),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }
 
@@ -173,7 +176,7 @@ export function setPsychologyStates(p: Partial<PsychRow>): void {
     return isFinite(n) ? n : fallback;
   };
   dbRun(
-    'UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, security = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, security = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(numOr(p.stress, cur.stress), 0, 100)),
     round1(clamp(numOr(p.loneliness, cur.loneliness), 0, 100)),
     round1(clamp(numOr(p.missing_user, cur.missing_user), 0, 100)),
@@ -181,13 +184,13 @@ export function setPsychologyStates(p: Partial<PsychRow>): void {
     round1(clamp(numOr(p.self_worth, cur.self_worth), 0, 100)),
     round1(clamp(numOr(p.mental_energy, cur.mental_energy), 0, 100)),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }
 
 /** 手动设定档案字段（昵称/年龄/职业/故事等） */
 export function setProfileField(field: string, value: string): void {
-  dbRun(`UPDATE agent_profile SET ${field} = ?, updated_at = ? WHERE user_id = ?`, value, nowIso(), DEFAULT_USER_ID);
+  dbRun(`UPDATE agent_profile SET ${field} = ?, updated_at = ? WHERE companion_id = ?`, value, nowIso(), cId());
 }
 
 /**
@@ -198,17 +201,17 @@ export function hideProfileField(field: string): void {
   const seed = getProfileSeed();
   const reveal = { ...(seed.reveal || {}) };
   reveal[String(field || '')] = 'hidden';
-  dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(reveal), nowIso(), DEFAULT_USER_ID);
+  dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(reveal), nowIso(), cId());
 }
 
 /** 直接结束病程（不经历康复过程） */
 export function clearIllness(): void {
-  dbRun('UPDATE agent_health SET illness = ?, illness_severity = 0, updated_at = ? WHERE user_id = ?', 'none', nowIso(), DEFAULT_USER_ID);
+  dbRun('UPDATE agent_health SET illness = ?, illness_severity = 0, updated_at = ? WHERE companion_id = ?', 'none', nowIso(), cId());
 }
 
 /** 设定生理期开关与当前天数 */
 export function setCycle(enabled: boolean, day: number): void {
-  dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE user_id = ?', enabled ? 1 : 0, Math.round(clamp(day, 1, 60)), DEFAULT_USER_ID);
+  dbRun('UPDATE agent_health SET cycle_enabled = ?, cycle_day = ? WHERE companion_id = ?', enabled ? 1 : 0, Math.round(clamp(day, 1, 60)), cId());
 }
 
 /**
@@ -219,10 +222,10 @@ export function setCycle(enabled: boolean, day: number): void {
 export function setCycleEnabled(enabled: boolean): void {
   const cur = getHealth();
   if (enabled && cur.cycle_enabled !== 1) {
-    dbRun('UPDATE agent_health SET cycle_enabled = 1, cycle_day = 1 WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('UPDATE agent_health SET cycle_enabled = 1, cycle_day = 1 WHERE companion_id = ?', cId());
     return;
   }
-  dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE user_id = ?', enabled ? 1 : 0, DEFAULT_USER_ID);
+  dbRun('UPDATE agent_health SET cycle_enabled = ? WHERE companion_id = ?', enabled ? 1 : 0, cId());
 }
 
 /**
@@ -231,8 +234,8 @@ export function setCycleEnabled(enabled: boolean): void {
  * 缺少它会让离线多天回放产生的日志全部落在"今天"，时间线读起来是错的。
  */
 export function logLife(field: string, oldV: unknown, newV: unknown, reason: string, occurredAt?: string) {
-  dbRun(
-    'INSERT INTO life_state_logs (user_id, field, old_value, new_value, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  cRun(
+    'INSERT INTO life_state_logs (companion_id, user_id, field, old_value, new_value, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, field, String(oldV ?? ''), String(newV ?? ''), reason, occurredAt || nowIso()
   );
 }
@@ -248,8 +251,8 @@ export function startIllness(kind = '感冒', days = 2, startedAt?: string): voi
   const h = getHealth();
   const at = startedAt || nowIso();
   dbRun(
-    'UPDATE agent_health SET illness = ?, illness_start = ?, illness_duration_days = ?, illness_severity = ?, energy = ?, updated_at = ? WHERE user_id = ?',
-    kind, at, round1(days), 40, clamp(h.energy - 25, 5, 100), at, DEFAULT_USER_ID
+    'UPDATE agent_health SET illness = ?, illness_start = ?, illness_duration_days = ?, illness_severity = ?, energy = ?, updated_at = ? WHERE companion_id = ?',
+    kind, at, round1(days), 40, clamp(h.energy - 25, 5, 100), at, cId()
   );
   // 记录发病时间戳：短期内不再重复触发（门限判定见 life-sim）
   setCounter('illness_last_at', new Date(at).getTime() || Date.now());
@@ -266,22 +269,22 @@ export function startIllness(kind = '感冒', days = 2, startedAt?: string): voi
 export function applyCareEvent(kind: 'illness' | 'sick' | 'care' = 'care'): void {
   if (customModeOn()) return;
   const h = getHealth();
-  dbRun('UPDATE agent_health SET cared_count = cared_count + 1, updated_at = ? WHERE user_id = ?', nowIso(), DEFAULT_USER_ID);
+  dbRun('UPDATE agent_health SET cared_count = cared_count + 1, updated_at = ? WHERE companion_id = ?', nowIso(), cId());
   if (h.illness !== 'none') {
     // 被关心 → 恢复加快（最多提前 40%）
     const dur = h.illness_duration_days || 2;
     const newDur = Math.max(0.5, dur * 0.85);
-    dbRun('UPDATE agent_health SET illness_duration_days = ? WHERE user_id = ?', round1(newDur), DEFAULT_USER_ID);
+    dbRun('UPDATE agent_health SET illness_duration_days = ? WHERE companion_id = ?', round1(newDur), cId());
   }
   const psy = getPsychology();
   dbRun(
-    'UPDATE agent_psychology SET security = ?, self_worth = ?, loneliness = ?, missing_user = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE agent_psychology SET security = ?, self_worth = ?, loneliness = ?, missing_user = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(psy.security + 8, 0, 100)),
     round1(clamp(psy.self_worth + 6, 0, 100)),
     round1(clamp(psy.loneliness - 12, 0, 100)),
     round1(clamp(psy.missing_user - 6, 0, 100)),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
   logLife('care', kind, '被关心', '用户关心行为加速恢复、提升安全感');
 }
@@ -348,8 +351,8 @@ export function seedPreferences(): void {
     ['aftercare', '结束后想被抱着说会儿话，不要马上去做别的', 'hidden', 2],
   ];
   for (const [type, content, status, revealStage] of items) {
-    dbRun(
-      'INSERT INTO intimacy_preferences (user_id, preference_type, content, reveal_status, reveal_stage, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    cRun(
+      'INSERT INTO intimacy_preferences (companion_id, user_id, preference_type, content, reveal_status, reveal_stage, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       DEFAULT_USER_ID, type, content, status, revealStage, now
     );
   }

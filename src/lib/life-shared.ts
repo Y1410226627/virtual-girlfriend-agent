@@ -1,6 +1,7 @@
 // 生活系统 · 共享世界层：共享地点/约定/仪式/物品、她身边的人、亲密度偏好、档案揭露
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
+import { dbRun, tx, cGet, cAll } from './db';
+import { cId } from './companion-context';
 import { nowIso, safeJson } from './utils';
 import { getRelationshipState } from './relationship';
 import { logLife, getProfileSeed, type CastMember } from './life-core';
@@ -18,13 +19,13 @@ function newSharedId(): string {
 }
 
 export function getSharedWorld() {
-  const row = dbGet<{
+  const row = cGet<{
     shared_places_json: string | null;
     shared_plans_json: string | null;
     shared_rituals_json: string | null;
     shared_items_json: string | null;
     cast_json: string | null;
-  }>('SELECT * FROM shared_world WHERE user_id = ?', DEFAULT_USER_ID);
+  }>('SELECT * FROM shared_world WHERE companion_id = ?');
   return {
     places: safeJson<SharedEntry[]>(row?.shared_places_json, []),
     plans: safeJson<SharedPlan[]>(row?.shared_plans_json, []),
@@ -50,7 +51,7 @@ export function getCast(): CastMember[] {
 
 /** 设定她身边的人（整组替换 [{name, role, note}]，已在路由侧做校验） */
 export function setCast(cast: CastMember[]): void {
-  dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(cast), nowIso(), DEFAULT_USER_ID);
+  dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(cast), nowIso(), cId());
 }
 
 /* ------------------------------------------------------------------ */
@@ -66,7 +67,7 @@ export function addSharedPlan(content: string, status = 'planning'): void {
     const plans = w.plans || [];
     if (plans.some((p) => String(p.content || p.title || '').trim() === value)) return;
     plans.push({ id: newSharedId(), content: value, status, created_at: nowIso() });
-    dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
+    dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(plans), nowIso(), cId());
     logLife('shared_plan', '', value, '新的共同约定');
   });
 }
@@ -80,7 +81,7 @@ export function addSharedRitual(content: string): void {
     const rituals = w.rituals || [];
     if (rituals.some((p) => String(p.content || p.title || '').trim() === value)) return;
     rituals.push({ content: value, created_at: nowIso() });
-    dbRun('UPDATE shared_world SET shared_rituals_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(rituals), nowIso(), DEFAULT_USER_ID);
+    dbRun('UPDATE shared_world SET shared_rituals_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(rituals), nowIso(), cId());
     logLife('shared_ritual', '', value, '新的共同仪式');
   });
 }
@@ -94,7 +95,7 @@ export function addSharedPlace(content: string): void {
     const places = w.places || [];
     if (places.some((p) => String(p.content || p.title || '').trim() === value)) return;
     places.push({ content: value, created_at: nowIso() });
-    dbRun('UPDATE shared_world SET shared_places_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(places), nowIso(), DEFAULT_USER_ID);
+    dbRun('UPDATE shared_world SET shared_places_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(places), nowIso(), cId());
     logLife('shared_place', '', value, '共同地点');
   });
 }
@@ -107,7 +108,7 @@ export function addSharedItem(content: string): void {
     const items = w.items || [];
     if (items.some((item) => (item.content || item.title) === value)) return;
     items.push({ content: value, created_at: nowIso() });
-    dbRun('UPDATE shared_world SET shared_items_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(items), nowIso(), DEFAULT_USER_ID);
+    dbRun('UPDATE shared_world SET shared_items_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(items), nowIso(), cId());
     logLife('shared_item', '', value, '共同物品或共同记忆');
   });
 }
@@ -132,7 +133,7 @@ export function completePlan(planIdOrIndex: string | number): void {
     if (!target) return;
     target.status = target.status === 'done' ? 'planning' : 'done';
     target.done_at = target.status === 'done' ? nowIso() : null;
-    dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(plans), nowIso(), DEFAULT_USER_ID);
+    dbRun('UPDATE shared_world SET shared_plans_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(plans), nowIso(), cId());
   });
 }
 
@@ -193,7 +194,7 @@ export function revealProfileFields(fields: string[], opts: { force?: boolean } 
     changed = true;
     logLife('profile_reveal', f, '已揭露', opts.force ? '用户手动设为已说' : '在对话中自然说出');
   }
-  if (changed) dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE user_id = ?', JSON.stringify(reveal), nowIso(), DEFAULT_USER_ID);
+  if (changed) dbRun('UPDATE agent_profile SET reveal_status = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(reveal), nowIso(), cId());
 }
 
 /* ------------------------------------------------------------------ */
@@ -218,8 +219,8 @@ export function preferenceRevealStage(row: { reveal_stage?: number | string | nu
 
 export function listPreferences(includeHidden = false) {
   const rows = includeHidden
-    ? dbAll<IntimacyPreferenceRow>('SELECT * FROM intimacy_preferences WHERE user_id = ? ORDER BY id', DEFAULT_USER_ID)
-    : dbAll<IntimacyPreferenceRow>("SELECT * FROM intimacy_preferences WHERE user_id = ? AND reveal_status = 'revealed' ORDER BY id", DEFAULT_USER_ID);
+    ? cAll<IntimacyPreferenceRow>('SELECT * FROM intimacy_preferences WHERE companion_id = ? ORDER BY id')
+    : cAll<IntimacyPreferenceRow>("SELECT * FROM intimacy_preferences WHERE companion_id = ? AND reveal_status = 'revealed' ORDER BY id");
   // 在读取出口统一门槛口径，preferencePromptBlock 等消费方无需各自处理 NULL
   return rows.map((r) => ({ ...r, reveal_stage: preferenceRevealStage(r) }));
 }
@@ -231,9 +232,8 @@ export function revealPreferences(types: string[]): void {
   tx(() => {
     for (const t of types) {
       // 逐行按各自的门槛判定（原来按类型取第一行的 reveal_stage 批量改，同类型多行时门槛判定错位）
-      const rows = dbAll<IntimacyPreferenceRow>(
-        "SELECT id, reveal_stage FROM intimacy_preferences WHERE user_id = ? AND preference_type = ? AND reveal_status != 'revealed'",
-        DEFAULT_USER_ID,
+      const rows = cAll<IntimacyPreferenceRow>(
+        "SELECT id, reveal_stage FROM intimacy_preferences WHERE companion_id = ? AND preference_type = ? AND reveal_status != 'revealed'",
         t
       );
       for (const p of rows) {

@@ -1,6 +1,7 @@
 // 后台抽取流水线：每轮对话后调用 LLM 抽取记忆 / 关系变化 / 情感银行 / 冲突 / 性格信号 / 依恋信号
 // 应用阶段（事务化的本地写入 + 操作账本）已拆到 analysis-apply.ts（analysis.ts → analysis-apply 单向依赖）。
-import { dbAll, dbGet, getCounter, setCounter, boolSetting, customModeOn, DEFAULT_USER_ID } from './db';
+import { getCounter, setCounter, boolSetting, customModeOn, cAll, cGet } from './db';
+import { cId } from './companion-context';
 import { localDateStr, truncate, errMsg } from './utils';
 import { chat, chatJson } from './llm';
 import { buildAnalysisMessages, buildAttachmentAnalysisMessages, buildDailySummaryMessages } from './prompts';
@@ -211,30 +212,29 @@ export async function maybeGenerateDailySummary(force = false): Promise<string |
   let target = today; // force：直接生成今天的
   if (!force) {
     // 最近一天"聊过（≥4 条）但还没有摘要"的日子，最多回看 14 天
-    const row = dbGet<{ d: string }>(
+    const row = cGet<{ d: string }>(
       `SELECT d FROM (
          SELECT date(created_at, 'localtime') AS d, COUNT(*) AS c FROM messages
-         WHERE user_id = ? AND date(created_at, 'localtime') < ?
+         WHERE companion_id = ? AND date(created_at, 'localtime') < ?
          GROUP BY d HAVING c >= 4 ORDER BY d DESC LIMIT 14
        )
-       WHERE d NOT IN (SELECT date FROM daily_summaries WHERE user_id = ?)
+       WHERE d NOT IN (SELECT date FROM daily_summaries WHERE companion_id = ?)
        ORDER BY d DESC LIMIT 1`,
-      DEFAULT_USER_ID,
       today,
-      DEFAULT_USER_ID
+      cId()
     );
     if (!row?.d) return null;
     target = row.d;
   }
 
   const rows = recentMessagesForSummary(target);
-  const lifeEvents = dbAll<{ event_type: string; content: string; created_at: string }>(
-    "SELECT event_type, content, created_at FROM agent_daily_events WHERE user_id = ? AND date(created_at, 'localtime') = ? ORDER BY id ASC",
-    DEFAULT_USER_ID, target
+  const lifeEvents = cAll<{ event_type: string; content: string; created_at: string }>(
+    "SELECT event_type, content, created_at FROM agent_daily_events WHERE companion_id = ? AND date(created_at, 'localtime') = ? ORDER BY id ASC",
+    target
   );
-  const lifeLogs = dbAll<{ field: string; new_value: string; reason: string | null; created_at: string }>(
-    "SELECT field, new_value, reason, created_at FROM life_state_logs WHERE user_id = ? AND date(created_at, 'localtime') = ? AND field IN ('activity', 'illness', 'care', 'shared_plan', 'shared_ritual', 'shared_place', 'shared_item') ORDER BY id ASC",
-    DEFAULT_USER_ID, target
+  const lifeLogs = cAll<{ field: string; new_value: string; reason: string | null; created_at: string }>(
+    "SELECT field, new_value, reason, created_at FROM life_state_logs WHERE companion_id = ? AND date(created_at, 'localtime') = ? AND field IN ('activity', 'illness', 'care', 'shared_plan', 'shared_ritual', 'shared_place', 'shared_item') ORDER BY id ASC",
+    target
   );
   if (rows.length < 4 && !lifeEvents.length && !lifeLogs.length) return null;
   const conversation = rows

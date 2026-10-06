@@ -1,5 +1,6 @@
 // 关系状态引擎：亲密度 / 信任 / 阶段跃迁 / 回退 / 关系日志
-import { dbGet, dbRun, numSetting, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
+import { dbRun, cGet, cRun, numSetting, DEFAULT_USER_ID, getSetting, setSetting, customModeOn } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, daysSince, round1, localDateStr, safeJson } from './utils';
 import { STAGES, stageOf } from './stages';
 import type { RelationshipState, RelationshipDelta } from './types';
@@ -12,12 +13,13 @@ interface PersonaRow {
 }
 
 export function getRelationshipState(): RelationshipState {
-  const s = dbGet<RelationshipState>('SELECT * FROM relationship_state WHERE user_id = ?', DEFAULT_USER_ID);
+  const s = cGet<RelationshipState>('SELECT * FROM relationship_state WHERE companion_id = ?');
   if (!s) throw new Error('relationship_state 未初始化');
   return s;
 }
 
 export function saveRelationshipState(s: RelationshipState): void {
+  // UPDATE 的 companion_id 占位符在语法上位于 SET 之后，用 dbRun + 显式 cId()（不能走 cRun 首参注入）
   dbRun(
     `UPDATE relationship_state SET
       intimacy = ?, trust = ?, mood = ?, stage = ?, stage_entered_at = ?, stage_cap_since = ?,
@@ -25,7 +27,7 @@ export function saveRelationshipState(s: RelationshipState): void {
       nickname = ?, anniversary = ?, last_interaction_at = ?, streak_days = ?,
       emotional_balance = ?, repair_credit = ?, unresolved_tension = ?,
       scene = ?, scene_reason = ?, scene_updated_at = ?, updated_at = ?
-     WHERE user_id = ?`,
+     WHERE companion_id = ?`,
     s.intimacy,
     s.trust,
     s.mood,
@@ -47,7 +49,7 @@ export function saveRelationshipState(s: RelationshipState): void {
     s.scene_reason ?? null,
     s.scene_updated_at ?? null,
     nowIso(),
-    s.user_id
+    cId()
   );
 }
 
@@ -71,9 +73,8 @@ export interface AffectState {
  * now 作为参数传入便于写确定性测试。
  */
 export function getAffectState(now = Date.now()): AffectState | null {
-  const row = dbGet<{ affect_json: string | null }>(
-    'SELECT affect_json FROM relationship_state WHERE user_id = ?',
-    DEFAULT_USER_ID
+  const row = cGet<{ affect_json: string | null }>(
+    'SELECT affect_json FROM relationship_state WHERE companion_id = ?'
   );
   const a = safeJson<Partial<AffectState> | null>(row?.affect_json ?? null, null);
   if (!a || typeof a !== 'object') return null;
@@ -94,10 +95,10 @@ export function getAffectState(now = Date.now()): AffectState | null {
 /** 写入此刻情绪（只动 affect_json 列，不触碰 saveRelationshipState 维护的其余字段） */
 export function saveAffectState(a: AffectState): void {
   dbRun(
-    'UPDATE relationship_state SET affect_json = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE relationship_state SET affect_json = ?, updated_at = ? WHERE companion_id = ?',
     JSON.stringify(a),
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }
 
@@ -108,9 +109,9 @@ export function logRelationship(
   newValue?: unknown,
   reason?: string
 ): void {
-  dbRun(
-    `INSERT INTO relationship_logs (user_id, kind, summary, old_value, new_value, reason, stage_at_time, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  cRun(
+    `INSERT INTO relationship_logs (companion_id, user_id, kind, summary, old_value, new_value, reason, stage_at_time, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     DEFAULT_USER_ID,
     kind,
     summary,
@@ -297,7 +298,7 @@ export function touchInteraction(): void {
 /* 昵称 / 纪念日 / 人设                                                */
 /* ------------------------------------------------------------------ */
 export function getPersona(): { agent_name: string | null; age: string | null; occupation: string | null; self_story: string | null } {
-  const p = dbGet<PersonaRow>('SELECT * FROM personas WHERE user_id = ?', DEFAULT_USER_ID);
+  const p = cGet<PersonaRow>('SELECT * FROM personas WHERE companion_id = ?');
   return {
     agent_name: p?.agent_name ?? null,
     age: p?.age ?? null,
@@ -312,10 +313,10 @@ const PERSONA_FIELDS: ReadonlySet<string> = new Set(['agent_name', 'age', 'occup
 export function setPersonaField(field: 'agent_name' | 'age' | 'occupation' | 'self_story', value: string): void {
   if (!PERSONA_FIELDS.has(field)) throw new Error(`非法的人设字段：${String(field)}`);
   dbRun(
-    `UPDATE personas SET ${field} = ?, updated_at = ? WHERE user_id = ?`,
+    `UPDATE personas SET ${field} = ?, updated_at = ? WHERE companion_id = ?`,
     value || null,
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
 }
 
@@ -349,8 +350,8 @@ export function addEvent(opts: {
   kind: 'anniversary' | 'birthday' | 'plan' | 'custom';
   description?: string | null;
 }): void {
-  dbRun(
-    'INSERT INTO events (user_id, title, event_date, repeat_yearly, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  cRun(
+    'INSERT INTO events (companion_id, user_id, title, event_date, repeat_yearly, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID,
     opts.title,
     opts.event_date,
@@ -364,6 +365,6 @@ export function addEvent(opts: {
 /** 删除一条关系事件；返回是否真的删了一行 */
 export function deleteEvent(id: number): boolean {
   if (!Number.isInteger(id) || id <= 0) return false;
-  const r = dbRun('DELETE FROM events WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  const r = cRun('DELETE FROM events WHERE companion_id = ? AND id = ?', id);
   return r.changes > 0;
 }

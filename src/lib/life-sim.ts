@@ -1,6 +1,7 @@
 // 生活系统 · 模拟推进层：主推进 advanceLife / 状态增量 / 互动康复 / 周快照
 // 由 life.ts 拆分而来（原样搬移，行为不变）
-import { dbAll, dbRun, DEFAULT_USER_ID, getCounter, bumpCounter, boolSetting, customModeOn } from './db';
+import { dbRun, DEFAULT_USER_ID, getCounter, bumpCounter, boolSetting, customModeOn, cAll, cRun } from './db';
+import { cId } from './companion-context';
 import { shouldApplyPokeEffect } from './interactions';
 import { clamp, nowIso, localDateStr, round1 } from './utils';
 import { getRelationshipState, logRelationship } from './relationship';
@@ -209,9 +210,8 @@ export function illnessTriggerAllowed(health: { illness: string }, nowMs: number
 }
 
 function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
-  const todayCount = dbAll<DailyEventRow>(
-    "SELECT id FROM agent_daily_events WHERE user_id = ? AND date(created_at, 'localtime') = ?",
-    DEFAULT_USER_ID,
+  const todayCount = cAll<DailyEventRow>(
+    "SELECT id FROM agent_daily_events WHERE companion_id = ? AND date(created_at, 'localtime') = ?",
     localDateStr(d)
   ).length;
   const cap = indep >= 60 ? 4 : 3;
@@ -235,8 +235,8 @@ function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
   const roll = ((hash >>> 8) % 1000) / 1000;
   const pick = pickEvent(ctx, roll);
   if (!pick) return;
-  dbRun(
-    'INSERT INTO agent_daily_events (user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?)',
+  cRun(
+    'INSERT INTO agent_daily_events (companion_id, user_id, event_type, content, impact_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, pick.type, pick.content, JSON.stringify(pick.impact), d.toISOString()
   );
   const psy = getPsychology();
@@ -250,8 +250,8 @@ function maybeGenerateEvent(d: Date, indep: number, block: Block): void {
   const moodDelta = Number(pick.impact.mood || 0);
   const emotion = moodDelta >= 5 ? '开心' : moodDelta <= -4 ? '低落' : psy.base_emotion;
   dbRun(
-    'UPDATE agent_psychology SET base_emotion = ?, stress = ?, loneliness = ?, missing_user = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?',
-    emotion, round1(stress), round1(lon), round1(miss), round1(worth), round1(me), nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_psychology SET base_emotion = ?, stress = ?, loneliness = ?, missing_user = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE companion_id = ?',
+    emotion, round1(stress), round1(lon), round1(miss), round1(worth), round1(me), nowIso(), cId()
   );
   if ((pick.impact.illnessRisk || 0) > 0 && normalized < (pick.impact.illnessRisk as number)) {
     // 已经在生病 / 距上次生病不足 7 天 → 跳过，避免病程叠加
@@ -325,12 +325,12 @@ export function advanceLife(): { steps: number; changes: string[] } {
     if (!eventStep && (block.location !== loc.current_location || block.activity !== act.current_activity)) {
       const endAt = stepEnd;
       dbRun(
-        'UPDATE agent_location SET current_location = ?, location_type = ?, arrived_at = ?, expected_leave_at = ?, updated_at = ? WHERE user_id = ?',
-        block.location, block.locationType, d.toISOString(), endAt.toISOString(), nowIso(), DEFAULT_USER_ID
+        'UPDATE agent_location SET current_location = ?, location_type = ?, arrived_at = ?, expected_leave_at = ?, updated_at = ? WHERE companion_id = ?',
+        block.location, block.locationType, d.toISOString(), endAt.toISOString(), nowIso(), cId()
       );
       dbRun(
-        'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = ?, updated_at = ? WHERE user_id = ?',
-        block.activity, block.activityType, d.toISOString(), endAt.toISOString(), nowIso(), DEFAULT_USER_ID
+        'UPDATE agent_activity SET current_activity = ?, activity_type = ?, started_at = ?, expected_end_at = ?, updated_at = ? WHERE companion_id = ?',
+        block.activity, block.activityType, d.toISOString(), endAt.toISOString(), nowIso(), cId()
       );
       changes.push(`${block.activity}（${block.location}）`);
       // 日志时间用"这一步的模拟时刻"，历史回放时不能再落成"今天"
@@ -349,7 +349,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
       hunger = clamp(hunger + (eventEffect.hunger || 0), 0, 100);
       sleepQ = clamp(sleepQ + (eventEffect.sleepQ || 0), 0, 100);
       if (activeEvent!.event_type === 'meal') {
-        dbRun('UPDATE agent_health SET last_meal_at = ? WHERE user_id = ?', d.toISOString(), DEFAULT_USER_ID);
+        dbRun('UPDATE agent_health SET last_meal_at = ? WHERE companion_id = ?', d.toISOString(), cId());
       }
     } else if (block.activityType === 'sleep') {
       energy = clamp(energy + 9, 0, 100);
@@ -363,7 +363,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
       if (block.activityType === 'meal') {
         hunger = clamp(hunger + 34, 0, 100);
         energy = clamp(energy + 5, 0, 100);
-        dbRun('UPDATE agent_health SET last_meal_at = ? WHERE user_id = ?', d.toISOString(), DEFAULT_USER_ID);
+        dbRun('UPDATE agent_health SET last_meal_at = ? WHERE companion_id = ?', d.toISOString(), cId());
       }
     }
     // 生病：随时间恢复（历史步如果早于发病时间，不按"满严重度"扣）
@@ -386,8 +386,8 @@ export function advanceLife(): { steps: number; changes: string[] } {
       }
     }
     dbRun(
-      `UPDATE agent_health SET energy = ?, hunger = ?, sleep_quality = ?, exercise = ?, illness = ?, illness_severity = ?, updated_at = ? WHERE user_id = ?`,
-      round1(energy), round1(hunger), round1(sleepQ), round1(exercise), illness, round1(severity), stepEnd.toISOString(), DEFAULT_USER_ID
+      `UPDATE agent_health SET energy = ?, hunger = ?, sleep_quality = ?, exercise = ?, illness = ?, illness_severity = ?, updated_at = ? WHERE companion_id = ?`,
+      round1(energy), round1(hunger), round1(sleepQ), round1(exercise), illness, round1(severity), stepEnd.toISOString(), cId()
     );
 
     // 3) 生理周期（每天推进 1 天）
@@ -395,7 +395,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
     if (currentDate !== cycleDate) {
       const daysPassed = Math.max(1, Math.round((new Date(`${currentDate}T00:00:00`).getTime() - new Date(`${cycleDate}T00:00:00`).getTime()) / 86400000));
       const cycleDay = ((health.cycle_day - 1 + daysPassed) % (health.cycle_length || 28)) + 1;
-      dbRun('UPDATE agent_health SET cycle_day = ? WHERE user_id = ?', cycleDay, DEFAULT_USER_ID);
+      dbRun('UPDATE agent_health SET cycle_day = ? WHERE companion_id = ?', cycleDay, cId());
       cycleDate = currentDate;
     }
 
@@ -441,7 +441,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
     else if (energy > 80 && lon < 40) emotion = '开心';
     else if (energy < 30) emotion = '疲惫';
     dbRun(
-      `UPDATE agent_psychology SET base_emotion = ?, stress = ?, loneliness = ?, missing_user = ?, security = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?`,
+      `UPDATE agent_psychology SET base_emotion = ?, stress = ?, loneliness = ?, missing_user = ?, security = ?, mental_energy = ?, updated_at = ? WHERE companion_id = ?`,
       emotion,
       round1(stress),
       round1(lon),
@@ -449,7 +449,7 @@ export function advanceLife(): { steps: number; changes: string[] } {
       round1(security),
       round1(me),
       stepEnd.toISOString(),
-      DEFAULT_USER_ID
+      cId()
     );
 
     // 5) 随机日常事件
@@ -463,9 +463,9 @@ export function advanceLife(): { steps: number; changes: string[] } {
 export function simulateHours(hours: number): { steps: number; changes: string[] } {
   const h = Math.min(72, Math.max(1, hours || 6));
   dbRun(
-    'UPDATE agent_health SET updated_at = ? WHERE user_id = ?',
+    'UPDATE agent_health SET updated_at = ? WHERE companion_id = ?',
     new Date(Date.now() - h * 3600000).toISOString(),
-    DEFAULT_USER_ID
+    cId()
   );
   return advanceLife();
 }
@@ -493,8 +493,8 @@ export function applyLifeDeltas(input: { health?: LifeHealthDelta; psychology?: 
   const energy = clamp(h.energy + num(hd.energy), 0, 100);
   const hunger = clamp(h.hunger + num(hd.hunger), 0, 100);
   dbRun(
-    'UPDATE agent_health SET energy = ?, hunger = ?, updated_at = ? WHERE user_id = ?',
-    round1(energy), round1(hunger), nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_health SET energy = ?, hunger = ?, updated_at = ? WHERE companion_id = ?',
+    round1(energy), round1(hunger), nowIso(), cId()
   );
 
   const illnessEvent = String(hd.illness || 'none');
@@ -505,9 +505,9 @@ export function applyLifeDeltas(input: { health?: LifeHealthDelta; psychology?: 
   } else if (illnessEvent === 'recovered' && h.illness !== 'none') {
     // 模型判定"这轮之后康复了" → 直接结束病程（比机械等天数自然）
     dbRun(
-      "UPDATE agent_health SET illness = 'none', illness_severity = 0, illness_duration_days = 0, updated_at = ? WHERE user_id = ?",
+      "UPDATE agent_health SET illness = 'none', illness_severity = 0, illness_duration_days = 0, updated_at = ? WHERE companion_id = ?",
       nowIso(),
-      DEFAULT_USER_ID
+      cId()
     );
     logLife('illness', h.illness, '恢复', '对话里被照顾，判定康复');
     logRelationship('milestone', `她的${h.illness}好了`, null, h.illness, '健康系统');
@@ -520,8 +520,8 @@ export function applyLifeDeltas(input: { health?: LifeHealthDelta; psychology?: 
   const worth = clamp(p.self_worth + num(pd.self_worth), 0, 100);
   const me = clamp(p.mental_energy + num(pd.mental_energy), 0, 100);
   dbRun(
-    `UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, security = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE user_id = ?`,
-    round1(stress), round1(loneliness), round1(missing), round1(security), round1(worth), round1(me), nowIso(), DEFAULT_USER_ID
+    `UPDATE agent_psychology SET stress = ?, loneliness = ?, missing_user = ?, security = ?, self_worth = ?, mental_energy = ?, updated_at = ? WHERE companion_id = ?`,
+    round1(stress), round1(loneliness), round1(missing), round1(security), round1(worth), round1(me), nowIso(), cId()
   );
 }
 
@@ -536,10 +536,10 @@ export function applyInteractionEffects(_opts: { caredForHer?: boolean }): void 
   const psy = getPsychology();
   // 聊过天会把孤独/想念往下压一点（温和底噪），真正的下降靠 applyCareEvent
   dbRun(
-    'UPDATE agent_psychology SET loneliness = ?, missing_user = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE agent_psychology SET loneliness = ?, missing_user = ?, updated_at = ? WHERE companion_id = ?',
     round1(clamp(psy.loneliness - 2, 0, 100)),
     round1(clamp(psy.missing_user - 3, 0, 100)),
-    nowIso(), DEFAULT_USER_ID
+    nowIso(), cId()
   );
 }
 
@@ -577,8 +577,8 @@ export function applyPokeEffect(kind: string): PokeEffectResult {
   const security = clamp(p.security + eff.security, 0, 100);
   const loneliness = clamp(p.loneliness + eff.loneliness, 0, 100);
   dbRun(
-    'UPDATE agent_psychology SET security = ?, loneliness = ?, updated_at = ? WHERE user_id = ?',
-    round1(security), round1(loneliness), nowIso(), DEFAULT_USER_ID
+    'UPDATE agent_psychology SET security = ?, loneliness = ?, updated_at = ? WHERE companion_id = ?',
+    round1(security), round1(loneliness), nowIso(), cId()
   );
   logRelationship('interaction', `被你${eff.label}`, round1(p.loneliness), round1(loneliness), '触摸互动');
   return { applied: true, reason: 'ok' };
@@ -625,8 +625,8 @@ export function saveWeeklyWorldSnapshot(): void {
     attachment: getAttachmentState(),
     personality: personalityMap(),
   };
-  dbRun(
-    'INSERT OR IGNORE INTO world_weekly_snapshots (user_id, week, state_json, created_at) VALUES (?, ?, ?, ?)',
+  cRun(
+    'INSERT OR IGNORE INTO world_weekly_snapshots (companion_id, user_id, week, state_json, created_at) VALUES (?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, weekKey(), JSON.stringify(state), nowIso()
   );
 }

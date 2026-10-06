@@ -1,6 +1,6 @@
 // 情感银行账户系统（基于 Gottman 关系研究）
 // 每段互动都是一次情感存款或情感取款：情感余额 / 修复信用 / 未解决张力
-import { dbRun, dbGet, dbAll, tx, DEFAULT_USER_ID } from './db';
+import { tx, DEFAULT_USER_ID, cRun, cGet, cAll } from './db';
 import { clamp, nowIso, round1 } from './utils';
 import { getRelationshipState, saveRelationshipState, logRelationship } from './relationship';
 
@@ -32,9 +32,10 @@ export function addBankEntry(
   s.emotional_balance = newBalance;
   tx(() => {
     saveRelationshipState(s);
-    dbRun(
-      `INSERT INTO emotional_bank (user_id, message_id, delta, kind, behavior, reason, balance_after, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    // companion_id 写在最前，由 cRun 注入 cId()；user_id 是全局用户引用（恒为 1），非隔离键
+    cRun(
+      `INSERT INTO emotional_bank (companion_id, user_id, message_id, delta, kind, behavior, reason, balance_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       DEFAULT_USER_ID,
       messageId ?? null,
       round1(delta),
@@ -52,20 +53,18 @@ export function addBankEntry(
 }
 
 export function listBankEntries(limit = 60): BankEntry[] {
-  return dbAll<BankEntry>(
-    'SELECT * FROM emotional_bank WHERE user_id = ? ORDER BY id DESC LIMIT ?',
-    DEFAULT_USER_ID,
+  return cAll<BankEntry>(
+    'SELECT * FROM emotional_bank WHERE companion_id = ? ORDER BY id DESC LIMIT ?',
     limit
   );
 }
 
 export function bankStats() {
-  const row = dbGet<{ deposits: number; withdrawals: number }>(
+  const row = cGet<{ deposits: number; withdrawals: number }>(
     `SELECT
        COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS deposits,
        COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS withdrawals
-     FROM emotional_bank WHERE user_id = ?`,
-    DEFAULT_USER_ID
+     FROM emotional_bank WHERE companion_id = ?`
   );
   return { deposits: round1(row?.deposits || 0), withdrawals: round1(row?.withdrawals || 0) };
 }

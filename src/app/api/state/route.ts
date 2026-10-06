@@ -1,5 +1,5 @@
 // 全量状态快照（供各页面读取）
-import { getAllSettings, getCounter, dbAll, DEFAULT_USER_ID, maskSettingsForClient, maskSecret } from '@/lib/db';
+import { getAllSettings, getCounter, cAll, maskSettingsForClient, maskSecret } from '@/lib/db';
 import { getRelationshipState, getPersona } from '@/lib/relationship';
 import { stageOf, stageListForUi } from '@/lib/stages';
 import { personalityMap, signalProgress } from '@/lib/personality';
@@ -75,7 +75,7 @@ export async function GET() {
     counters: { turns: getCounter('turn_count'), messages: messageCount() },
     proactive: proactiveStatus(),
     stages: stageListForUi(),
-    events: dbAll('SELECT * FROM events WHERE user_id = ? ORDER BY event_date ASC', DEFAULT_USER_ID),
+    events: cAll('SELECT * FROM events WHERE companion_id = ? ORDER BY event_date ASC'),
     settings: safeSettings,
     // 非敏感开关：前端据此决定是否渲染"朗读"按钮（绝不暴露任何 Key）
     ttsEnabled: settings.tts_enabled === 'true' || settings.tts_enabled === '1',

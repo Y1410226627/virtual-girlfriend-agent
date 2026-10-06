@@ -1,5 +1,5 @@
 // 记忆向量：向量模型标识、缺失向量回填、单条记忆向量刷新
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID, llmConfig } from './db';
+import { dbRun, cAll, cGet, llmConfig } from './db';
 import { nowIso, safeJson } from './utils';
 import { embed, embedOne } from './llm';
 import { embeddingApiDegraded } from './llm-embedding';
@@ -70,13 +70,12 @@ export function clearMemoryVectorCache(): void {
 /** 补齐缺失向量；换过向量模型/接口时，旧向量也会被识别出来并重算 */
 export async function backfillEmbeddings(batch = 50): Promise<number> {
   const queryTag = embedModelTag();
-  const rows = dbAll<{ id: number; content: string }>(
+  const rows = cAll<{ id: number; content: string }>(
     `SELECT m.id, m.content FROM memories m
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE m.user_id = ? AND m.status = 'active'
+     WHERE m.companion_id = ? AND m.status = 'active'
        AND (e.memory_id IS NULL OR e.model IS NULL OR e.model != ?)
      ORDER BY m.id DESC LIMIT ?`,
-    DEFAULT_USER_ID,
     queryTag,
     batch
   );
@@ -105,7 +104,7 @@ export async function backfillEmbeddings(batch = 50): Promise<number> {
 
 /** 单条记忆内容被编辑后：同步重算它的向量 */
 export async function refreshMemoryEmbedding(id: number): Promise<boolean> {
-  const row = dbGet<{ id: number; content: string }>('SELECT id, content FROM memories WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  const row = cGet<{ id: number; content: string }>('SELECT id, content FROM memories WHERE companion_id = ? AND id = ?', id);
   if (!row) return false;
   const vec = await embedOne(String(row.content || ''));
   dbRun(

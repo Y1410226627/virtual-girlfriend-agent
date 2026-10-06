@@ -2,7 +2,8 @@
 // 表结构见 db-migrations.ts v12。本模块由「分析管线」负责补全：
 //   - recordOperation：写入一条操作记录（同步，无自己的事务；调用方需保证已在事务内或接受独立写入）
 //   - rollbackOperationsForGeneration：按 generation 精确反向（分析代理实现）
-import { dbAll, dbGet, dbRun, DEFAULT_USER_ID } from './db';
+import { dbRun, DEFAULT_USER_ID, cAll, cGet, cRun } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, round1 } from './utils';
 import { attachmentStyleOf } from './types';
 
@@ -44,9 +45,8 @@ export function resolveSourceTurns(messageIds: Array<number | null | undefined>)
   ];
   if (!ids.length) return [];
   const ph = ids.map(() => '?').join(',');
-  const rows = dbAll<{ turn_id: number }>(
-    `SELECT DISTINCT turn_id FROM message_generations WHERE user_id = ? AND assistant_message_id IN (${ph})`,
-    DEFAULT_USER_ID,
+  const rows = cAll<{ turn_id: number }>(
+    `SELECT DISTINCT turn_id FROM message_generations WHERE companion_id = ? AND assistant_message_id IN (${ph})`,
     ...ids
   );
   return rows
@@ -81,10 +81,10 @@ function toJson(v: unknown): string | null {
 /** 记录一条操作（返回行 id；写入失败返回 0，绝不抛出影响主流程） */
 export function recordOperation(op: OperationInput): number {
   try {
-    const { lastInsertRowid } = dbRun(
+    const { lastInsertRowid } = cRun(
       `INSERT INTO turn_operations
-         (user_id, turn_id, generation_id, operation_type, target_table, target_id, before_json, after_json, meta_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (companion_id, user_id, turn_id, generation_id, operation_type, target_table, target_id, before_json, after_json, meta_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       DEFAULT_USER_ID,
       op.turnId ?? null,
       op.generationId ?? null,
@@ -106,9 +106,8 @@ export function recordOperation(op: OperationInput): number {
 /** 读取某次生成的全部操作（按 id 升序） */
 export function listOperationsForGeneration(generationId: number): TurnOperationRow[] {
   if (!Number.isFinite(generationId) || generationId <= 0) return [];
-  return dbAll<TurnOperationRow>(
-    'SELECT * FROM turn_operations WHERE user_id = ? AND generation_id = ? ORDER BY id ASC',
-    DEFAULT_USER_ID,
+  return cAll<TurnOperationRow>(
+    'SELECT * FROM turn_operations WHERE companion_id = ? AND generation_id = ? ORDER BY id ASC',
     generationId
   );
 }
@@ -116,9 +115,8 @@ export function listOperationsForGeneration(generationId: number): TurnOperation
 /** 读取某个回合的全部操作（按 id 升序） */
 export function listOperationsForTurn(turnId: number): TurnOperationRow[] {
   if (!Number.isFinite(turnId) || turnId <= 0) return [];
-  return dbAll<TurnOperationRow>(
-    'SELECT * FROM turn_operations WHERE user_id = ? AND turn_id = ? ORDER BY id ASC',
-    DEFAULT_USER_ID,
+  return cAll<TurnOperationRow>(
+    'SELECT * FROM turn_operations WHERE companion_id = ? AND turn_id = ? ORDER BY id ASC',
     turnId
   );
 }
@@ -170,7 +168,7 @@ function undoOne(op: TurnOperationRow): boolean {
     case 'memory.create': {
       if (!targetId) return false;
       dbRun('DELETE FROM memory_embeddings WHERE memory_id = ?', targetId);
-      const r = dbRun('DELETE FROM memories WHERE id = ? AND user_id = ?', targetId, DEFAULT_USER_ID);
+      const r = cRun('DELETE FROM memories WHERE companion_id = ? AND id = ?', targetId);
       return r.changes > 0;
     }
 
@@ -179,10 +177,9 @@ function undoOne(op: TurnOperationRow): boolean {
       // 不属于本次被删消息所属回合），它不归这一条消息 → 不回退数值、也不删日志。
       // source_turns 为 NULL（老数据 / 映射不到）时保持原有精确回滚行为。
       const plog = targetId
-        ? dbGet<{ source_turns: string | null }>(
-            'SELECT source_turns FROM personality_logs WHERE id = ? AND user_id = ?',
-            targetId,
-            DEFAULT_USER_ID
+        ? cGet<{ source_turns: string | null }>(
+            'SELECT source_turns FROM personality_logs WHERE companion_id = ? AND id = ?',
+            targetId
           )
         : null;
       // 返回 false = 本次未做任何反向（不计入 rolledBack）。
@@ -193,11 +190,11 @@ function undoOne(op: TurnOperationRow): boolean {
       const newV = Number(meta?.new_value);
       if (targetId && dim) {
         // 只有"当前值仍等于这次调整后的值"才回退（否则说明之后又变过，保留后续成长）
-        const cur = dbGet<{ value: number }>('SELECT value FROM personality_state WHERE user_id = ? AND dimension = ?', DEFAULT_USER_ID, dim);
+        const cur = cGet<{ value: number }>('SELECT value FROM personality_state WHERE companion_id = ? AND dimension = ?', dim);
         if (cur && round1(Number(cur.value)) === round1(newV)) {
-          dbRun('UPDATE personality_state SET value = ?, updated_at = ? WHERE user_id = ? AND dimension = ?', oldV, nowIso(), DEFAULT_USER_ID, dim);
+          dbRun('UPDATE personality_state SET value = ?, updated_at = ? WHERE companion_id = ? AND dimension = ?', oldV, nowIso(), cId(), dim);
         }
-        dbRun('DELETE FROM personality_logs WHERE id = ? AND user_id = ?', targetId, DEFAULT_USER_ID);
+        cRun('DELETE FROM personality_logs WHERE companion_id = ? AND id = ?', targetId);
       }
       return true;
     }
@@ -205,10 +202,9 @@ function undoOne(op: TurnOperationRow): boolean {
     case 'attachment_log.create': {
       // P1-39/40：同上——依恋调整若来自跨回合累积（多源），不随单条消息回滚。
       const alog = targetId
-        ? dbGet<{ source_turns: string | null }>(
-            'SELECT source_turns FROM attachment_logs WHERE id = ? AND user_id = ?',
-            targetId,
-            DEFAULT_USER_ID
+        ? cGet<{ source_turns: string | null }>(
+            'SELECT source_turns FROM attachment_logs WHERE companion_id = ? AND id = ?',
+            targetId
           )
         : null;
       // 返回 false = 本次未做任何反向（不计入 rolledBack）。
@@ -219,18 +215,18 @@ function undoOne(op: TurnOperationRow): boolean {
       const ov = Number(meta?.old_avoidance);
       const nv = Number(meta?.new_avoidance);
       if (targetId) {
-        const cur = dbGet<{ anxiety: number; avoidance: number }>('SELECT anxiety, avoidance FROM attachment_state WHERE user_id = ?', DEFAULT_USER_ID);
+        const cur = cGet<{ anxiety: number; avoidance: number }>('SELECT anxiety, avoidance FROM attachment_state WHERE companion_id = ?');
         if (cur && round1(Number(cur.anxiety)) === round1(na) && round1(Number(cur.avoidance)) === round1(nv)) {
           dbRun(
-            'UPDATE attachment_state SET anxiety = ?, avoidance = ?, style = ?, updated_at = ? WHERE user_id = ?',
+            'UPDATE attachment_state SET anxiety = ?, avoidance = ?, style = ?, updated_at = ? WHERE companion_id = ?',
             oa,
             ov,
             attachmentStyleOf(oa, ov),
             nowIso(),
-            DEFAULT_USER_ID
+            cId()
           );
         }
-        dbRun('DELETE FROM attachment_logs WHERE id = ? AND user_id = ?', targetId, DEFAULT_USER_ID);
+        cRun('DELETE FROM attachment_logs WHERE companion_id = ? AND id = ?', targetId);
       }
       return true;
     }
@@ -238,22 +234,22 @@ function undoOne(op: TurnOperationRow): boolean {
     case 'emotional_bank.create': {
       if (!targetId) return false;
       const delta = Number((after as { delta?: number } | null)?.delta ?? 0);
-      dbRun('DELETE FROM emotional_bank WHERE id = ? AND user_id = ?', targetId, DEFAULT_USER_ID);
-      const rel = dbGet<{ emotional_balance: number }>('SELECT emotional_balance FROM relationship_state WHERE user_id = ?', DEFAULT_USER_ID);
+      cRun('DELETE FROM emotional_bank WHERE companion_id = ? AND id = ?', targetId);
+      const rel = cGet<{ emotional_balance: number }>('SELECT emotional_balance FROM relationship_state WHERE companion_id = ?');
       const nb = clamp(Number(rel?.emotional_balance || 0) - delta, -100, 100);
-      dbRun('UPDATE relationship_state SET emotional_balance = ?, updated_at = ? WHERE user_id = ?', round1(nb), nowIso(), DEFAULT_USER_ID);
+      dbRun('UPDATE relationship_state SET emotional_balance = ?, updated_at = ? WHERE companion_id = ?', round1(nb), nowIso(), cId());
       return true;
     }
 
     case 'conflict.create': {
       if (!targetId) return false;
-      const r = dbRun("DELETE FROM conflict_logs WHERE id = ? AND user_id = ? AND status = 'open'", targetId, DEFAULT_USER_ID);
+      const r = cRun("DELETE FROM conflict_logs WHERE companion_id = ? AND id = ? AND status = 'open'", targetId);
       return r.changes > 0;
     }
 
     case 'conflict.repair': {
       if (!targetId) return false;
-      const r = dbRun("UPDATE conflict_logs SET status = 'open', resolved_at = NULL, tension_after = NULL WHERE id = ? AND user_id = ?", targetId, DEFAULT_USER_ID);
+      const r = dbRun("UPDATE conflict_logs SET status = 'open', resolved_at = NULL, tension_after = NULL WHERE id = ? AND companion_id = ?", targetId, cId());
       return r.changes > 0;
     }
 
@@ -261,21 +257,21 @@ function undoOne(op: TurnOperationRow): boolean {
       if (!before) return false;
       const b = before as SharedSnapshot;
       dbRun(
-        'UPDATE shared_world SET shared_places_json = ?, shared_plans_json = ?, shared_rituals_json = ?, shared_items_json = ?, cast_json = ?, updated_at = ? WHERE user_id = ?',
+        'UPDATE shared_world SET shared_places_json = ?, shared_plans_json = ?, shared_rituals_json = ?, shared_items_json = ?, cast_json = ?, updated_at = ? WHERE companion_id = ?',
         b.shared_places_json ?? null,
         b.shared_plans_json ?? null,
         b.shared_rituals_json ?? null,
         b.shared_items_json ?? null,
         b.cast_json ?? null,
         nowIso(),
-        DEFAULT_USER_ID
+        cId()
       );
       return true;
     }
 
     case 'agent_daily_events.create': {
       if (!targetId) return false;
-      const r = dbRun('DELETE FROM agent_daily_events WHERE id = ? AND user_id = ?', targetId, DEFAULT_USER_ID);
+      const r = cRun('DELETE FROM agent_daily_events WHERE companion_id = ? AND id = ?', targetId);
       return r.changes > 0;
     }
 
@@ -284,7 +280,7 @@ function undoOne(op: TurnOperationRow): boolean {
       const b = before as RelSnapshot;
       // "最新一轮"判定：本次操作所属 turn 是否为账本里最大的 turn_id。
       // 是 → 直接恢复 before；否 → 按记录差值扣回，保留之后轮次的成长。
-      const latestTurn = Number(dbGet<{ t: number | null }>('SELECT MAX(turn_id) AS t FROM turn_operations WHERE user_id = ?', DEFAULT_USER_ID)?.t ?? 0);
+      const latestTurn = Number(cGet<{ t: number | null }>('SELECT MAX(turn_id) AS t FROM turn_operations WHERE companion_id = ?')?.t ?? 0);
       const isLatest = op.turn_id === null || op.turn_id === undefined ? true : Number(op.turn_id) >= latestTurn;
       if (isLatest) {
         const mood = typeof b.mood === 'string' && b.mood ? b.mood : null;
@@ -293,7 +289,7 @@ function undoOne(op: TurnOperationRow): boolean {
           `UPDATE relationship_state SET
              intimacy = ?, trust = ?, unresolved_tension = ?, repair_credit = ?,
              mood = COALESCE(?, mood), stage = COALESCE(?, stage), updated_at = ?
-           WHERE user_id = ?`,
+           WHERE companion_id = ?`,
           clamp(Number(b.intimacy), 0, 100),
           clamp(Number(b.trust), 0, 100),
           clamp(Number(b.tension), 0, 100),
@@ -301,24 +297,23 @@ function undoOne(op: TurnOperationRow): boolean {
           mood,
           stage,
           nowIso(),
-          DEFAULT_USER_ID
+          cId()
         );
       } else {
         const a = after as RelSnapshot | null;
         if (!a) return false;
-        const rel = dbGet<{ intimacy: number; trust: number; unresolved_tension: number; repair_credit: number }>(
-          'SELECT intimacy, trust, unresolved_tension, repair_credit FROM relationship_state WHERE user_id = ?',
-          DEFAULT_USER_ID
+        const rel = cGet<{ intimacy: number; trust: number; unresolved_tension: number; repair_credit: number }>(
+          'SELECT intimacy, trust, unresolved_tension, repair_credit FROM relationship_state WHERE companion_id = ?'
         );
         if (!rel) return false;
         dbRun(
-          `UPDATE relationship_state SET intimacy = ?, trust = ?, unresolved_tension = ?, repair_credit = ?, updated_at = ? WHERE user_id = ?`,
+          `UPDATE relationship_state SET intimacy = ?, trust = ?, unresolved_tension = ?, repair_credit = ?, updated_at = ? WHERE companion_id = ?`,
           clamp(Number(rel.intimacy) - (Number(a.intimacy) - Number(b.intimacy)), 0, 100),
           clamp(Number(rel.trust) - (Number(a.trust) - Number(b.trust)), 0, 100),
           clamp(Number(rel.unresolved_tension) - (Number(a.tension) - Number(b.tension)), 0, 100),
           clamp(Number(rel.repair_credit) - (Number(a.repair) - Number(b.repair)), 0, 100),
           nowIso(),
-          DEFAULT_USER_ID
+          cId()
         );
       }
       return true;

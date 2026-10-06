@@ -4,7 +4,8 @@
 //   - drain 每次只取最早一条 pending，标 running，**执行前校验**（assistant 消息存在 && generation 仍 current），
 //     不满足则标 cancelled，绝不调用 analyzeTurn；通过后从 messages 表读取真实文本再分析。
 //   - 失败按 1/5/15 分钟退避重试（≤3 次），否则 failed。
-import { dbGet, dbRun, DEFAULT_USER_ID } from './db';
+import { dbRun, DEFAULT_USER_ID, cGet, cRun } from './db';
+import { cId } from './companion-context';
 import { analyzeTurn, type AnalyzeOutcome } from './analysis';
 import { isGenerationCurrent } from './turn';
 import { errMsg, nowIso } from './utils';
@@ -93,10 +94,10 @@ export function enqueueAnalysis(job: EnqueueAnalysisJob): {
   pending: number;
   jobId: number;
 } {
-  const { lastInsertRowid } = dbRun(
+  const { lastInsertRowid } = cRun(
     `INSERT INTO analysis_jobs
-       (user_id, turn_id, generation_id, user_message_id, assistant_message_id, status, attempts, created_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
+       (companion_id, user_id, turn_id, generation_id, user_message_id, assistant_message_id, status, attempts, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)`,
     DEFAULT_USER_ID,
     job.turnId ?? null,
     job.generationId ?? null,
@@ -119,14 +120,14 @@ export function enqueueAnalysis(job: EnqueueAnalysisJob): {
 /* ------------------------------------------------------------------ */
 function countPending(): number {
   return Number(
-    dbGet<{ c: number }>("SELECT COUNT(*) AS c FROM analysis_jobs WHERE user_id = ? AND status = 'pending'", DEFAULT_USER_ID)
+    cGet<{ c: number }>("SELECT COUNT(*) AS c FROM analysis_jobs WHERE companion_id = ? AND status = 'pending'")
       ?.c ?? 0
   );
 }
 
 function countRunning(): number {
   return Number(
-    dbGet<{ c: number }>("SELECT COUNT(*) AS c FROM analysis_jobs WHERE user_id = ? AND status = 'running'", DEFAULT_USER_ID)
+    cGet<{ c: number }>("SELECT COUNT(*) AS c FROM analysis_jobs WHERE companion_id = ? AND status = 'running'")
       ?.c ?? 0
   );
 }
@@ -163,8 +164,8 @@ export function recoverStaleAnalysisJobs(now = Date.now()): number {
   const cutoff = new Date(now - STALE_RUNNING_MS).toISOString();
   const r = dbRun(
     `UPDATE analysis_jobs SET status = 'pending', started_at = NULL
-      WHERE user_id = ? AND status = 'running' AND (started_at IS NULL OR started_at < ?)`,
-    DEFAULT_USER_ID,
+      WHERE companion_id = ? AND status = 'running' AND (started_at IS NULL OR started_at < ?)`,
+    cId(),
     cutoff
   );
   return r.changes;
@@ -175,18 +176,17 @@ export function recoverStaleAnalysisJobs(now = Date.now()): number {
 /* ------------------------------------------------------------------ */
 function claimNextJob(): AnalysisJobRow | null {
   const now = Date.now();
-  const row = dbGet<AnalysisJobRow>(
+  const row = cGet<AnalysisJobRow>(
     `SELECT * FROM analysis_jobs
-      WHERE user_id = ? AND status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?)
+      WHERE companion_id = ? AND status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?)
       ORDER BY id ASC LIMIT 1`,
-    DEFAULT_USER_ID,
     now
   );
   if (!row) return null;
   const upd = dbRun(
-    "UPDATE analysis_jobs SET status = 'running', started_at = ?, error = NULL WHERE user_id = ? AND id = ? AND status = 'pending'",
+    "UPDATE analysis_jobs SET status = 'running', started_at = ?, error = NULL WHERE companion_id = ? AND id = ? AND status = 'pending'",
     nowIso(),
-    DEFAULT_USER_ID,
+    cId(),
     row.id
   );
   if (upd.changes !== 1) return null; // 竞争失败/状态已变：交给下一轮
@@ -201,9 +201,8 @@ function claimNextJob(): AnalysisJobRow | null {
  */
 function validateJob(job: AnalysisJobRow): { ok: true } | { ok: false; reason: string } {
   if (job.assistant_message_id == null) return { ok: false, reason: '缺少 assistant 消息，任务作废' };
-  const msg = dbGet<{ id: number }>(
-    'SELECT id FROM messages WHERE user_id = ? AND id = ? AND role = ?',
-    DEFAULT_USER_ID,
+  const msg = cGet<{ id: number }>(
+    'SELECT id FROM messages WHERE companion_id = ? AND id = ? AND role = ?',
     job.assistant_message_id,
     'assistant'
   );
@@ -218,15 +217,14 @@ function validateJob(job: AnalysisJobRow): { ok: true } | { ok: false; reason: s
 /** 从 messages 表读取真实文本（不再相信外部传入的文本） */
 function readJobTexts(job: AnalysisJobRow): { userMessage: string; assistantMessage: string } | null {
   if (job.assistant_message_id == null) return null;
-  const assistant = dbGet<{ content: string }>(
-    'SELECT content FROM messages WHERE user_id = ? AND id = ?',
-    DEFAULT_USER_ID,
+  const assistant = cGet<{ content: string }>(
+    'SELECT content FROM messages WHERE companion_id = ? AND id = ?',
     job.assistant_message_id
   );
   if (!assistant) return null;
   const user =
     job.user_message_id != null
-      ? dbGet<{ content: string }>('SELECT content FROM messages WHERE user_id = ? AND id = ?', DEFAULT_USER_ID, job.user_message_id)
+      ? cGet<{ content: string }>('SELECT content FROM messages WHERE companion_id = ? AND id = ?', job.user_message_id)
       : undefined;
   return { userMessage: String(user?.content ?? ''), assistantMessage: String(assistant.content ?? '') };
 }
@@ -241,10 +239,10 @@ function settleWaiter(jobId: number, outcome: AnalyzeOutcome): void {
 
 function cancelJob(job: AnalysisJobRow, reason: string): void {
   dbRun(
-    "UPDATE analysis_jobs SET status = 'cancelled', finished_at = ?, error = ? WHERE user_id = ? AND id = ?",
+    "UPDATE analysis_jobs SET status = 'cancelled', finished_at = ?, error = ? WHERE companion_id = ? AND id = ?",
     nowIso(),
     reason,
-    DEFAULT_USER_ID,
+    cId(),
     job.id
   );
   const st = state();
@@ -254,7 +252,7 @@ function cancelJob(job: AnalysisJobRow, reason: string): void {
 }
 
 function doneJob(job: AnalysisJobRow, out: AnalyzeOutcome, ms: number): void {
-  dbRun("UPDATE analysis_jobs SET status = 'done', finished_at = ? WHERE user_id = ? AND id = ?", nowIso(), DEFAULT_USER_ID, job.id);
+  dbRun("UPDATE analysis_jobs SET status = 'done', finished_at = ? WHERE companion_id = ? AND id = ?", nowIso(), cId(), job.id);
   const st = state();
   st.last = { ok: out.ok, error: out.error, applied: out.applied };
   st.lastFinishedAt = Date.now();
@@ -271,11 +269,11 @@ function retryOrFail(job: AnalysisJobRow, error: string, ms: number): void {
   if (attempts <= RETRY_BACKOFF_MS.length) {
     const delay = RETRY_BACKOFF_MS[attempts - 1] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
     dbRun(
-      "UPDATE analysis_jobs SET status = 'pending', attempts = ?, next_retry_at = ?, started_at = NULL, error = ? WHERE user_id = ? AND id = ?",
+      "UPDATE analysis_jobs SET status = 'pending', attempts = ?, next_retry_at = ?, started_at = NULL, error = ? WHERE companion_id = ? AND id = ?",
       attempts,
       Date.now() + delay,
       error,
-      DEFAULT_USER_ID,
+      cId(),
       job.id
     );
     // 到期后再踢一次 drain；unref 避免定时器拖住进程退出（测试/关闭时安全）
@@ -288,11 +286,11 @@ function retryOrFail(job: AnalysisJobRow, error: string, ms: number): void {
     return; // 重试期间不 resolve（等待任务最终结束）
   }
   dbRun(
-    "UPDATE analysis_jobs SET status = 'failed', attempts = ?, finished_at = ?, error = ? WHERE user_id = ? AND id = ?",
+    "UPDATE analysis_jobs SET status = 'failed', attempts = ?, finished_at = ?, error = ? WHERE companion_id = ? AND id = ?",
     attempts,
     nowIso(),
     error,
-    DEFAULT_USER_ID,
+    cId(),
     job.id
   );
   settleWaiter(job.id, { ok: false, error, applied: emptyApplied() });

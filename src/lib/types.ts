@@ -171,3 +171,187 @@ export function attachmentStyleOf(anxiety: number, avoidance: number): string {
   if (!highA && highV) return 'avoidant';
   return 'fearful';
 }
+
+/* ------------------------------------------------------------------ */
+/* 伴侣域 / 群聊 / 活动（v13 新表）——字段与 DDL 一一对应                 */
+/* ------------------------------------------------------------------ */
+
+/** companions 表：伴侣档案（角色卡 + 攻略状态机载体）。`age` 受 DB 层 CHECK(age>=18) 约束。 */
+export interface CompanionRow {
+  /** 即全库 companion_id（主女友恒为 1）。 */
+  id: number;
+  user_id: number;
+  /** 通讯录显示名（她自命名后由 personas.agent_name 接管显示）。 */
+  name: string;
+  /** ★18+ 硬红线：DB 层 CHECK(age >= 18) 强制成年。 */
+  age: number;
+  gender: string;
+  identity: string | null;
+  /** JSON 数组字符串，如 ["文静","慢热","爱读书"]。 */
+  personality_tags: string | null;
+  portrait_desc: string | null;
+  avatar_url: string | null;
+  intro: string | null;
+  first_meet_scene: string | null;
+  gen_seed: string | null;
+  /** name+identity+portrait_desc 归一化哈希（防重复）。 */
+  dedupe_hash: string | null;
+  /** stranger|acquaintance|ambiguous|pursuing|girlfriend|cold|rejected|closed */
+  status: string;
+  /** 攻略期专用「吸引力」指标（0-100），晋升后保留但不再驱动。 */
+  attraction: number;
+  /** 主女友=1（既有那份数据）。 */
+  is_primary: number;
+  /** 已进入通讯录=1。 */
+  is_discovered: number;
+  /** 待处理候选人=1（发现区）。 */
+  pending: number;
+  /** 用户已选「攻略」=1。 */
+  pursue_opt_in: number;
+  /** 累计拒绝次数（≥3 → closed）。 */
+  reject_count: number;
+  /** 表白被拒冷却截止（24h）。 */
+  cooldown_until: string | null;
+  established_at: string | null;
+  closed_at: string | null;
+  last_active_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** companion_relations 表：伴侣间关系边（值域 -100..100）。 */
+export interface CompanionRelationRow {
+  id: number;
+  user_id: number;
+  /** 规范序：a_id < b_id。 */
+  a_id: number;
+  b_id: number;
+  /** -100..100（<0 偏吃醋/竞争，>0 偏友好/联盟）。 */
+  value: number;
+  /** friendly|neutral|jealous|rival|ally */
+  state: string;
+  last_event_at: string | null;
+  updated_at: string;
+}
+
+/** companion_events 表：伴侣事件日志。 */
+export interface CompanionEventRow {
+  id: number;
+  user_id: number;
+  /** 主角（成对事件可为空）。 */
+  companion_id: number | null;
+  /** meet|pursue|progress|promote|rejected|closed|relation_change|activity|discover */
+  kind: string;
+  summary: string;
+  old_value: string | null;
+  new_value: string | null;
+  reason: string | null;
+  meta_json: string | null;
+  created_at: string;
+}
+
+/** groups 表：群聊。 */
+export interface GroupRow {
+  id: number;
+  user_id: number;
+  name: string;
+  topic: string | null;
+  /** active|archived */
+  status: string;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** group_members 表：群成员。 */
+export interface GroupMemberRow {
+  id: number;
+  group_id: number;
+  companion_id: number;
+  joined_at: string;
+}
+
+/** group_messages 表：群消息。 */
+export interface GroupMessageRow {
+  id: number;
+  group_id: number;
+  /** NULL=用户/系统。 */
+  companion_id: number | null;
+  /** user|companion|system|reaction */
+  speaker_type: string;
+  speaker_name: string | null;
+  /** reaction 时存 emoji。 */
+  content: string;
+  /** 非空 = 这是一条 reaction（替代发言）。 */
+  reaction: string | null;
+  round: number;
+  meta: string | null;
+  created_at: string;
+}
+
+/** group_runs 表：一次群聊/活动会话（轮数上限、中止、调度状态）。 */
+export interface GroupRunRow {
+  id: number;
+  group_id: number;
+  /** chat|activity_online|activity_offline */
+  kind: string;
+  activity_id: number | null;
+  /** running|ended|cancelled */
+  status: string;
+  round: number;
+  max_rounds: number;
+  /** 上一次发言者（禁三连击/轮转依据）。 */
+  last_speaker_id: number | null;
+  /** JSON 数组：近 N 位发言者（轮转去重）。 */
+  recent_speakers: string | null;
+  /** JSON {companionId: 本 run 发言次数}。 */
+  spoke_counts: string | null;
+  ended_reason: string | null;
+  started_at: string;
+  ended_at: string | null;
+}
+
+/** activities 表：线上/线下活动。 */
+export interface ActivityRow {
+  id: number;
+  user_id: number;
+  group_id: number | null;
+  /** online|offline */
+  kind: string;
+  /** movie|game|nighttalk|co_listen|outing|date */
+  template_key: string | null;
+  title: string;
+  /** online|offline（线下活动=offline）。 */
+  scene: string;
+  scheduled_at: string | null;
+  location: string | null;
+  /** planned|ongoing|ended|cancelled */
+  status: string;
+  /** 线下「轮流聚焦」当前对象。 */
+  focus_companion_id: number | null;
+  summary: string | null;
+  meta_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** activity_participants 表：活动参与者。 */
+export interface ActivityParticipantRow {
+  id: number;
+  activity_id: number;
+  companion_id: number;
+  joined_at: string;
+}
+
+/** activity_schedule_items 表：线下「约会日程」条目。 */
+export interface ActivityScheduleItemRow {
+  id: number;
+  activity_id: number;
+  /** 见面→散步→咖啡→收尾。 */
+  seq: number;
+  title: string;
+  /** pending|current|done */
+  status: string;
+  note: string | null;
+  created_at: string;
+}

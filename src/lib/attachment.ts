@@ -1,6 +1,7 @@
 // 依恋风格系统（成人依恋理论）：焦虑轴 + 回避轴，双轴正交
 // 演化规则：每 10 轮由 LLM 分析 → 输出偏移信号（≤±2）→ 累积 3 次同向才实际调整
-import { dbAll, dbRun, dbGet, DEFAULT_USER_ID, customModeOn, tx } from './db';
+import { dbRun, DEFAULT_USER_ID, customModeOn, tx, cRun, cGet, cAll } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, round1 } from './utils';
 import { attachmentStyleOf, ATTACHMENT_STYLES, type AttachmentState, type AttachmentSignal } from './types';
 import { logRelationship } from './relationship';
@@ -29,7 +30,7 @@ export interface AttachmentLogRow {
 }
 
 export function getAttachmentState(): AttachmentState {
-  const a = dbGet<AttachmentState>('SELECT * FROM attachment_state WHERE user_id = ?', DEFAULT_USER_ID);
+  const a = cGet<AttachmentState>('SELECT * FROM attachment_state WHERE companion_id = ?');
   if (!a) throw new Error('attachment_state 未初始化');
   return a;
 }
@@ -51,19 +52,20 @@ export function setAttachmentAxes(
   const newV = clamp(avoidance, 0, 100);
   if (round1(newA) === round1(oldA) && round1(newV) === round1(oldV)) return false;
   const style = attachmentStyleOf(newA, newV);
+  // UPDATE 的 companion_id 在语法上位于 SET 之后 → 用 dbRun + 显式 cId()（不用 cRun 的首参注入）
   dbRun(
-    'UPDATE attachment_state SET anxiety = ?, avoidance = ?, style = ?, updated_at = ? WHERE user_id = ?',
+    'UPDATE attachment_state SET anxiety = ?, avoidance = ?, style = ?, updated_at = ? WHERE companion_id = ?',
     round1(newA),
     round1(newV),
     style,
     nowIso(),
-    DEFAULT_USER_ID
+    cId()
   );
   const sourceTurnsJson =
     sourceTurns && sourceTurns.length ? JSON.stringify([...new Set(sourceTurns)].sort((a, b) => a - b)) : null;
-  dbRun(
-    `INSERT INTO attachment_logs (user_id, old_anxiety, new_anxiety, old_avoidance, new_avoidance, trigger, reasoning, source_turns, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  cRun(
+    `INSERT INTO attachment_logs (companion_id, user_id, old_anxiety, new_anxiety, old_avoidance, new_avoidance, trigger, reasoning, source_turns, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     DEFAULT_USER_ID,
     round1(oldA),
     round1(newA),
@@ -87,9 +89,9 @@ export function addAttachmentSignals(sig: AttachmentSignal, messageId?: number |
     const d = Number(delta);
     if (!isFinite(d) || Math.abs(d) < 0.5) return;
     const capped = clamp(d, -2, 2);
-    dbRun(
-      `INSERT INTO attachment_signals (user_id, axis, direction, delta, reasoning, user_cues, message_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    cRun(
+      `INSERT INTO attachment_signals (companion_id, user_id, axis, direction, delta, reasoning, user_cues, message_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       DEFAULT_USER_ID,
       axis,
       capped > 0 ? '+' : '-',
@@ -116,9 +118,8 @@ export function runAttachmentLayer(): void {
   const gatedConsume: AttachmentSignalRow[][] = [];
 
   for (const axis of ['anxiety', 'avoidance'] as const) {
-    const rows = dbAll<AttachmentSignalRow>(
-      'SELECT * FROM attachment_signals WHERE user_id = ? AND axis = ? AND applied = 0 ORDER BY id ASC',
-      DEFAULT_USER_ID,
+    const rows = cAll<AttachmentSignalRow>(
+      'SELECT * FROM attachment_signals WHERE companion_id = ? AND axis = ? AND applied = 0 ORDER BY id ASC',
       axis
     );
     if (!rows.length) continue;
@@ -134,8 +135,8 @@ export function runAttachmentLayer(): void {
       tx(() => {
         for (const r of [...pos, ...neg]) dbRun('UPDATE attachment_signals SET applied = 1 WHERE id = ?', r.id);
         if (Math.abs(net) >= 0.5) {
-          dbRun(
-            `INSERT INTO attachment_signals (user_id, axis, direction, delta, reasoning, user_cues, message_id, created_at)
+          cRun(
+            `INSERT INTO attachment_signals (companion_id, user_id, axis, direction, delta, reasoning, user_cues, message_id, created_at)
              VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
             DEFAULT_USER_ID,
             axis,
@@ -177,13 +178,12 @@ export function runAttachmentLayer(): void {
 }
 
 export function listAttachmentLogs(limit = 60) {
-  return dbAll<AttachmentLogRow>('SELECT * FROM attachment_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?', DEFAULT_USER_ID, limit);
+  return cAll<AttachmentLogRow>('SELECT * FROM attachment_logs WHERE companion_id = ? ORDER BY id DESC LIMIT ?', limit);
 }
 
 export function attachmentEvolution() {
-  const logs = dbAll<Pick<AttachmentLogRow, 'new_anxiety' | 'new_avoidance' | 'created_at'>>(
-    'SELECT new_anxiety, new_avoidance, created_at FROM attachment_logs WHERE user_id = ? ORDER BY id ASC',
-    DEFAULT_USER_ID
+  const logs = cAll<Pick<AttachmentLogRow, 'new_anxiety' | 'new_avoidance' | 'created_at'>>(
+    'SELECT new_anxiety, new_avoidance, created_at FROM attachment_logs WHERE companion_id = ? ORDER BY id ASC'
   );
   return logs.map((l) => ({
     t: l.created_at,

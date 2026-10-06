@@ -1,7 +1,7 @@
 // 依恋系统：状态 / 日志 / 曲线 / 手动调整
 import { getAttachmentState, listAttachmentLogs, attachmentEvolution, attachmentPromptBlock, runAttachmentLayer } from '@/lib/attachment';
 import { setAttachmentAxes } from '@/lib/attachment';
-import { dbAll, DEFAULT_USER_ID } from '@/lib/db';
+import { cAll } from '@/lib/db';
 import { ATTACHMENT_STYLES, attachmentStyleOf } from '@/lib/types';
 import { round1, clamp } from '@/lib/utils';
 import { getPersonalityRows } from '@/lib/personality';
@@ -18,9 +18,8 @@ interface PendingSignalRow {
 
 export async function GET() {
   const a = getAttachmentState();
-  const pending = dbAll<PendingSignalRow>(
-    'SELECT axis, direction, COUNT(*) AS c FROM attachment_signals WHERE user_id = ? AND applied = 0 GROUP BY axis, direction',
-    DEFAULT_USER_ID
+  const pending = cAll<PendingSignalRow>(
+    'SELECT axis, direction, COUNT(*) AS c FROM attachment_signals WHERE companion_id = ? AND applied = 0 GROUP BY axis, direction'
   );
   return Response.json({
     state: {

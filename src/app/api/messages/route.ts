@@ -1,6 +1,6 @@
 // 消息列表 / 清空聊天
 import { listMessages, messageCount } from '@/lib/engine';
-import { dbAll, DEFAULT_USER_ID } from '@/lib/db';
+import { cAll } from '@/lib/db';
 import type { MessageRow } from '@/lib/types';
 import { deleteMessageById, wipeAllMessages } from '@/lib/messageActions';
 
@@ -15,9 +15,8 @@ export async function GET(req: Request) {
   // 缺省行为不变（最近 limit 条 / afterId 增量拉取）。
   const beforeId = Number(url.searchParams.get('beforeId') || 0);
   if (beforeId > 0) {
-    const rows = dbAll<MessageRow>(
-      'SELECT * FROM messages WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
-      DEFAULT_USER_ID,
+    const rows = cAll<MessageRow>(
+      'SELECT * FROM messages WHERE companion_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
       beforeId,
       limit
     ).reverse();

@@ -1,6 +1,7 @@
 // 单条消息删除：可选"同时撤销这条消息产生的影响"
 // 影响范围：记忆 / 性格信号与调整 / 依恋信号与调整 / 情感银行流水与余额 / 关系数值 / 冲突记录 / 关系日志
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
+import { dbRun, dbGet, tx, cAll, cGet, cRun } from './db';
+import { cId } from './companion-context';
 import { clamp, nowIso, round1, errMsg } from './utils';
 import { getRelationshipState, saveRelationshipState } from './relationship';
 import { listOperationsForGeneration, listOperationsForTurn, rollbackOperations, type TurnOperationRow } from './turnOps';
@@ -84,18 +85,16 @@ const emptyRemoved = () => ({
  * 没有账本（历史数据 / 老逻辑路径）时返回空数组，调用方回落到推断式回滚。
  */
 function ledgerOpsForMessage(id: number): TurnOperationRow[] {
-  const gen = dbGet<{ id: number }>(
-    'SELECT id FROM message_generations WHERE user_id = ? AND assistant_message_id = ?',
-    DEFAULT_USER_ID,
+  const gen = cGet<{ id: number }>(
+    'SELECT id FROM message_generations WHERE companion_id = ? AND assistant_message_id = ?',
     id
   );
   if (gen) {
     const ops = listOperationsForGeneration(Number(gen.id));
     if (ops.length) return ops;
   }
-  const turn = dbGet<{ id: number }>(
-    'SELECT id FROM conversation_turns WHERE user_id = ? AND user_message_id = ?',
-    DEFAULT_USER_ID,
+  const turn = cGet<{ id: number }>(
+    'SELECT id FROM conversation_turns WHERE companion_id = ? AND user_message_id = ?',
     id
   );
   if (turn) {
@@ -115,7 +114,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
     notes: [],
   };
 
-  const msg = dbGet<{ id: number }>('SELECT * FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+  const msg = cGet<{ id: number }>('SELECT * FROM messages WHERE companion_id = ? AND id = ?', id);
   if (!msg) {
     report.error = '这条消息不存在';
     return report;
@@ -123,7 +122,7 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
 
   if (!cascade) {
     // 只删消息，保留它产生的记忆与影响
-    dbRun('DELETE FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+    cRun('DELETE FROM messages WHERE companion_id = ? AND id = ?', id);
     report.ok = true;
     report.notes.push('只删除了消息本身，记忆与关系状态保持不变');
     return report;
@@ -136,9 +135,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
       tx(() => {
         rollbackOperations(ledgerOps);
         // 账本未覆盖的"行级"清理：信号 / 消息本体 / 审计兜底（关系·银行·冲突·记忆·性格·依恋·共享世界已由账本处理）
-        const eff = dbGet<TurnEffectRow>(
-          'SELECT * FROM turn_effects WHERE user_id = ? AND (message_id = ? OR user_message_id = ?) ORDER BY id DESC LIMIT 1',
-          DEFAULT_USER_ID,
+        const eff = cGet<TurnEffectRow>(
+          'SELECT * FROM turn_effects WHERE companion_id = ? AND (message_id = ? OR user_message_id = ?) ORDER BY id DESC LIMIT 1',
           id,
           id
         );
@@ -148,17 +146,16 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
         const uniq = Array.from(new Set(ids.filter((x) => Number.isFinite(x) && x > 0)));
         const ph = uniq.map(() => '?').join(',');
         // 记忆：账本已删本轮新建的；这里兜底清掉"合并到旧记忆但来源是这条消息"的情况
-        const memRows = dbAll<{ id: number }>(
-          `SELECT id FROM memories WHERE user_id = ? AND source_message_id IN (${ph})`,
-          DEFAULT_USER_ID,
+        const memRows = cAll<{ id: number }>(
+          `SELECT id FROM memories WHERE companion_id = ? AND source_message_id IN (${ph})`,
           ...uniq
         );
         for (const m of memRows) dbRun('DELETE FROM memory_embeddings WHERE memory_id = ?', m.id);
-        dbRun(`DELETE FROM memories WHERE user_id = ? AND source_message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
-        dbRun(`DELETE FROM personality_signals WHERE user_id = ? AND message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
-        dbRun(`DELETE FROM attachment_signals WHERE user_id = ? AND message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
-        dbRun(`DELETE FROM proactive_messages WHERE user_id = ? AND message_id IN (${ph})`, DEFAULT_USER_ID, ...uniq);
-        dbRun('DELETE FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+        cRun(`DELETE FROM memories WHERE companion_id = ? AND source_message_id IN (${ph})`, ...uniq);
+        cRun(`DELETE FROM personality_signals WHERE companion_id = ? AND message_id IN (${ph})`, ...uniq);
+        cRun(`DELETE FROM attachment_signals WHERE companion_id = ? AND message_id IN (${ph})`, ...uniq);
+        cRun(`DELETE FROM proactive_messages WHERE companion_id = ? AND message_id IN (${ph})`, ...uniq);
+        cRun('DELETE FROM messages WHERE companion_id = ? AND id = ?', id);
       });
       report.ok = true;
       report.notes.push('已按操作账本精确撤销这一轮生成的影响；消息本体与信号已清理（turn_effects 记录保留作兜底）');
@@ -182,9 +179,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
   try {
     tx(() => {
       // 找到这一轮的影响记录（用户消息或她的回复都能定位）
-      const eff = dbGet<TurnEffectRow>(
-        'SELECT * FROM turn_effects WHERE user_id = ? AND (message_id = ? OR user_message_id = ?) ORDER BY id DESC LIMIT 1',
-        DEFAULT_USER_ID,
+      const eff = cGet<TurnEffectRow>(
+        'SELECT * FROM turn_effects WHERE companion_id = ? AND (message_id = ? OR user_message_id = ?) ORDER BY id DESC LIMIT 1',
         id,
         id
       );
@@ -195,74 +191,65 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
       const ph = uniq.map(() => '?').join(',');
 
       /* 1) 记忆（含向量） */
-      const memRows = dbAll<{ id: number }>(
-        `SELECT id FROM memories WHERE user_id = ? AND source_message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const memRows = cAll<{ id: number }>(
+        `SELECT id FROM memories WHERE companion_id = ? AND source_message_id IN (${ph})`,
         ...uniq
       );
       for (const m of memRows) dbRun('DELETE FROM memory_embeddings WHERE memory_id = ?', m.id);
-      const delMem = dbRun(
-        `DELETE FROM memories WHERE user_id = ? AND source_message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const delMem = cRun(
+        `DELETE FROM memories WHERE companion_id = ? AND source_message_id IN (${ph})`,
         ...uniq
       );
       report.removed.memories = delMem.changes;
 
       /* 2) 性格信号 + 性格调整日志（若当前值仍等于调整后的值，则回退） */
-      const sigDel = dbRun(
-        `DELETE FROM personality_signals WHERE user_id = ? AND message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const sigDel = cRun(
+        `DELETE FROM personality_signals WHERE companion_id = ? AND message_id IN (${ph})`,
         ...uniq
       );
       report.removed.personalitySignals = sigDel.changes;
 
-      const pLogs = dbAll<PersonalityLogRow>(
-        `SELECT * FROM personality_logs WHERE user_id = ? AND message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const pLogs = cAll<PersonalityLogRow>(
+        `SELECT * FROM personality_logs WHERE companion_id = ? AND message_id IN (${ph})`,
         ...uniq
       );
       for (const l of pLogs) {
-        const cur = dbGet<{ value: number }>(
-          'SELECT value FROM personality_state WHERE user_id = ? AND dimension = ?',
-          DEFAULT_USER_ID,
+        const cur = cGet<{ value: number }>(
+          'SELECT value FROM personality_state WHERE companion_id = ? AND dimension = ?',
           l.dimension
         );
         if (cur && round1(Number(cur.value)) === round1(Number(l.new_value))) {
           dbRun(
-            'UPDATE personality_state SET value = ?, updated_at = ? WHERE user_id = ? AND dimension = ?',
+            'UPDATE personality_state SET value = ?, updated_at = ? WHERE companion_id = ? AND dimension = ?',
             Number(l.old_value),
             nowIso(),
-            DEFAULT_USER_ID,
+            cId(),
             l.dimension
           );
         }
       }
-      const pLogDel = dbRun(
-        `DELETE FROM personality_logs WHERE user_id = ? AND message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const pLogDel = cRun(
+        `DELETE FROM personality_logs WHERE companion_id = ? AND message_id IN (${ph})`,
         ...uniq
       );
       report.removed.personalityLogs = pLogDel.changes;
 
       /* 3) 依恋信号 + 依恋日志（按 id 区间回退两轴） */
-      const attSigDel = dbRun(
-        `DELETE FROM attachment_signals WHERE user_id = ? AND message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const attSigDel = cRun(
+        `DELETE FROM attachment_signals WHERE companion_id = ? AND message_id IN (${ph})`,
         ...uniq
       );
       report.removed.attachmentSignals = attSigDel.changes;
 
       if (eff?.att_log_from && eff?.att_log_to && Number(eff.att_log_to) > Number(eff.att_log_from)) {
-        const attLogs = dbAll<AttachmentLogRow>(
-          'SELECT * FROM attachment_logs WHERE user_id = ? AND id > ? AND id <= ? ORDER BY id DESC',
-          DEFAULT_USER_ID,
+        const attLogs = cAll<AttachmentLogRow>(
+          'SELECT * FROM attachment_logs WHERE companion_id = ? AND id > ? AND id <= ? ORDER BY id DESC',
           Number(eff.att_log_from),
           Number(eff.att_log_to)
         );
         for (const l of attLogs) {
-          const cur = dbGet<{ anxiety: number; avoidance: number; style: string }>(
-            'SELECT anxiety, avoidance, style FROM attachment_state WHERE user_id = ?',
-            DEFAULT_USER_ID
+          const cur = cGet<{ anxiety: number; avoidance: number; style: string }>(
+            'SELECT anxiety, avoidance, style FROM attachment_state WHERE companion_id = ?'
           );
           if (
             cur &&
@@ -270,27 +257,25 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
             round1(Number(cur.avoidance)) === round1(Number(l.new_avoidance))
           ) {
             dbRun(
-              'UPDATE attachment_state SET anxiety = ?, avoidance = ?, style = ?, updated_at = ? WHERE user_id = ?',
+              'UPDATE attachment_state SET anxiety = ?, avoidance = ?, style = ?, updated_at = ? WHERE companion_id = ?',
               Number(l.old_anxiety),
               Number(l.old_avoidance),
               l.old_anxiety >= 40 ? (l.old_avoidance >= 40 ? 'fearful' : 'anxious') : l.old_avoidance >= 40 ? 'avoidant' : 'secure',
               nowIso(),
-              DEFAULT_USER_ID
+              cId()
             );
           }
         }
-        dbRun(
-          'DELETE FROM attachment_logs WHERE user_id = ? AND id > ? AND id <= ?',
-          DEFAULT_USER_ID,
+        cRun(
+          'DELETE FROM attachment_logs WHERE companion_id = ? AND id > ? AND id <= ?',
           Number(eff.att_log_from),
           Number(eff.att_log_to)
         );
       }
 
       /* 4) 情感银行：撤销这一轮的流水，并把余额调回去 */
-      const bankRows = dbAll<{ id: number; delta: number }>(
-        `SELECT id, delta FROM emotional_bank WHERE user_id = ? AND message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const bankRows = cAll<{ id: number; delta: number }>(
+        `SELECT id, delta FROM emotional_bank WHERE companion_id = ? AND message_id IN (${ph})`,
         ...uniq
       );
       if (bankRows.length) {
@@ -300,9 +285,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
         const s = getRelationshipState();
         s.emotional_balance = clamp(s.emotional_balance - applied, -100, 100);
         saveRelationshipState(s);
-        const bankDel = dbRun(
-          `DELETE FROM emotional_bank WHERE user_id = ? AND message_id IN (${ph})`,
-          DEFAULT_USER_ID,
+        const bankDel = cRun(
+          `DELETE FROM emotional_bank WHERE companion_id = ? AND message_id IN (${ph})`,
           ...uniq
         );
         report.removed.bankEntries = bankDel.changes;
@@ -310,9 +294,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
 
       /* 5) 关系数值：最新一轮直接还原，较早的轮次按增量扣回（保留之后的成长） */
       if (eff) {
-        const latest = dbGet<{ id: number }>(
-          'SELECT MAX(id) AS id FROM turn_effects WHERE user_id = ?',
-          DEFAULT_USER_ID
+        const latest = cGet<{ id: number }>(
+          'SELECT MAX(id) AS id FROM turn_effects WHERE companion_id = ?'
         );
         const isLatest = Number(latest?.id || 0) === Number(eff.id);
         const s = getRelationshipState();
@@ -357,9 +340,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
 
         /* 6) 关系日志：删掉这一轮产生的日志 */
         if (eff.rel_log_from && eff.rel_log_to && Number(eff.rel_log_to) > Number(eff.rel_log_from)) {
-          const logDel = dbRun(
-            'DELETE FROM relationship_logs WHERE user_id = ? AND id > ? AND id <= ?',
-            DEFAULT_USER_ID,
+          const logDel = cRun(
+            'DELETE FROM relationship_logs WHERE companion_id = ? AND id > ? AND id <= ?',
             Number(eff.rel_log_from),
             Number(eff.rel_log_to)
           );
@@ -368,9 +350,9 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
 
         /* 7) 冲突：这一轮新建且仍未修复的冲突 → 删除；这一轮修复掉的 → 重新打开 */
         if (eff.conflict_id) {
-          const c = dbGet<{ id: number; status: string }>('SELECT * FROM conflict_logs WHERE id = ? AND user_id = ?', Number(eff.conflict_id), DEFAULT_USER_ID);
+          const c = cGet<{ id: number; status: string }>('SELECT * FROM conflict_logs WHERE companion_id = ? AND id = ?', Number(eff.conflict_id));
           if (c && c.status === 'open') {
-            dbRun('DELETE FROM conflict_logs WHERE id = ? AND user_id = ?', c.id, DEFAULT_USER_ID);
+            cRun('DELETE FROM conflict_logs WHERE companion_id = ? AND id = ?', c.id);
             report.removed.conflicts += 1;
           }
         }
@@ -381,8 +363,8 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
           return um?.created_at || eff.created_at;
         })();
         const { changes: reopened } = dbRun(
-          "UPDATE conflict_logs SET status = 'open', resolved_at = NULL WHERE user_id = ? AND status = 'repaired' AND resolved_at >= ? AND resolved_at <= ?",
-          DEFAULT_USER_ID,
+          "UPDATE conflict_logs SET status = 'open', resolved_at = NULL WHERE companion_id = ? AND status = 'repaired' AND resolved_at >= ? AND resolved_at <= ?",
+          cId(),
           startAt,
           eff.created_at
         );
@@ -395,15 +377,14 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
       }
 
       /* 9) 主动消息记录 */
-      const pDel = dbRun(
-        `DELETE FROM proactive_messages WHERE user_id = ? AND message_id IN (${ph})`,
-        DEFAULT_USER_ID,
+      const pDel = cRun(
+        `DELETE FROM proactive_messages WHERE companion_id = ? AND message_id IN (${ph})`,
         ...uniq
       );
       report.removed.proactive = pDel.changes;
 
       /* 10) 最后删除消息本身 */
-      dbRun('DELETE FROM messages WHERE id = ? AND user_id = ?', id, DEFAULT_USER_ID);
+      cRun('DELETE FROM messages WHERE companion_id = ? AND id = ?', id);
     });
 
     report.ok = true;
@@ -423,19 +404,19 @@ export function deleteMessageById(id: number, cascade: boolean): DeleteReport {
 export function wipeAllMessages(): void {
   tx(() => {
     // 1) 消息派生的内部审计数据：直接删除
-    dbRun('DELETE FROM turn_effects WHERE user_id = ?', DEFAULT_USER_ID);
-    dbRun('DELETE FROM proactive_messages WHERE user_id = ?', DEFAULT_USER_ID);
+    cRun('DELETE FROM turn_effects WHERE companion_id = ?');
+    cRun('DELETE FROM proactive_messages WHERE companion_id = ?');
 
     // 2) 指向消息的列：置 NULL（保留业务数据本体）
-    dbRun('UPDATE memories SET source_message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
-    dbRun('UPDATE personality_signals SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
-    dbRun('UPDATE personality_logs SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
-    dbRun('UPDATE attachment_signals SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
-    dbRun('UPDATE emotional_bank SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
-    dbRun('UPDATE relationship_logs SET message_id = NULL WHERE user_id = ?', DEFAULT_USER_ID);
+    dbRun('UPDATE memories SET source_message_id = NULL WHERE companion_id = ?', cId());
+    dbRun('UPDATE personality_signals SET message_id = NULL WHERE companion_id = ?', cId());
+    dbRun('UPDATE personality_logs SET message_id = NULL WHERE companion_id = ?', cId());
+    dbRun('UPDATE attachment_signals SET message_id = NULL WHERE companion_id = ?', cId());
+    dbRun('UPDATE emotional_bank SET message_id = NULL WHERE companion_id = ?', cId());
+    dbRun('UPDATE relationship_logs SET message_id = NULL WHERE companion_id = ?', cId());
 
     // 3) 删除消息本身
-    dbRun('DELETE FROM messages WHERE user_id = ?', DEFAULT_USER_ID);
+    cRun('DELETE FROM messages WHERE companion_id = ?');
 
     // 4) 重置自增序列：sqlite_sequence 只在存在自增表时才有，缺表则忽略
     try {
