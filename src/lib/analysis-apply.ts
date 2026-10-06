@@ -2,6 +2,7 @@
 // 把一轮分析结果的全部本地写入包进一个事务（P0-07 原子化），并把每处真实变化写入操作账本（P0-08）。
 // 依赖方向：analysis.ts → analysis-apply.ts（单向，无环）。
 import { dbRun, tx, DEFAULT_USER_ID, setCounter, getSetting, cAll, cGet, cRun } from './db';
+import { ck } from './companion-context';
 import { clamp, nowIso, round1, errMsg } from './utils';
 import { applyRelationshipDelta, checkStageTransition, getRelationshipState, saveRelationshipState, logRelationship, saveAffectState } from './relationship';
 import { addBankEntry } from './emotionalBank';
@@ -308,7 +309,7 @@ export function applyAnalysisResult(
     if (!custom) {
       if (ctx.attShouldRun && ctx.attRaw) {
         const a = ctx.attRaw;
-        setCounter('last_attachment_analysis_turn', turn);
+        setCounter(ck('last_attachment_analysis_turn'), turn);
         const sig: AttachmentSignal = {
           anxiety_delta: clamp(num(a.suggested_anxiety_delta), -2, 2),
           avoidance_delta: clamp(num(a.suggested_avoidance_delta), -2, 2),

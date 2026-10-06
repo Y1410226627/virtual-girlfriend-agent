@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Toast } from '@/components/ui';
+import { CompanionSwitcher } from '@/components/companions/CompanionSwitcher';
 import ChatHeader from '@/components/chat/ChatHeader';
 import EventBar from '@/components/chat/EventBar';
 import MessageList from '@/components/chat/MessageList';
@@ -19,13 +21,17 @@ import { useSticker } from '@/components/chat/use-sticker';
 import { useOnboarding } from '@/components/chat/use-onboarding';
 
 export default function ChatPage() {
+  const router = useRouter();
   const [input, setInput] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const visitAtRef = useRef<number>(Date.now()); // "你这次进来"的时间（用于记录 lastVisitAt）
   // P1-50："她等了你多久"要按"当前时间"实时计算（而不是你进页面那一刻），每分钟刷新一次
   const [nowTs, setNowTs] = useState(() => Date.now());
+  // 多女友：当前聊天对象（切换器用）。读 URL ?companionId= 或本地记忆；缺省主女友。
+  // 说明：真正的按伴侣取数由 T02 的数据层负责，这里只负责把切换器接入并保持选择一致。
+  const [companionId, setCompanionId] = useState(1);
 
-  const { state, onboard, setOnboard, loadState, setSceneMode } = useChatState(setToast);
+  const { state, onboard, setOnboard, loadState, setSceneMode } = useChatState(setToast, companionId);
   const {
     messages,
     setMessages,
@@ -42,13 +48,14 @@ export default function ChatPage() {
     send,
     regenerate,
     withdraw,
-  } = useChatStream({ state, loadState, setToast, input, setInput });
+  } = useChatStream({ state, loadState, setToast, input, setInput, companionId });
   const { playingId, playTts } = useChatTts(setToast);
-  const { photoOpen, setPhotoOpen, photoLoading, photoSrc, photoCaption, openPhoto } = usePhoto();
+  const { photoOpen, setPhotoOpen, photoLoading, photoSrc, photoCaption, openPhoto } = usePhoto(companionId);
   const { delTarget, setDelTarget, delCascade, setDelCascade, deleting, delCancelRef, doDelete } = useDeleteFlow({
     setMessages,
     loadState,
     setToast,
+    companionId,
   });
   const {
     evBusy,
@@ -61,9 +68,9 @@ export default function ChatPage() {
     setEvImmediateOpen,
     setEvCustomOpen,
     eventAction,
-  } = useEventBar({ state, loadMessages, loadState, setToast });
+  } = useEventBar({ state, loadMessages, loadState, setToast, companionId });
   const { stickerOpen, setStickerOpen, stickerPanelRef, stickerBtnRef, insertSticker } = useSticker(setInput);
-  const { nameDraft, setNameDraft, saveOnboard } = useOnboarding({ setOnboard, loadState, setToast });
+  const { nameDraft, setNameDraft, saveOnboard } = useOnboarding({ setOnboard, loadState, setToast, companionId });
 
   /* 记录"你这次进来"的时间（用于 lastVisitAt） */
   useEffect(() => {
@@ -79,6 +86,19 @@ export default function ChatPage() {
   useEffect(() => {
     const t = setInterval(() => setNowTs(Date.now()), 60_000);
     return () => clearInterval(t);
+  }, []);
+
+  /* 初始化「当前聊天对象」：优先 URL 参数（切换器跳转携带），其次本地记忆，最后主女友。
+     在 effect 内读取，避免 SSR/水合不一致。 */
+  useEffect(() => {
+    try {
+      const q = new URLSearchParams(window.location.search).get('companionId');
+      const ls = window.localStorage.getItem('companionId');
+      const id = Math.trunc(Number(q || ls || 1)) || 1;
+      setCompanionId(id);
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const her = state?.persona?.agent_name || '她';
@@ -118,7 +138,12 @@ export default function ChatPage() {
         typing={typing}
         onOpenPhoto={openPhoto}
         onSetSceneMode={setSceneMode}
+        companionId={companionId}
       >
+        {/* 多女友：伴侣切换器（选择后写本地记忆并携 ?companionId= 跳转） */}
+        <div className="mt-2 flex items-center gap-2">
+          <CompanionSwitcher currentId={companionId} onOpenRoster={() => router.push('/companions')} />
+        </div>
         <EventBar
           ongoingEvent={state?.life?.ongoingEvent}
           evBusy={evBusy}
@@ -207,6 +232,7 @@ export default function ChatPage() {
         src={photoSrc}
         caption={photoCaption}
         onClose={() => setPhotoOpen(false)}
+        companionId={companionId}
       />
 
       {toast ? <Toast text={toast} onClose={() => setToast(null)} /> : null}

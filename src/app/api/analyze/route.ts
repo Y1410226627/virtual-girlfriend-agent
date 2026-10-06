@@ -5,6 +5,7 @@ import { getAttachmentState, attachmentStyle } from '@/lib/attachment';
 import { personalityMap } from '@/lib/personality';
 import { ATTACHMENT_STYLES } from '@/lib/types';
 import { round1 } from '@/lib/utils';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,12 +37,16 @@ function snapshot() {
   };
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣返回分析进度 + 状态快照
+  return withRequestCompanion(req, () => {
   const st = analysisQueueStatus();
   return Response.json({ ...st, updated: snapshot() });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   let body: ReqBody = {};
   try {
     body = await req.json();
@@ -62,4 +67,5 @@ export async function POST(req: Request) {
   const { pending } = enqueueAnalysis({ userMessageId, assistantMessageId });
 
   return Response.json({ queued: true, pending });
+  });
 }

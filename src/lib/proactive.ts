@@ -1,5 +1,6 @@
 // 主动消息：定时任务检查是否该由她先开口（不骚扰、有节制、引用记忆、符合阶段）
 import { getSetting, getCounter, setCounter, bumpCounter, DEFAULT_USER_ID, dbGet, cRun, cGet, cAll } from './db';
+import { ck } from './companion-context';
 import { hoursSince, localDateStr, localHour, minutesSince, nowIso, errMsg, truncate } from './utils';
 import { chat } from './llm';
 import { buildProactiveMessages, type ProactiveWhyNow } from './prompts';
@@ -225,14 +226,14 @@ export function loadProactiveResponseSamples(limit = 10, now: Date = new Date())
  */
 export function refreshProactiveResponseRate(limit = 10, now: Date = new Date()): ProactiveResponseRate {
   const current = computeProactiveResponseRate(loadProactiveResponseSamples(limit, now));
-  const stored = dbGet<{ value: number }>('SELECT value FROM counters WHERE key = ?', RESPONSE_RATE_KEY);
+  const stored = dbGet<{ value: number }>('SELECT value FROM counters WHERE key = ?', ck(RESPONSE_RATE_KEY));
   const storedVal = stored && Number.isFinite(Number(stored.value)) ? Number(stored.value) : null;
   if (current.samples === 0) {
     return { rate: storedVal ?? 0, samples: 0, answered: 0 };
   }
   const prev = storedVal ?? current.rate; // 首次直接取本次
   const smoothed = prev * 0.6 + current.rate * 0.4;
-  setCounter(RESPONSE_RATE_KEY, smoothed);
+  setCounter(ck(RESPONSE_RATE_KEY), smoothed);
   return { rate: smoothed, samples: current.samples, answered: current.answered };
 }
 
@@ -490,7 +491,7 @@ export async function tickProactive(force = false): Promise<TickResult> {
       'SELECT created_at FROM messages WHERE companion_id = ? ORDER BY id DESC LIMIT 1'
     );
     const minsSinceMsg = lastAnyMsg ? (Date.now() - new Date(lastAnyMsg.created_at).getTime()) / 60000 : 99999;
-    const notifyRetryAfter = getCounter('event_notify_retry_after');
+    const notifyRetryAfter = getCounter(ck('event_notify_retry_after'));
     // 只有"他会在意"的事才值得一条结束提醒；看剧/游戏/家务/护肤这类日常不打扰（安静地结束掉）
     const REPORTABLE = new Set(['sleep', 'shower', 'meal', 'commute', 'focus']);
     if (lateMinutes > eventLateWindowMinutes(expired) || minsSinceMsg <= 3 || !REPORTABLE.has(expired.event_type)) {
@@ -503,7 +504,7 @@ export async function tickProactive(force = false): Promise<TickResult> {
         return { sent: true, reason: `「${expired.activity}」结束了，她来告诉你`, kind: 'event_end', message: sent };
       }
       // 生成失败（比如模型临时挂了）：不结束事件，10 分钟后再试
-      setCounter('event_notify_retry_after', Date.now() + 10 * 60 * 1000);
+      setCounter(ck('event_notify_retry_after'), Date.now() + 10 * 60 * 1000);
       return skip('事件结束提醒生成失败，稍后重试');
     } else {
       return skip('事件结束提醒等待重试');
@@ -521,7 +522,7 @@ export async function tickProactive(force = false): Promise<TickResult> {
   const act = getActivity();
   const psy = getPsychology();
   const offlineHours = rel.scene_updated_at ? hoursSince(rel.scene_updated_at) : 999;
-  const lastProactiveAt = getCounter('last_proactive_ms');
+  const lastProactiveAt = getCounter(ck('last_proactive_ms'));
 
   // 汇总为纯逻辑状态，交给 decideProactiveKind 判定（各类型独立条件与最小间隔）
   const state: ProactiveState = {
@@ -536,7 +537,7 @@ export async function tickProactive(force = false): Promise<TickResult> {
     hasLastInteraction: !!rel.last_interaction_at,
     hoursSinceLastMessage: hours,
     hoursSinceLastProactive: lastProactiveAt > 0 ? (now.getTime() - lastProactiveAt) / 3600000 : Infinity,
-    todayCount: getCounter(dayKey),
+    todayCount: getCounter(ck(dayKey)),
     perDay: limits.perDay,
     baseMinGapHours: limits.minGapHours,
     // 低回应率 → 放宽最小间隔 1.5 倍、每日额度 -1（adjustedGapHours(1,...) 返回 1 或 1.5）
@@ -633,8 +634,8 @@ export async function tickProactive(force = false): Promise<TickResult> {
     messageId,
     nowIso()
   );
-  bumpCounter(dayKey, 1);
-  setCounter('last_proactive_ms', Date.now());
+  bumpCounter(ck(dayKey), 1);
+  setCounter(ck('last_proactive_ms'), Date.now());
 
   // P1-45：她主动说出口的话（自述/计划/承诺/经历/未来打算）也要进长期分析，
   // 否则"我明天想去……"不会变成她自己的记忆。fire-and-forget，绝不阻塞消息发送。
@@ -714,7 +715,7 @@ export function proactiveStatus() {
   return {
     frequency: freq,
     perDay: limits.perDay,
-    todayCount: getCounter(dayKey),
+    todayCount: getCounter(ck(dayKey)),
     quietHours: `${getSetting('quiet_start')} - ${getSetting('quiet_end')}`,
     dnd: getSetting('dnd') === 'true',
     inQuietHours: inQuietHours(),

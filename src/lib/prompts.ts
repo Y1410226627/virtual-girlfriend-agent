@@ -551,6 +551,69 @@ function whyNowBlock(why?: ProactiveWhyNow): string {
   return `\n【为什么是现在（按这条因果链想，别跳步）】\n${wrapData(lines.join('\n'))}\n开口要用上面"当下正在发生的事"做由头（比如手上的事、今天发生的事、你们的约定），从它自然联想到他；**不要凭空说想他**，也不要把这条因果链像念稿子一样说出来。`;
 }
 
+/* ================================================================== */
+/* 12.5 群聊 System Prompt（T04 · 隐私红线）                            */
+/* ================================================================== */
+/**
+ * 群内【公开】角色卡 —— 只允许承载 companions 表的公开字段
+ * （name / identity / personality_tags / intro）。
+ * 这是"单模型多角色扮演"的公共人设来源：
+ *   ★ 群聊上下文绝不加载任何角色的私密记忆 / 向量 / 用户画像；
+ *   ★ 这些字段由调用方（group.ts 的 buildGroupPrompt）显式查询后传入，本函数自身不读写数据库。
+ */
+export interface GroupPublicCard {
+  name: string;
+  identity?: string | null;
+  personalityTags?: string[];
+  intro?: string | null;
+}
+
+export interface GroupSystemPromptOptions {
+  /** 当前发言人显示名 */
+  speakerName: string;
+  /** 群内全部角色显示名（含当前发言人） */
+  memberNames: string[];
+  /** 群话题（可为空） */
+  topic?: string | null;
+  /** 群内【公开】角色卡（不含任何私密信息） */
+  cards: GroupPublicCard[];
+  /** 用户在此群中的称呼 */
+  userName: string;
+}
+
+/**
+ * 组装群聊的 [system] 文本块（纯函数，不读库）。
+ * 格式对齐架构 §3.4：成员与规则 + 公开角色卡 + 话题。
+ * 只输出当前发言人这一条，不带角色名前缀、1-2 句口语。
+ */
+export function buildGroupSystemPrompt(opts: GroupSystemPromptOptions): string {
+  const speaker = String(opts.speakerName || '她').trim() || '她';
+  const others = opts.memberNames.map((n) => String(n).trim()).filter((n) => n && n !== speaker);
+  const membersLine = [`你（当前发言人：${speaker}）`, ...others, `「${opts.userName || '你'}」（用户）`].join('、');
+
+  const cardLines = opts.cards
+    .map((c) => {
+      const tags = (c.personalityTags ?? [])
+        .map((t) => String(t).trim())
+        .filter(Boolean)
+        .map((t) => `#${t}`)
+        .join(' ');
+      const parts = [`身份=${c.identity ? String(c.identity) : '—'}`];
+      if (tags) parts.push(`性格=${tags}`);
+      if (c.intro) parts.push(`备注=${String(c.intro)}`);
+      return `${c.name}：${parts.join('；')}`;
+    })
+    .join('\n');
+
+  return `[system] 你正在一个群聊里。成员有：${membersLine}。
+规则：只输出「${speaker}」这一刻要说的话，不要替别人发言、不要旁白、不要角色名前缀；1-2 句、口语、像真人随手发在群里的消息。
+（群内公开信息 —— 不包含任何私密记忆）
+${cardLines || '（暂无角色卡）'}
+话题：${opts.topic ? String(opts.topic) : '随便聊聊。'}
+
+${DATA_GUARD_NOTE}`;
+}
+
 export function buildProactiveMessages(payload: {
   kind: 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end';
   hoursSinceLast: number;

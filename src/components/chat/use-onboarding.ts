@@ -2,14 +2,16 @@
 
 import { useState } from 'react';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 
 /* 首次引导：昵称草稿与保存（原 page.tsx 逻辑原样搬移） */
 export function useOnboarding(params: {
   setOnboard: (v: boolean) => void;
   loadState: () => Promise<void>;
   setToast: (v: string | null) => void;
+  companionId?: number;
 }) {
-  const { setOnboard, loadState, setToast } = params;
+  const { setOnboard, loadState, setToast, companionId = 1 } = params;
 
   const [nameDraft, setNameDraft] = useState({ user_name: '', agent_name: '' });
 
@@ -21,7 +23,7 @@ export function useOnboarding(params: {
     }
     try {
       // P1-56：一次请求同时写 user_name + agent_name，服务端用同一事务落库（原子）。
-      const r = await fetch('/api/relationship', {
+      const r = await fetch(withCompanionQuery('/api/relationship', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

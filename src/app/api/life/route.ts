@@ -41,6 +41,7 @@ import {
 } from '@/lib/life';
 import { notifyEventEnd } from '@/lib/proactive';
 import { ensureScheduler } from '@/lib/scheduler';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,6 +59,8 @@ interface WeeklySnapshotRow {
 }
 
 export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣读取"她的世界"
+  return withRequestCompanion(req, () => {
   // P1-59：GET 只读——不再推进时间（advanceLife）/ 写每周快照，避免"读一次就改库"。
   // 生活推进改由 POST /api/tick（应用启动时触发一次）与后台定时器（每 5 分钟）负责。
   ensureScheduler();
@@ -150,9 +153,11 @@ export async function GET(req: Request) {
       cycleEnabled: getSetting('cycle_enabled') === 'true',
     },
   });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const action = String(body?.action || '');
   ensureLife();
@@ -288,4 +293,5 @@ export async function POST(req: Request) {
   }
 
   return Response.json({ error: '未知操作' }, { status: 400 });
+  });
 }

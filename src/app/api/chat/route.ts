@@ -16,7 +16,8 @@ import { humanizeReply } from '@/lib/humanize';
 import { validateReply, RETRY_SCORE_THRESHOLD } from '@/lib/reply-validator';
 import { detectEventFromConversation } from '@/lib/life';
 import { errMsg } from '@/lib/utils';
-import { DEFAULT_USER_ID } from '@/lib/db';
+import { withCompanion } from '@/lib/companion-context';
+import { resolveCompanionId } from '@/lib/companion';
 import {
   withConversationLock,
   createTurn,
@@ -64,6 +65,8 @@ function persistIncomingImages(raw: unknown): { ok: true; images: string[] } | {
 }
 
 export async function POST(req: Request) {
+  // 多女友隔离（T02 收尾 D2）：先解析本次请求的目标伴侣，后续整条链路在该伴侣上下文内串行执行。
+  const companionId = resolveCompanionId(req);
   // 整包体积上限：请求头带 Content-Length 时先拦（避免把超大 body 读进内存）
   const declared = Number(req.headers.get('content-length') || 0);
   if (declared > MAX_BODY_BYTES) {
@@ -79,7 +82,7 @@ export async function POST(req: Request) {
 
   // 重新生成：删掉她最后一条回复，用前面的用户消息重跑一遍生成（不重复保存用户消息）
   if (body?.regenerate === true) {
-    return buildChatStream(req, { regenerate: true, content: '' });
+    return buildChatStream(req, { regenerate: true, content: '', companionId });
   }
 
   const content = String(body?.content || '').trim();
@@ -89,7 +92,7 @@ export async function POST(req: Request) {
   if (!content && parsed.images.length === 0) return Response.json({ error: '消息不能为空' }, { status: 400 });
   if (content.length > 4000) return Response.json({ error: '消息太长了（最多 4000 字）' }, { status: 400 });
 
-  return buildChatStream(req, { regenerate: false, content, images: parsed.images });
+  return buildChatStream(req, { regenerate: false, content, images: parsed.images, companionId });
 }
 
 /** 把非流式兜底的整段文本切成若干段（句末标点优先），让前端仍能"逐句浮现"，与流式体验一致 */
@@ -112,7 +115,7 @@ function splitForStream(text: string): string[] {
  */
 function buildChatStream(
   req: Request,
-  params: { regenerate: boolean; content: string; images?: string[] }
+  params: { regenerate: boolean; content: string; images?: string[]; companionId: number }
 ): Response {
   const encoder = new TextEncoder();
   let full = '';
@@ -133,7 +136,12 @@ function buildChatStream(
       };
 
       try {
-        await withConversationLock(DEFAULT_USER_ID, async () => {
+        // 多女友隔离（T02 收尾 D2）：
+        // 1) withCompanion 必须在 ReadableStream.start 的异步回调内绑定 —— ALS 上下文不会
+        //    自动跨过 stream 回调边界，只能在真正执行生成链路的地方包裹，否则 cId() 会退回主女友。
+        // 2) 会话锁按 companionId 分键：不同伴侣各持一把锁，可并行；同一伴侣仍严格串行。
+        await withCompanion(params.companionId, () =>
+          withConversationLock(params.companionId, async () => {
           if (ac.signal.aborted) return;
 
           // ---- prepare 阶段：准备上下文 + 建 turn/generation（同一会话串行）----
@@ -355,7 +363,8 @@ function buildChatStream(
               analysisStartedAt: null,
             });
           }
-        });
+          })
+        );
       } catch (e) {
         send({ type: 'error', message: errMsg(e) });
       } finally {

@@ -1,6 +1,6 @@
 // 性格系统：读取层与公共辅助（供 personality.ts 与 personality-snapshots.ts 使用）
 import { dbRun, DEFAULT_USER_ID, setCounter, cAll, cGet, cRun } from './db';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 import { clamp, nowIso, round1 } from './utils';
 import { getRelationshipState } from './relationship';
 import { attachmentStyleOf, DIMENSIONS, type DimensionKey } from './types';
@@ -90,7 +90,7 @@ export function unsolidify(dim: string): void {
     cId(),
     dim
   );
-  setCounter(`solidify_streak_${dim}`, 0);
+  setCounter(ck(`solidify_streak_${dim}`), 0);
   cRun(
     `INSERT INTO personality_logs (companion_id, user_id, message_id, dimension, old_value, new_value, delta, signal_context, reasoning, stage_at_time, attachment_at_time, layer, created_at)
      SELECT ?, ?, NULL, dimension, value, value, 0, NULL, '用户手动解除固化', ?, ?, 'manual', ? FROM personality_state WHERE companion_id = ? AND dimension = ?`,

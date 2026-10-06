@@ -16,11 +16,15 @@ import { ensureScheduler } from '@/lib/scheduler';
 import { STICKERS } from '@/lib/stickers';
 import { getActivity, getHealth, getLocation, getPsychology, getActiveEvent } from '@/lib/life';
 import { getIntimacy, getLevel, inAftercare } from '@/lib/intimacy';
+import { withRequestCompanion } from '@/lib/companion';
+import { ck } from '@/lib/companion-context';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣返回其全量状态快照
+  return withRequestCompanion(req, () => {
   ensureScheduler();
   const rel = getRelationshipState();
   const att = getAttachmentState();
@@ -72,7 +76,7 @@ export async function GET() {
     },
     conflicts: listConflicts(10),
     memory: memoryStats(),
-    counters: { turns: getCounter('turn_count'), messages: messageCount() },
+    counters: { turns: getCounter(ck('turn_count')), messages: messageCount() },
     proactive: proactiveStatus(),
     stages: stageListForUi(),
     events: cAll('SELECT * FROM events WHERE companion_id = ? ORDER BY event_date ASC'),
@@ -126,5 +130,6 @@ export async function GET() {
         return null;
       }
     })(),
+  });
   });
 }

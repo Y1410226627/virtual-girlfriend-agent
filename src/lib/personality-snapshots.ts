@@ -2,7 +2,7 @@
 import { dbRun, DEFAULT_USER_ID, setCounter, tx, cRun, cGet, cAll } from './db';
 import { nowIso } from './utils';
 import { personalityMap, manualAdjust } from './personality-core';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 
 export interface PersonalitySnapshotRow {
   id: number;
@@ -58,7 +58,7 @@ export function rollbackToSnapshot(snapshotId: number): boolean {
         cId(),
         dim
       );
-      setCounter(`solidify_streak_${dim}`, 0);
+      setCounter(ck(`solidify_streak_${dim}`), 0);
     }
   });
   return true;

@@ -16,11 +16,14 @@ import { getRelationshipState } from '@/lib/relationship';
 import { getAttachmentState } from '@/lib/attachment';
 import { DIMENSIONS } from '@/lib/types';
 import { tx } from '@/lib/db';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣读取性格
+  return withRequestCompanion(req, () => {
   const rows = getPersonalityRows();
   const state = DIMENSIONS.map((d) => {
     const row = rows.find((r) => r.dimension === d.key);
@@ -44,9 +47,11 @@ export async function GET() {
     stage: getRelationshipState().stage,
     attachment: getAttachmentState(),
   });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const action = body?.action;
 
@@ -77,4 +82,5 @@ export async function POST(req: Request) {
     return Response.json({ ok });
   }
   return Response.json({ error: '未知操作' }, { status: 400 });
+  });
 }

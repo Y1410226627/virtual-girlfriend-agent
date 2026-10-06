@@ -2,7 +2,7 @@
 // 关键原则：绝不在每轮对话里直接改性格。
 // 读取层与周快照已拆至 personality-core.ts / personality-snapshots.ts，本文件保留原有导出面。
 import { dbRun, DEFAULT_USER_ID, getCounter, setCounter, numSetting, customModeOn, tx, cAll, cRun } from './db';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 import { clamp, nowIso, round1 } from './utils';
 import { stageOf } from './stages';
 import { getRelationshipState, logRelationship } from './relationship';
@@ -90,7 +90,7 @@ function confirmThresholds() {
 /** 展示累积层的当前进度（前端"性格页"用） */
 export function signalProgress(): SignalProgress[] {
   const th = confirmThresholds();
-  const turn = getCounter('turn_count');
+  const turn = getCounter(ck('turn_count'));
   const stage = stageOf(getRelationshipState().stage);
   const rows0 = getPersonalityRows();
   // 循环外读一次建 Map，避免每个维度都全表扫一遍
@@ -141,7 +141,7 @@ export function runConfirmLayer(messageId?: number | null): void {
   if (th.openness <= 0) return;
 
   const stage = stageOf(getRelationshipState().stage);
-  const turn = getCounter('turn_count');
+  const turn = getCounter(ck('turn_count'));
   // 循环外读一次建 Map，避免每个维度都全表扫一遍
   const rowMap = new Map(getPersonalityRows().map((r) => [r.dimension, r]));
 
@@ -280,7 +280,7 @@ export function runConfirmLayer(messageId?: number | null): void {
 /* ---------------------- 第三层：固化 ---------------------- */
 /** 连续 15 次同方向确认 → 半固化，变化速率降到每 30 轮 ±1 */
 function bumpSolidifyStreak(dim: string, direction: '+' | '-') {
-  const key = `solidify_streak_${dim}`;
+  const key = ck(`solidify_streak_${dim}`);
   const prev = getCounter(key); // 带符号：正数代表连续 "+" 次数
   const sameDir = (prev > 0 && direction === '+') || (prev < 0 && direction === '-');
   const next = sameDir ? prev + (direction === '+' ? 1 : -1) : direction === '+' ? 1 : -1;

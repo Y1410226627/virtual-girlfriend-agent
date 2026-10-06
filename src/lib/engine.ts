@@ -1,6 +1,6 @@
 // 聊天引擎：上下文组装 + 回复生成（流式）
 import { dbRun, DEFAULT_USER_ID, bumpCounter, getCounter, numSetting, getSetting, cAll, cGet, cRun } from './db';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 import { nowIso, truncateMiddle, hoursSince, errMsg } from './utils';
 import { chat, chatStream, contentText, IMAGE_PLACEHOLDER, type ChatMessage, type MessageContentPart } from './llm';
 import { buildReplyMessages, buildHints } from './prompts';
@@ -247,7 +247,7 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
   }
 
   // 只读当前计数：首次见面判定与 buildHints 都基于"已成功完成"的持久计数
-  const turnCount = getCounter('turn_count');
+  const turnCount = getCounter(ck('turn_count'));
   const gapHours = hoursSince(getRelationshipState().last_interaction_at);
   // 她的生活先推进到此刻（按流逝时间推导，幂等；不足 15 分钟会直接返回）
   try {
@@ -326,14 +326,14 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
  * 生成失败则不调用 —— 避免出现"没有她回复的幽灵 turn"。
  */
 export function commitTurn(prepared: PreparedTurn): void {
-  bumpCounter('turn_count');
+  bumpCounter(ck('turn_count'));
   touchInteraction();
   commitScene(prepared.sceneUpdate);
 }
 
 /** 首次见面判定：基于持久计数（重新生成不改变判定；清空聊天记录后不误判） */
 export function isFirstMeeting(): boolean {
-  return getCounter('turn_count') === 0;
+  return getCounter(ck('turn_count')) === 0;
 }
 
 /** 她最近说过的原话（用于查重，避免复读） */
@@ -490,7 +490,9 @@ export function currentScene(): { scene: Scene; mode: string; reason: string } {
 
 /** 直接生成一条回复（非流式，用于主动消息/测试）：同样经过"人味层" */
 export async function generateReply(userText: string): Promise<string> {
-  return withConversationLock(DEFAULT_USER_ID, async () => {
+  // T02 收尾 D2：会话锁按当前伴侣分键（cId()），不同伴侣可并行、同一伴侣串行，
+  // 避免把所有伴侣的生成都排到主女友那把锁上。
+  return withConversationLock(cId(), async () => {
     const prepared = await prepareTurn(userText);
     const raw = await chat(prepared.messages, { maxTokens: 900, temperature: 0.9, thinking: false });
     const h = humanizeReply(raw, prepared.humanize);

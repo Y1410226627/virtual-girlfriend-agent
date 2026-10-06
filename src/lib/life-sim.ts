@@ -1,7 +1,7 @@
 // 生活系统 · 模拟推进层：主推进 advanceLife / 状态增量 / 互动康复 / 周快照
 // 由 life.ts 拆分而来（原样搬移，行为不变）
 import { dbRun, DEFAULT_USER_ID, getCounter, bumpCounter, boolSetting, customModeOn, cAll, cRun } from './db';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 import { shouldApplyPokeEffect } from './interactions';
 import { clamp, nowIso, localDateStr, round1 } from './utils';
 import { getRelationshipState, logRelationship } from './relationship';
@@ -204,7 +204,7 @@ export function pickEvent(ctx: EventContext, roll: number, pool: EventPoolEntry[
 const ILLNESS_COOLDOWN_MS = 7 * 86400000;
 export function illnessTriggerAllowed(health: { illness: string }, nowMs: number): boolean {
   if (health.illness !== 'none') return false;
-  const last = getCounter('illness_last_at');
+  const last = getCounter(ck('illness_last_at'));
   if (last > 0 && nowMs - last < ILLNESS_COOLDOWN_MS) return false;
   return true;
 }
@@ -500,7 +500,7 @@ export function applyLifeDeltas(input: { health?: LifeHealthDelta; psychology?: 
   const illnessEvent = String(hd.illness || 'none');
   if (illnessEvent === 'new') {
     // 时长确定性推导（同一天同一轮给同样的值，避免随机跳变）
-    const seed = Number(getCounter('turn_count') || 0);
+    const seed = Number(getCounter(ck('turn_count')) || 0);
     startIllness('感冒', 2 + (seed % 20) / 10);
   } else if (illnessEvent === 'recovered' && h.illness !== 'none') {
     // 模型判定"这轮之后康复了" → 直接结束病程（比机械等天数自然）
@@ -567,8 +567,8 @@ export function applyPokeEffect(kind: string): PokeEffectResult {
   const eff = POKE_EFFECT[kind];
   if (!eff) return { applied: false, reason: 'unknown' };
   // 每天记一次（跨天自动重置，key 带本地日期）
-  const used = getCounter(`poke_daily_${localDateStr()}`);
-  bumpCounter(`poke_daily_${localDateStr()}`);
+  const used = getCounter(ck(`poke_daily_${localDateStr()}`));
+  bumpCounter(ck(`poke_daily_${localDateStr()}`));
   const custom = customModeOn();
   if (!shouldApplyPokeEffect(used, custom)) {
     return { applied: false, reason: custom ? 'custom' : 'cap' };

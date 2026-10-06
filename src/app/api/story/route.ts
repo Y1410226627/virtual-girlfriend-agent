@@ -1,6 +1,7 @@
 // 纪念册：把你们之间的大事件聚合成时间轴 + 她的日记（只读）
 import { cAll } from '@/lib/db';
 import { errMsg } from '@/lib/utils';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,7 +12,9 @@ interface AgentDiaryRow {
   content: string;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣聚合纪念册
+  return withRequestCompanion(req, () => {
   try {
     // 里程碑：阶段跃迁 / 回退 / 重要时刻 / 冲突 / 修复（kind 取值以 lib 里的实际写入为准）
     const milestones = cAll(
@@ -66,4 +69,5 @@ export async function GET() {
   } catch (e) {
     return Response.json({ error: errMsg(e) }, { status: 500 });
   }
+  });
 }

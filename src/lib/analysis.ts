@@ -1,7 +1,7 @@
 // 后台抽取流水线：每轮对话后调用 LLM 抽取记忆 / 关系变化 / 情感银行 / 冲突 / 性格信号 / 依恋信号
 // 应用阶段（事务化的本地写入 + 操作账本）已拆到 analysis-apply.ts（analysis.ts → analysis-apply 单向依赖）。
 import { getCounter, setCounter, boolSetting, customModeOn, cAll, cGet } from './db';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 import { localDateStr, truncate, errMsg } from './utils';
 import { chat, chatJson } from './llm';
 import { buildAnalysisMessages, buildAttachmentAnalysisMessages, buildDailySummaryMessages } from './prompts';
@@ -23,6 +23,7 @@ import {
   type RawAttachmentAnalysis,
 } from './analysis-parse';
 import { applyAnalysisResult } from './analysis-apply';
+import { noteTurnAndMaybeCheck } from './response-hints';
 
 // 应用阶段与其上下文的对外导出面保持不变（实现见 analysis-apply.ts）
 export { applyAnalysisResult } from './analysis-apply';
@@ -69,7 +70,7 @@ export async function analyzeTurn(params: {
   };
 
   try {
-    const turn = getCounter('turn_count');
+    const turn = getCounter(ck('turn_count'));
     // 自定义模式：数值直控——只保留记忆/场景/生活叙事，冻结一切自动数值改写
     const custom = customModeOn();
     // 记录"本轮开始前"的状态：删除这条消息时可以精确撤销本轮影响
@@ -104,7 +105,7 @@ export async function analyzeTurn(params: {
     let attShouldRun = false;
     let attRaw: RawAttachmentAnalysis | null = null;
     if (!custom) {
-      const lastAttachmentTurn = getCounter('last_attachment_analysis_turn');
+      const lastAttachmentTurn = getCounter(ck('last_attachment_analysis_turn'));
       attShouldRun = shouldRunAttachmentAnalysis(turn, lastAttachmentTurn);
       if (attShouldRun) {
         try {
@@ -188,6 +189,10 @@ export async function analyzeTurn(params: {
       attRaw,
     }, outcome);
 
+    // 10.5) T03 调度钩子：每 PURSUIT_CHECK_EVERY 个回合检查一次攻略状态机。
+    //      主女友 / 已晋升女友 / 已关闭均 no-op（零写库），单女友默认流程零行为变化。
+    noteTurnAndMaybeCheck();
+
     // 11) 偶尔做一次遗忘清理（记忆归档，append-only，放事务外）
     if (turn % 20 === 0) {
       const archived = forgetSweep();
@@ -205,7 +210,7 @@ export async function analyzeTurn(params: {
 /** 每日摘要：跨天后生成昨天的摘要；错过多天会逐天补齐；失败会自动重试 */
 export async function maybeGenerateDailySummary(force = false): Promise<string | null> {
   // 失败后 30 分钟内不再重试，避免后台每次 tick 都打模型
-  const retryAfter = getCounter('summary_retry_after');
+  const retryAfter = getCounter(ck('summary_retry_after'));
   if (!force && retryAfter > Date.now()) return null;
 
   const today = localDateStr();
@@ -261,7 +266,7 @@ export async function maybeGenerateDailySummary(force = false): Promise<string |
   } catch {
     /* 失败：下面统一安排重试 */
   }
-  setCounter('summary_retry_after', Date.now() + 30 * 60 * 1000);
+  setCounter(ck('summary_retry_after'), Date.now() + 30 * 60 * 1000);
   return null;
 }
 

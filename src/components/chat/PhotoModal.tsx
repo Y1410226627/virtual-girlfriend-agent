@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusTrap } from './use-focus-trap';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import { INTERACTIONS, GLOBAL_COOLDOWN_MS, type InteractionKind } from '@/lib/interactions';
 
 interface PhotoModalProps {
@@ -10,9 +11,11 @@ interface PhotoModalProps {
   src: string | null;
   caption: string;
   onClose: () => void;
+  /** 当前聊天对象；触摸互动随它定位到对应伴侣。 */
+  companionId?: number;
 }
 
-export default function PhotoModal({ open, loading, src, caption, onClose }: PhotoModalProps) {
+export default function PhotoModal({ open, loading, src, caption, onClose, companionId = 1 }: PhotoModalProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   // 焦点陷阱：打开时聚焦框内首个可聚焦元素（"关闭"按钮），Tab 在框内循环，Escape 关闭，关闭后还原焦点
   useFocusTrap({ active: open, containerRef: dialogRef, onEscape: onClose });
@@ -54,7 +57,7 @@ export default function PhotoModal({ open, loading, src, caption, onClose }: Pho
       if (remain > 0) return;
       setBusyKind(kind);
       try {
-        const r = await fetch('/api/interact', {
+        const r = await fetch(withCompanionQuery('/api/interact', companionId), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ kind }),
@@ -80,7 +83,7 @@ export default function PhotoModal({ open, loading, src, caption, onClose }: Pho
         setNowMs(Date.now());
       }
     },
-    [busyKind, flash, allUntil, kindUntil]
+    [busyKind, flash, allUntil, kindUntil, companionId]
   );
 
   if (!open) return null;

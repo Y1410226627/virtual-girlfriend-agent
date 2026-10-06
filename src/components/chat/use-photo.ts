@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 
 /* 她的照片弹层：打开时请求 /api/photo，Esc 关闭（原 page.tsx 逻辑原样搬移） */
-export function usePhoto() {
+export function usePhoto(companionId = 1) {
   const [photoOpen, setPhotoOpen] = useState(false);
   const [photoLoading, setPhotoLoading] = useState(false);
   const [photoSrc, setPhotoSrc] = useState<string | null>(null);
@@ -28,7 +29,7 @@ export function usePhoto() {
     setPhotoSrc(null);
     setPhotoCaption('');
     try {
-      const r = await fetch('/api/photo', {
+      const r = await fetch(withCompanionQuery('/api/photo', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),

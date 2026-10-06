@@ -5,6 +5,7 @@ import { cAll } from '@/lib/db';
 import { ATTACHMENT_STYLES, attachmentStyleOf } from '@/lib/types';
 import { round1, clamp } from '@/lib/utils';
 import { getPersonalityRows } from '@/lib/personality';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +17,9 @@ interface PendingSignalRow {
   c: number;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣读取依恋
+  return withRequestCompanion(req, () => {
   const a = getAttachmentState();
   const pending = cAll<PendingSignalRow>(
     'SELECT axis, direction, COUNT(*) AS c FROM attachment_signals WHERE companion_id = ? AND applied = 0 GROUP BY axis, direction'
@@ -34,9 +37,11 @@ export async function GET() {
     pendingSignals: pending.map((p) => ({ axis: p.axis, direction: p.direction, count: Number(p.c) })),
     personality: getPersonalityRows(),
   });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   if (body?.action === 'adjust') {
     const anxiety = body.anxiety;
@@ -58,4 +63,5 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, state: getAttachmentState() });
   }
   return Response.json({ error: '未知操作' }, { status: 400 });
+  });
 }

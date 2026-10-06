@@ -3,7 +3,7 @@
 import { dbRun, DEFAULT_USER_ID, getSetting, setSetting, setCounter, customModeOn, cRun, cGet, cAll } from './db';
 import { clamp, nowIso, round1, safeJson } from './utils';
 import { logRelationship, getPersona } from './relationship';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 
 /* ------------------------------------------------------------------ */
 /* 表初始化                                                            */
@@ -27,9 +27,11 @@ export function ensureLife(): void {
     'INSERT OR IGNORE INTO shared_world (companion_id, user_id, shared_places_json, shared_plans_json, shared_rituals_json, shared_items_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     DEFAULT_USER_ID, '[]', '[]', '[]', '[]', now
   );
-  // 她身边的人：只在"从未播种过"时种一次（用户把 cast 清空/删光后，重启不该被种回来）
-  if (getSetting('cast_seeded') !== '1') {
-    setSetting('cast_seeded', '1');
+  // 她身边的人：只在"从未播种过"时种一次（用户把 cast 清空/删光后，重启不该被种回来）。
+  // T02 收尾（extended fix）：播种标记按伴侣私有命名空间，否则主女友播过之后，新伴侣会被误判
+  // "已播种"而永远没有默认 cast。主女友沿用无后缀键（向后兼容既有库）。
+  if (getSetting(ck('cast_seeded')) !== '1') {
+    setSetting(ck('cast_seeded'), '1');
     const worldRow = cGet<{ cast_json: string | null }>('SELECT cast_json FROM shared_world WHERE companion_id = ?');
     if (!worldRow || !worldRow.cast_json || safeJson<CastMember[]>(worldRow.cast_json, []).length === 0) {
       dbRun('UPDATE shared_world SET cast_json = ?, updated_at = ? WHERE companion_id = ?', JSON.stringify(DEFAULT_CAST), nowIso(), cId());
@@ -37,9 +39,10 @@ export function ensureLife(): void {
   }
   cRun('INSERT OR IGNORE INTO intimacy_state (companion_id, user_id, updated_at) VALUES (?, ?, ?)', DEFAULT_USER_ID, now);
   cRun('INSERT OR IGNORE INTO intimacy_content_level (companion_id, user_id, level, updated_at) VALUES (?, ?, 0, ?)', DEFAULT_USER_ID, now);
-  // 只在"从未播种过"时种一次：用户删掉自己的偏好后，重启不该被种回来
-  if (getSetting('prefs_seeded') !== '1') {
-    setSetting('prefs_seeded', '1');
+  // 只在"从未播种过"时种一次：用户删掉自己的偏好后，重启不该被种回来。
+  // 同理按伴侣私有命名空间，保证新伴侣也有出厂偏好。
+  if (getSetting(ck('prefs_seeded')) !== '1') {
+    setSetting(ck('prefs_seeded'), '1');
     if (!cGet('SELECT id FROM intimacy_preferences WHERE companion_id = ? LIMIT 1')) {
       seedPreferences();
     }
@@ -255,7 +258,7 @@ export function startIllness(kind = '感冒', days = 2, startedAt?: string): voi
     kind, at, round1(days), 40, clamp(h.energy - 25, 5, 100), at, cId()
   );
   // 记录发病时间戳：短期内不再重复触发（门限判定见 life-sim）
-  setCounter('illness_last_at', new Date(at).getTime() || Date.now());
+  setCounter(ck('illness_last_at'), new Date(at).getTime() || Date.now());
   logLife('illness', h.illness, kind, `生病了（预计 ${round1(days)} 天）`, at);
   logRelationship('milestone', `她的状态：开始${kind}（预计 ${round1(days)} 天恢复）`, null, kind, '健康系统');
 }

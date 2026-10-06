@@ -5,11 +5,14 @@ import { errMsg } from '@/lib/utils';
 import { messageCount } from '@/lib/engine';
 import { getRelationshipState } from '@/lib/relationship';
 import { listProfiles, activeProfile, isCooling } from '@/lib/profiles';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：诊断读接口，与其它读路由一致地落到请求所指伴侣
+  return withRequestCompanion(req, async () => {
   const checks: Record<string, unknown> = {};
   const cfg = llmConfig();
 
@@ -121,4 +124,5 @@ export async function GET() {
   }
 
   return Response.json(checks);
+  });
 }

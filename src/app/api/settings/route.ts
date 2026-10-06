@@ -24,6 +24,7 @@ import { getAttachmentState, setAttachmentAxes } from '@/lib/attachment';
 import { setIntimacyState } from '@/lib/intimacy';
 import { backfillEmbeddings } from '@/lib/memory';
 import { setCycleEnabled } from '@/lib/life';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -96,7 +97,10 @@ const maskedProfiles = () =>
     embedding_api_key: maskSecret(p.embedding_api_key),
   }));
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：settings 表本身是全局的（getAllSettings/setSetting 不随伴侣变化），
+  // 但 persona 等按伴侣隔离的数据需落到请求所指伴侣，故整体包裹在伴侣上下文内。
+  return withRequestCompanion(req, () => {
   seedProfilesIfEmpty();
   const settings = getAllSettings();
   const cfg = llmConfig();
@@ -129,9 +133,11 @@ export async function GET() {
     usage: usageToday(),
     health: healthSnapshot(),
   });
+  });
 }
 
 export async function PUT(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const incoming = body?.settings && typeof body.settings === 'object' ? body.settings : body;
   const changed: string[] = [];
@@ -230,9 +236,11 @@ export async function PUT(req: Request) {
     settings: maskedSettings(getAllSettings()),
     profiles: maskedProfiles(),
   });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const action = String(body?.action || '');
   seedProfilesIfEmpty();
@@ -436,4 +444,5 @@ export async function POST(req: Request) {
   }
 
   return Response.json({ error: '未知操作' }, { status: 400 });
+  });
 }

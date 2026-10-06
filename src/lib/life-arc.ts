@@ -1,7 +1,7 @@
 // 生活系统 · 跨天剧情线（Life Arc）与她的日记：后台静默任务
 // 由 life.ts 拆分而来（原样搬移，行为不变）
 import { dbRun, DEFAULT_USER_ID, cAll, cGet, cRun, getCounter, setCounter } from './db';
-import { cId } from './companion-context';
+import { cId, ck } from './companion-context';
 import { clamp, nowIso, localDateStr, errMsg } from './utils';
 import { chatJson, type ChatMessage } from './llm';
 import { getHealth, getPsychology, logLife, currentLifeTemplate, lifeTemplateLabel, type LifeLogRow, type DailyEventRow } from './life-core';
@@ -91,7 +91,7 @@ async function generateLifeArc(): Promise<boolean> {
       DEFAULT_USER_ID, title, description.slice(0, 60), 'active', days, JSON.stringify({ source: 'llm' }), now, now
     );
     // 新建当天不推进，明天才算"第 2 天"
-    setCounter('life_arc_progress_day', Math.floor(Date.now() / 86400000));
+    setCounter(ck('life_arc_progress_day'), Math.floor(Date.now() / 86400000));
     logLife('life_arc', '', title, '开始了新的生活线');
     return true;
   } catch (e) {
@@ -109,14 +109,14 @@ async function generateLifeArc(): Promise<boolean> {
 export async function tickLifeArc(): Promise<void> {
   try {
     const now = Date.now();
-    if (now - getCounter('life_arc_check_at') < 6 * 3600000) return;
-    setCounter('life_arc_check_at', now);
+    if (now - getCounter(ck('life_arc_check_at')) < 6 * 3600000) return;
+    setCounter(ck('life_arc_check_at'), now);
 
     const arc = getActiveArc();
     if (arc) {
       const todayNum = Math.floor(now / 86400000);
-      if (getCounter('life_arc_progress_day') !== todayNum) {
-        setCounter('life_arc_progress_day', todayNum);
+      if (getCounter(ck('life_arc_progress_day')) !== todayNum) {
+        setCounter(ck('life_arc_progress_day'), todayNum);
         const next = arc.progress + 1;
         if (next >= arc.planned_days) {
           dbRun("UPDATE life_arcs SET status = 'finished', progress = ?, updated_at = ? WHERE id = ?", next, nowIso(), arc.id);
@@ -134,15 +134,15 @@ export async function tickLifeArc(): Promise<void> {
     }
 
     // 没有进行中的生活线：距上次成功生成 ≥3 天才考虑再生成（避免频繁打扰模型）
-    if (now - getCounter('life_arc_last_gen') < 3 * 86400000) return;
+    if (now - getCounter(ck('life_arc_last_gen')) < 3 * 86400000) return;
     // 上次生成失败 → 按 retry_after 稍后再试，不占用"3 天"节奏
-    if (now < getCounter('life_arc_retry_after')) return;
+    if (now < getCounter(ck('life_arc_retry_after'))) return;
     const ok = await generateLifeArc();
     if (ok) {
-      setCounter('life_arc_last_gen', now);
-      setCounter('life_arc_retry_after', 0);
+      setCounter(ck('life_arc_last_gen'), now);
+      setCounter(ck('life_arc_retry_after'), 0);
     } else {
-      setCounter('life_arc_retry_after', now + 2 * 3600000);
+      setCounter(ck('life_arc_retry_after'), now + 2 * 3600000);
     }
   } catch (e) {
     console.warn('[life] tickLifeArc 失败:', errMsg(e));
@@ -242,9 +242,9 @@ async function generateDiary(date: string): Promise<boolean> {
 export async function ensureDailyDiaries(): Promise<void> {
   try {
     const now = Date.now();
-    if (getCounter('diary_retry_after') > now) return;
-    if (now - getCounter('diary_check_at') < 30 * 60 * 1000) return;
-    setCounter('diary_check_at', now);
+    if (getCounter(ck('diary_retry_after')) > now) return;
+    if (now - getCounter(ck('diary_check_at')) < 30 * 60 * 1000) return;
+    setCounter(ck('diary_check_at'), now);
 
     const today = localDateStr();
     const start = localDateStr(new Date(now - 6 * 86400000));
@@ -268,7 +268,7 @@ export async function ensureDailyDiaries(): Promise<void> {
     for (const row of missing) {
       const ok = await generateDiary(row.d);
       if (!ok) {
-        setCounter('diary_retry_after', Date.now() + 30 * 60 * 1000);
+        setCounter(ck('diary_retry_after'), Date.now() + 30 * 60 * 1000);
         return;
       }
     }

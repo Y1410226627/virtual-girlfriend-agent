@@ -4,6 +4,7 @@ import { getSetting, boolSetting } from '@/lib/db';
 import { ensureLife, getActivity, getLocation, getHealth } from '@/lib/life';
 import { getPersona } from '@/lib/relationship';
 import { errMsg } from '@/lib/utils';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -76,7 +77,9 @@ function buildPrompt(opts: { activity: string; location: string }): string {
   );
 }
 
-export async function POST() {
+export async function POST(req: Request) {
+  // T02 收尾 D2：caption/prompt 依赖该伴侣的 persona / 活动 / 地点
+  return withRequestCompanion(req, async () => {
   const { caption, activity, location } = buildCaption();
 
   const enabled = boolSetting('img_enabled', false);
@@ -125,4 +128,5 @@ export async function POST() {
   } finally {
     clearTimeout(timer);
   }
+  });
 }

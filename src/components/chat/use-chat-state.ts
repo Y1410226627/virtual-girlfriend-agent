@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import type { AppState } from '@/components/chat/shared';
 
 /* 全局状态（/api/state）：state 拉取、首次引导提示、场景切换（原 page.tsx 逻辑原样搬移） */
-export function useChatState(setToast: (v: string | null) => void) {
+export function useChatState(setToast: (v: string | null) => void, companionId = 1) {
   const [state, setState] = useState<AppState | null>(null);
   const [onboard, setOnboard] = useState(false);
   // 响应序号守卫：并发多次拉取 /api/state 时，只应用"最新一次请求"的响应，避免慢响应后到覆盖先到
@@ -16,6 +17,7 @@ export function useChatState(setToast: (v: string | null) => void) {
   const appliedRef = useRef(0); // 已应用的响应序号
 
   // 应用启动时做一次性后台推进（P1-59）：GET 已只读化，改由这里触发（静默失败即可）
+  // 例外：/api/tick 是【全局】后台推进（一次推进所有伴侣），非伴侣作用域，故不带 companionId。
   useEffect(() => {
     void fetch('/api/tick', { method: 'POST' }).catch(() => {
       /* 推进失败不影响页面 */
@@ -25,7 +27,7 @@ export function useChatState(setToast: (v: string | null) => void) {
   const loadState = useCallback(async () => {
     const seq = ++seqRef.current;
     try {
-      const r = await fetch('/api/state', { cache: 'no-store' });
+      const r = await fetch(withCompanionQuery('/api/state', companionId), { cache: 'no-store' });
       const j = await r.json();
       if (seq < appliedRef.current) return; // 比已应用的响应更旧：丢弃，不覆盖较新的快照
       appliedRef.current = seq;
@@ -36,11 +38,11 @@ export function useChatState(setToast: (v: string | null) => void) {
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [companionId]);
 
   const setSceneMode = async (mode: 'auto' | 'online' | 'offline') => {
     try {
-      const r = await fetch('/api/relationship', {
+      const r = await fetch(withCompanionQuery('/api/relationship', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'set_scene', mode }),

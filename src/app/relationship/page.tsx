@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useApi, PageHeader, Stat, Loading, ErrorBox, Toast } from '@/components/ui';
 import { errMsg } from '@/lib/utils';
 import { FORM_ACTIONS, type Tab, type Edits, type PostBody, type RelationshipData, type RelationshipInfo } from '@/components/relationship/shared';
@@ -13,6 +14,7 @@ import { MemoriesCard } from '@/components/relationship/MemoriesCard';
 import { NicknameCard } from '@/components/relationship/NicknameCard';
 import { PersonaCard } from '@/components/relationship/PersonaCard';
 import { ProfileCard } from '@/components/relationship/ProfileCard';
+import { RelationWeb } from '@/components/relationship/RelationWeb';
 
 /** 各"写回表单"的 action 成功后，应清除哪些字段的 dirty 标记 */
 const ACTION_KEYS: Record<string, (keyof Edits)[]> = {
@@ -125,6 +127,7 @@ export default function RelationshipPage() {
             { k: 'logs', label: '关系日志' },
             { k: 'events', label: '纪念日 / 约定' },
             { k: 'memories', label: '关系记忆 & 每日回顾' },
+            { k: 'relations', label: '伴侣关系网' },
           ] as { k: Tab; label: string }[]).map((t) => (
             <button key={t.k} className={tab === t.k ? 'btn-soft' : 'btn-ghost'} onClick={() => setTab(t.k)}>
               {t.label}
@@ -142,6 +145,19 @@ export default function RelationshipPage() {
           {tab === 'events' ? <EventsCard events={data?.events || []} newEvent={newEvent} setNewEvent={setNewEvent} post={post} /> : null}
 
           {tab === 'memories' ? <MemoriesCard memories={data?.memories || []} summaries={data?.summaries || []} /> : null}
+
+          {tab === 'relations' ? (
+            <div className="grid gap-3">
+              <RelationWeb />
+              {/* 关系网联动：一起参加活动会改变伴侣间关系（同场 +、线下被冷落 −） */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Link className="btn-ghost" href="/activities">
+                  去「活动」页，让她们一起玩 →
+                </Link>
+                <span className="dim text-[11px]">同场活动会拉近彼此关系；线下被冷落的一方会有点小情绪。</span>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 

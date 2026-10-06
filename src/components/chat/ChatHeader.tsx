@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Bar } from '@/components/ui';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import DokiMeter from './DokiMeter';
 import type { AppState } from './shared';
 
@@ -18,6 +19,8 @@ interface ChatHeaderProps {
   typing?: boolean;
   onOpenPhoto: () => void;
   onSetSceneMode: (mode: 'auto' | 'online' | 'offline') => void;
+  /** 当前聊天对象；头部「摸头」互动随它定位到对应伴侣。 */
+  companionId?: number;
   children?: React.ReactNode;
 }
 
@@ -32,6 +35,7 @@ export default function ChatHeader({
   typing = false,
   onOpenPhoto,
   onSetSceneMode,
+  companionId = 1,
   children,
 }: ChatHeaderProps) {
   // 头部快捷"摸头"：点击她的名字即可，反应以气泡浮现在头部附近（不进聊天流）
@@ -78,7 +82,7 @@ export default function ChatHeader({
     }
     setPatting(true);
     try {
-      const r = await fetch('/api/interact', {
+      const r = await fetch(withCompanionQuery('/api/interact', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind: 'pat' }),
@@ -98,7 +102,7 @@ export default function ChatHeader({
     } finally {
       setPatting(false);
     }
-  }, [coolLeft, flash, patting, startCooldown]);
+  }, [coolLeft, companionId, flash, patting, startCooldown]);
 
   return (
     <header className="sticky top-0 z-30 border-b line surf px-5 py-3 backdrop-blur md:px-8">

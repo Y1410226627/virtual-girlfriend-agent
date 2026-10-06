@@ -3,7 +3,7 @@
 /** 会写回表单的 action，成功后允许服务器值回填 */
 export const FORM_ACTIONS = ['set_nickname', 'set_anniversary', 'set_persona', 'set_user'];
 
-export type Tab = 'bank' | 'conflicts' | 'logs' | 'events' | 'memories';
+export type Tab = 'bank' | 'conflicts' | 'logs' | 'events' | 'memories' | 'relations';
 
 export interface Stage {
   id: number;

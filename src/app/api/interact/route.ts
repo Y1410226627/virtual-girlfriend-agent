@@ -4,6 +4,8 @@ import { getCounter, setCounter } from '@/lib/db';
 import { getRelationshipState } from '@/lib/relationship';
 import { getPsychology, applyPokeEffect } from '@/lib/life';
 import { attachmentStyle } from '@/lib/attachment';
+import { withRequestCompanion } from '@/lib/companion';
+import { ck } from '@/lib/companion-context';
 import {
   isInteractionKind,
   pickInteractionReply,
@@ -18,6 +20,8 @@ const LAST_ALL_KEY = 'interact_last_all';
 const lastKindKey = (kind: string) => `interact_last_${kind}`;
 
 export async function POST(req: Request) {
+  // T02 收尾 D2/D3：互动冷却计数按伴侣私有命名空间（ck），避免 A 的冷却挡住 B
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const kind = String((body as { kind?: unknown })?.kind || '');
   if (!isInteractionKind(kind)) {
@@ -26,7 +30,7 @@ export async function POST(req: Request) {
 
   // 冷却：同一个动作 90s、全部互动 20s（取较长者）
   const now = Date.now();
-  const remain = cooldownRemainingMs(now, getCounter(LAST_ALL_KEY), getCounter(lastKindKey(kind)));
+  const remain = cooldownRemainingMs(now, getCounter(ck(LAST_ALL_KEY)), getCounter(ck(lastKindKey(kind))));
   if (remain > 0) {
     return Response.json({ ok: false, error: '还在冷却中', cooldownMs: remain }, { status: 429 });
   }
@@ -49,8 +53,8 @@ export async function POST(req: Request) {
   });
 
   const effect = applyPokeEffect(kind);
-  setCounter(LAST_ALL_KEY, now);
-  setCounter(lastKindKey(kind), now);
+  setCounter(ck(LAST_ALL_KEY), now);
+  setCounter(ck(lastKindKey(kind)), now);
 
   return Response.json({
     ok: true,
@@ -58,5 +62,6 @@ export async function POST(req: Request) {
     effectNote: reply.effectNote,
     applied: effect.applied,
     cooldownMs: PER_KIND_COOLDOWN_MS,
+  });
   });
 }

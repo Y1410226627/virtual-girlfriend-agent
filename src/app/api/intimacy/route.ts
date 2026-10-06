@@ -13,11 +13,14 @@ import {
 } from '@/lib/intimacy';
 import { ensureLife, listPreferences, revealPreferences } from '@/lib/life';
 import { ensureScheduler } from '@/lib/scheduler';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣读取亲密状态
+  return withRequestCompanion(req, () => {
   // P1-59：GET 只读——不再 ensureLife()（避免"读一次就写库"）；getIntimacy 会自行幂等补种
   ensureScheduler();
   const s = getIntimacy();
@@ -42,9 +45,11 @@ export async function GET() {
     })),
     aftercare: listAftercare(20),
   });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   try {
     const body = await req.json().catch(() => ({}));
     const action = String(body?.action || '');
@@ -87,4 +92,5 @@ export async function POST(req: Request) {
   } catch (e) {
     return Response.json({ error: errMsg(e) }, { status: 500 });
   }
+  });
 }

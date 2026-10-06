@@ -12,6 +12,7 @@ import {
 } from '@/lib/memory';
 import { cAll } from '@/lib/db';
 import { clamp, truncate } from '@/lib/utils';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -96,6 +97,8 @@ function starStats() {
 }
 
 export async function GET(req: Request) {
+  // T02 收尾 D2：按请求所指伴侣读取记忆
+  return withRequestCompanion(req, () => {
   const url = new URL(req.url);
   const type = url.searchParams.get('type') || undefined;
   const status = url.searchParams.get('status') || 'active';
@@ -111,9 +114,11 @@ export async function GET(req: Request) {
         status, limit, offset
       );
   return Response.json({ memories, stats: starStats(), summaries: listDailySummaries(30) });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const action = body?.action || 'create';
   if (action === 'create') {
@@ -134,9 +139,11 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, archived: n });
   }
   return Response.json({ error: '未知操作' }, { status: 400 });
+  });
 }
 
 export async function PATCH(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const id = Number(body?.id);
   if (!id) return Response.json({ error: '缺少 id' }, { status: 400 });
@@ -149,9 +156,11 @@ export async function PATCH(req: Request) {
   // 内容被编辑 → 重算这一条的向量（否则语义检索会按旧内容走）
   if (ok && body.content !== undefined) await refreshMemoryEmbedding(id);
   return Response.json({ ok });
+  });
 }
 
 export async function DELETE(req: Request) {
+  return withRequestCompanion(req, () => {
   const url = new URL(req.url);
   const id = Number(url.searchParams.get('id') || 0);
   const all = url.searchParams.get('all');
@@ -163,4 +172,5 @@ export async function DELETE(req: Request) {
   // 删 0 行不能包装成成功：否则前端会谎报"已删除"
   if (!deleteMemory(id)) return Response.json({ ok: false, error: '记忆不存在或已删除' }, { status: 404 });
   return Response.json({ ok: true });
+  });
 }

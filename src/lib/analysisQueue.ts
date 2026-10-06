@@ -4,8 +4,8 @@
 //   - drain 每次只取最早一条 pending，标 running，**执行前校验**（assistant 消息存在 && generation 仍 current），
 //     不满足则标 cancelled，绝不调用 analyzeTurn；通过后从 messages 表读取真实文本再分析。
 //   - 失败按 1/5/15 分钟退避重试（≤3 次），否则 failed。
-import { dbRun, DEFAULT_USER_ID, cGet, cRun } from './db';
-import { cId } from './companion-context';
+import { dbRun, dbGet, dbAll, DEFAULT_USER_ID, cGet, cRun } from './db';
+import { cId, withCompanion } from './companion-context';
 import { analyzeTurn, type AnalyzeOutcome } from './analysis';
 import { isGenerationCurrent } from './turn';
 import { errMsg, nowIso } from './utils';
@@ -19,6 +19,7 @@ export interface EnqueueAnalysisJob {
 
 interface AnalysisJobRow {
   id: number;
+  companion_id: number;
   user_id: number;
   turn_id: number | null;
   generation_id: number | null;
@@ -162,6 +163,9 @@ export function analysisQueueStatus(): {
  */
 export function recoverStaleAnalysisJobs(now = Date.now()): number {
   const cutoff = new Date(now - STALE_RUNNING_MS).toISOString();
+  // 作用域内恢复：只回收"当前伴侣（cId()）"的陈旧 running（按 companion_id 分区）。
+  // 语义差异：本函数是"分区/作用域内"的恢复；启动与每轮 drain 的"全局恢复"用
+  // recoverAllStaleAnalysisJobs（跨伴侣）——见下。
   const r = dbRun(
     `UPDATE analysis_jobs SET status = 'pending', started_at = NULL
       WHERE companion_id = ? AND status = 'running' AND (started_at IS NULL OR started_at < ?)`,
@@ -171,22 +175,41 @@ export function recoverStaleAnalysisJobs(now = Date.now()): number {
   return r.changes;
 }
 
+/**
+ * 跨伴侣恢复（§3.8）：启动恢复与每轮 drain 前调用。
+ * 把所有伴侣遗留的陈旧 running 都改回 pending，避免只回收主女友、其它伴侣的任务永远卡在 running。
+ * 实现上逐个伴侣在各自作用域内调用 recoverStaleAnalysisJobs，复用同一套"陈旧"判定（DRY）。
+ */
+export function recoverAllStaleAnalysisJobs(now = Date.now()): number {
+  const rows = dbAll<{ companion_id: number }>(
+    "SELECT DISTINCT companion_id FROM analysis_jobs WHERE status = 'running'"
+  );
+  let total = 0;
+  for (const r of rows) {
+    const id = Math.trunc(Number(r.companion_id));
+    if (!Number.isFinite(id) || id <= 0) continue;
+    total += withCompanion(id, () => recoverStaleAnalysisJobs(now));
+  }
+  return total;
+}
+
 /* ------------------------------------------------------------------ */
 /* 领取 / 校验 / 收尾                                                     */
 /* ------------------------------------------------------------------ */
 function claimNextJob(): AnalysisJobRow | null {
   const now = Date.now();
-  const row = cGet<AnalysisJobRow>(
+  // 跨伴侣领取最早到期的 pending 任务（不按 cId() 过滤）：多伴侣并发聊天时，任一 drain 都能推进全局队列，
+  // 避免"c1 的 drain 在跑时 c2 的任务要等下一次触发"。后续处理会以 job.companion_id 建立作用域。
+  const row = dbGet<AnalysisJobRow>(
     `SELECT * FROM analysis_jobs
-      WHERE companion_id = ? AND status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?)
+      WHERE status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?)
       ORDER BY id ASC LIMIT 1`,
     now
   );
   if (!row) return null;
   const upd = dbRun(
-    "UPDATE analysis_jobs SET status = 'running', started_at = ?, error = NULL WHERE companion_id = ? AND id = ? AND status = 'pending'",
+    "UPDATE analysis_jobs SET status = 'running', started_at = ?, error = NULL WHERE id = ? AND status = 'pending'",
     nowIso(),
-    cId(),
     row.id
   );
   if (upd.changes !== 1) return null; // 竞争失败/状态已变：交给下一轮
@@ -238,11 +261,12 @@ function settleWaiter(jobId: number, outcome: AnalyzeOutcome): void {
 }
 
 function cancelJob(job: AnalysisJobRow, reason: string): void {
+  // 状态流转一律用显式 job.companion_id（不依赖当前 ALS 上下文，避免在作用域外被误写到主女友）。
   dbRun(
     "UPDATE analysis_jobs SET status = 'cancelled', finished_at = ?, error = ? WHERE companion_id = ? AND id = ?",
     nowIso(),
     reason,
-    cId(),
+    job.companion_id,
     job.id
   );
   const st = state();
@@ -252,7 +276,7 @@ function cancelJob(job: AnalysisJobRow, reason: string): void {
 }
 
 function doneJob(job: AnalysisJobRow, out: AnalyzeOutcome, ms: number): void {
-  dbRun("UPDATE analysis_jobs SET status = 'done', finished_at = ? WHERE companion_id = ? AND id = ?", nowIso(), cId(), job.id);
+  dbRun("UPDATE analysis_jobs SET status = 'done', finished_at = ? WHERE companion_id = ? AND id = ?", nowIso(), job.companion_id, job.id);
   const st = state();
   st.last = { ok: out.ok, error: out.error, applied: out.applied };
   st.lastFinishedAt = Date.now();
@@ -273,7 +297,7 @@ function retryOrFail(job: AnalysisJobRow, error: string, ms: number): void {
       attempts,
       Date.now() + delay,
       error,
-      cId(),
+      job.companion_id,
       job.id
     );
     // 到期后再踢一次 drain；unref 避免定时器拖住进程退出（测试/关闭时安全）
@@ -290,7 +314,7 @@ function retryOrFail(job: AnalysisJobRow, error: string, ms: number): void {
     attempts,
     nowIso(),
     error,
-    cId(),
+    job.companion_id,
     job.id
   );
   settleWaiter(job.id, { ok: false, error, applied: emptyApplied() });
@@ -309,54 +333,59 @@ export async function drainAnalysisQueue(): Promise<void> {
   if (st.draining) return;
   st.draining = true;
   try {
-    recoverStaleAnalysisJobs();
+    recoverAllStaleAnalysisJobs();
     for (;;) {
       await Promise.resolve();
       const job = claimNextJob();
       if (!job) break;
 
-      const valid = validateJob(job);
-      if (!valid.ok) {
-        cancelJob(job, valid.reason);
-        continue;
-      }
-      const texts = readJobTexts(job);
-      if (!texts) {
-        cancelJob(job, '对话文本缺失，任务作废');
-        continue;
-      }
+      // ★关键正确性点（T02 收尾 §3.8）：每个任务的全部处理（校验 / 读文本 / analyzeTurn /
+      // applyAnalysisResult / 操作账本 / 状态流转）都必须在该任务所属伴侣的作用域内执行，
+      // 否则分析结果会写进 cId()（当前上下文）而不是任务所属伴侣 → 跨伴侣串扰。
+      await withCompanion(job.companion_id, async () => {
+        const valid = validateJob(job);
+        if (!valid.ok) {
+          cancelJob(job, valid.reason);
+          return; // 注意：此处是异步闭包，用 return 代替 continue
+        }
+        const texts = readJobTexts(job);
+        if (!texts) {
+          cancelJob(job, '对话文本缺失，任务作废');
+          return;
+        }
 
-      const t0 = Date.now();
-      const slowTimer = setTimeout(() => {
-        console.warn(
-          `[analysisQueue] 分析较慢：本轮已运行超过 ${ANALYZE_SLOW_WARN_MS / 1000} 秒，继续等待其完成（不并发启动下一轮）`
-        );
-      }, ANALYZE_SLOW_WARN_MS);
-      try {
-        const params: AnalyzeTurnParams = {
-          userMessage: texts.userMessage,
-          assistantMessage: texts.assistantMessage,
-          userMessageId: job.user_message_id,
-          assistantMessageId: job.assistant_message_id,
-          turnId: job.turn_id,
-          generationId: job.generation_id,
-        };
-        const out = await analyzeTurn(params);
-        if (out.ok) doneJob(job, out, Date.now() - t0);
-        else retryOrFail(job, out.error || '分析失败', Date.now() - t0);
-      } catch (e) {
-        retryOrFail(job, errMsg(e), Date.now() - t0);
-      } finally {
-        clearTimeout(slowTimer);
-      }
+        const t0 = Date.now();
+        const slowTimer = setTimeout(() => {
+          console.warn(
+            `[analysisQueue] 分析较慢（companion ${job.companion_id}）：本轮已运行超过 ${ANALYZE_SLOW_WARN_MS / 1000} 秒，继续等待其完成（不并发启动下一轮）`
+          );
+        }, ANALYZE_SLOW_WARN_MS);
+        try {
+          const params: AnalyzeTurnParams = {
+            userMessage: texts.userMessage,
+            assistantMessage: texts.assistantMessage,
+            userMessageId: job.user_message_id,
+            assistantMessageId: job.assistant_message_id,
+            turnId: job.turn_id,
+            generationId: job.generation_id,
+          };
+          const out = await analyzeTurn(params);
+          if (out.ok) doneJob(job, out, Date.now() - t0);
+          else retryOrFail(job, out.error || '分析失败', Date.now() - t0);
+        } catch (e) {
+          retryOrFail(job, errMsg(e), Date.now() - t0);
+        } finally {
+          clearTimeout(slowTimer);
+        }
+      });
     }
   } finally {
     st.draining = false;
   }
 }
 
-// 模块初始化：恢复遗留 running 并踢一次 drain（进程重启后未完成的任务自动续跑）
-recoverStaleAnalysisJobs();
+// 模块初始化：跨伴侣恢复遗留 running 并踢一次 drain（进程重启后未完成的任务自动续跑）
+recoverAllStaleAnalysisJobs();
 drainAnalysisQueue().catch((e) => {
   console.warn('[analysisQueue] 启动恢复异常:', errMsg(e));
 });

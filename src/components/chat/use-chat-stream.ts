@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { errMsg } from '@/lib/utils';
 import { composerAttachments } from '@/components/chat/Composer';
+import { withCompanionQuery, companionReadKey } from '@/components/chat/companion-query';
 import type { Msg, AppState, ChatEvent, ChatRequest } from '@/components/chat/shared';
 
 /** /api/chat 请求体：在既有协议上扩展 images（随消息附带的图片 dataURL） */
@@ -17,8 +18,10 @@ export function useChatStream(params: {
   setToast: (v: string | null) => void;
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
+  /** 当前聊天对象；所有伴侣作用域的请求都随它变化（缺省 1 = 主女友，零回归）。 */
+  companionId: number;
 }) {
-  const { state, loadState, setToast, input, setInput } = params;
+  const { state, loadState, setToast, input, setInput, companionId } = params;
 
   const [messages, setMessagesState] = useState<Msg[]>([]);
   // 最新消息快照：regenerate/withdraw 用它确认"最后一条是她"，避免读到渲染期的过期闭包
@@ -43,6 +46,10 @@ export function useChatStream(params: {
   const lastIdRef = useRef(0);
   const sendingRef = useRef(false);
   const analysisTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 进行中的 /api/chat SSE 请求：切换伴侣时中止，避免旧伴侣的流写入新伴侣的界面
+  const streamAbortRef = useRef<AbortController | null>(null);
+  // 伴侣代次：切换时自增；异步回写前比对该值，丢弃跨伴侣的迟到写入（草稿/提示不串伴侣）
+  const genRef = useRef(0);
 
   /* 卸载时清掉分析轮询定时器（避免路由切换后还在跑、对已卸载组件 setState） */
   useEffect(() => {
@@ -108,35 +115,43 @@ export function useChatStream(params: {
 
   /* 发起 /api/chat 并把 SSE 逐条回调（正常回复与重新生成共用，避免复制粘贴读流代码） */
   const consumeChatStream = async (body: ChatRequestBody, onEvt: (evt: ChatEvent) => void | Promise<void>) => {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok || !res.body) {
-      const j = await res.json().catch(() => ({}));
-      throw new Error(j?.error || `请求失败 ${res.status}`);
-    }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split('\n\n');
-      buf = parts.pop() || '';
-      for (const part of parts) {
-        const line = part.trim();
-        if (!line.startsWith('data:')) continue;
-        let evt: ChatEvent;
-        try {
-          evt = JSON.parse(line.slice(5).trim());
-        } catch {
-          continue;
-        }
-        await onEvt(evt);
+    // 每次请求各持一把 AbortController：切换伴侣时由 reset 效果 abort，立即中断本流
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    try {
+      const res = await fetch(withCompanionQuery('/api/chat', companionId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || `请求失败 ${res.status}`);
       }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data:')) continue;
+          let evt: ChatEvent;
+          try {
+            evt = JSON.parse(line.slice(5).trim());
+          } catch {
+            continue;
+          }
+          await onEvt(evt);
+        }
+      }
+    } finally {
+      if (streamAbortRef.current === controller) streamAbortRef.current = null;
     }
   };
 
@@ -237,17 +252,17 @@ export function useChatStream(params: {
 
   const loadMessages = useCallback(async () => {
     try {
-      const r = await fetch('/api/messages?limit=80', { cache: 'no-store' });
+      const r = await fetch(withCompanionQuery('/api/messages?limit=80', companionId), { cache: 'no-store' });
       const j = await r.json();
       if (j?.messages) {
         setMessages(j.messages);
         // 一次拿满一页 → 可能还有更早的消息可加载（P1-51）
         setHasOlder(Array.isArray(j.messages) && j.messages.length >= 80);
         lastIdRef.current = j.messages.length ? j.messages[j.messages.length - 1].id : 0;
-        // 记录已读位置，供导航栏未读红点使用
+        // 记录已读位置，供导航栏未读红点使用（按伴侣分别记录）
         if (j.messages.length) {
           try {
-            window.localStorage.setItem('lastReadMsgId', String(j.messages[j.messages.length - 1].id));
+            window.localStorage.setItem(companionReadKey(companionId), String(j.messages[j.messages.length - 1].id));
           } catch {
             /* ignore */
           }
@@ -257,7 +272,32 @@ export function useChatStream(params: {
     } catch (e) {
       setLoadErr(errMsg(e));
     }
-  }, [scrollToBottom, setMessages]);
+  }, [companionId, scrollToBottom, setMessages]);
+
+  /* 切换伴侣：作废进行中的流、清空流式/临时状态，避免跨伴侣残留（草稿、正在输入、轮询定时器） */
+  const prevCompanionIdRef = useRef(companionId);
+  useEffect(() => {
+    if (prevCompanionIdRef.current === companionId) return;
+    prevCompanionIdRef.current = companionId;
+    genRef.current += 1; // 作废所有在途异步回写
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    if (analysisTimerRef.current) {
+      clearInterval(analysisTimerRef.current);
+      analysisTimerRef.current = null;
+    }
+    sendingRef.current = false;
+    setSending(false);
+    setTyping(false);
+    setBusyNote(null);
+    setRecalling(false);
+    setLoadErr(null);
+    setHasOlder(false);
+    setLoadingOlder(false);
+    lastIdRef.current = 0;
+    messagesRef.current = [];
+    setMessagesState([]);
+  }, [companionId]);
 
   useEffect(() => {
     loadMessages();
@@ -273,7 +313,7 @@ export function useChatStream(params: {
     const prevHeight = el?.scrollHeight ?? 0;
     const prevTop = el?.scrollTop ?? 0;
     try {
-      const r = await fetch(`/api/messages?beforeId=${first.id}&limit=60`, { cache: 'no-store' });
+      const r = await fetch(withCompanionQuery(`/api/messages?beforeId=${first.id}&limit=60`, companionId), { cache: 'no-store' });
       const j = await r.json();
       const older: Msg[] = Array.isArray(j?.messages) ? j.messages : [];
       if (!older.length) {
@@ -296,14 +336,14 @@ export function useChatStream(params: {
     } finally {
       setLoadingOlder(false);
     }
-  }, [loadingOlder, setMessages]);
+  }, [companionId, loadingOlder, setMessages]);
 
   /* 轮询新消息（她会主动发消息） */
   useEffect(() => {
     const t = setInterval(async () => {
       if (sendingRef.current) return;
       try {
-        const r = await fetch(`/api/messages?afterId=${lastIdRef.current}`, { cache: 'no-store' });
+        const r = await fetch(withCompanionQuery(`/api/messages?afterId=${lastIdRef.current}`, companionId), { cache: 'no-store' });
         const j = await r.json();
         if (j?.messages?.length) {
           setMessages((prev) => {
@@ -314,7 +354,7 @@ export function useChatStream(params: {
           });
           lastIdRef.current = j.messages[j.messages.length - 1].id;
           try {
-            window.localStorage.setItem('lastReadMsgId', String(j.messages[j.messages.length - 1].id));
+            window.localStorage.setItem(companionReadKey(companionId), String(j.messages[j.messages.length - 1].id));
           } catch {
             /* ignore */
           }
@@ -326,10 +366,11 @@ export function useChatStream(params: {
       }
     }, 15000);
     return () => clearInterval(t);
-  }, [loadState, scrollToBottom, setMessages]);
+  }, [companionId, loadState, scrollToBottom, setMessages]);
 
   const send = async (override?: string) => {
     const text = (override ?? input).trim();
+    const gen = genRef.current; // 本次发送所属的伴侣代次：切换后丢弃本轮的迟到回写
     // 本轮附带的图片（Composer 压缩后的 dataURL）；必须在任何 await 之前同步取走
     const images = composerAttachments.images.slice(0, 2);
     // 用 ref 判定，避免慢设备/输入法下连发两条；文字与图片至少要有一个
@@ -387,7 +428,7 @@ export function useChatStream(params: {
       if (!serverEnqueued) {
         // 兼容尚未切换的服务端（done 未携带入队信息）：兜底主动触发一次，避免分析被静默丢弃。
         enqueueAt = Date.now();
-        fetch('/api/analyze', {
+        fetch(withCompanionQuery('/api/analyze', companionId), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -413,7 +454,7 @@ export function useChatStream(params: {
           return;
         }
         try {
-          const st = await (await fetch('/api/analyze', { cache: 'no-store' })).json();
+          const st = await (await fetch(withCompanionQuery('/api/analyze', companionId), { cache: 'no-store' })).json();
           if (st?.busy) sawBusy = true;
           const finishedAfterEnqueue = Number(st?.lastFinishedAt || 0) > enqueueAt;
           // 分析失败：真实错误在 st.last.error（旧代码看的 st.error 并不存在）
@@ -448,12 +489,15 @@ export function useChatStream(params: {
       }, 2500);
       analysisTimerRef.current = timer;
     } catch (e) {
-      setTyping(false);
-      setToast(`发送失败：${errMsg(e)}`);
-      // 连自己那条临时消息一起撤掉（服务端失败时也会删掉落库的那条，刷新不会"复活"）
-      setMessages((prev) => prev.filter((m) => m.id !== streamId && m.id !== tempId));
-      // 把刚打的字还回去（除非用户已经在输入框里写了新内容）
-      setInput((cur) => (cur.trim() ? cur : text));
+      // 已被切走：丢弃本轮的失败提示与草稿回填，避免串到新伴侣
+      if (genRef.current === gen) {
+        setTyping(false);
+        setToast(`发送失败：${errMsg(e)}`);
+        // 连自己那条临时消息一起撤掉（服务端失败时也会删掉落库的那条，刷新不会"复活"）
+        setMessages((prev) => prev.filter((m) => m.id !== streamId && m.id !== tempId));
+        // 把刚打的字还回去（除非用户已经在输入框里写了新内容）
+        setInput((cur) => (cur.trim() ? cur : text));
+      }
     } finally {
       setSending(false);
       sendingRef.current = false;
@@ -470,6 +514,7 @@ export function useChatStream(params: {
     if (!last || last.role !== 'assistant' || last.streaming) return;
     setSending(true);
     sendingRef.current = true;
+    const gen = genRef.current;
     // 先撤掉旧气泡，新的会以流式重新出现
     setMessages((prev) => prev.filter((m) => m.id !== last.id));
     const streamId = -Date.now() - 1;
@@ -479,7 +524,7 @@ export function useChatStream(params: {
       if (!st.text) throw new Error('她这次没说话，再试一次吧');
       if (!st.ids) await loadMessages().catch(() => null);
     } catch (e) {
-      setToast(`重新生成失败：${errMsg(e)}`);
+      if (genRef.current === gen) setToast(`重新生成失败：${errMsg(e)}`);
       await loadMessages().catch(() => null); // 旧的已被服务端删除，拉回真实状态
     } finally {
       setSending(false);
@@ -498,7 +543,7 @@ export function useChatStream(params: {
       return;
     }
     try {
-      const r = await fetch(`/api/messages?id=${m.id}&cascade=0`, { method: 'DELETE' });
+      const r = await fetch(withCompanionQuery(`/api/messages?id=${m.id}&cascade=0`, companionId), { method: 'DELETE' });
       const j = await r.json();
       if (!j.ok) throw new Error(j?.error || '撤回失败');
       await loadMessages();

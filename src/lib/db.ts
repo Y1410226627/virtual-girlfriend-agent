@@ -544,8 +544,9 @@ export function wipeAllData(keepSettings = true): void {
     } else {
       // personas 已清空，settings 里那份"镜像名字/故事"也要同步清掉，避免双源分叉
       db.exec("DELETE FROM settings WHERE key IN ('agent_name', 'agent_story');");
-      // 重置"已播种"标记：清空数据后，她应该回到出厂偏好（否则会零偏好且不再播种）
-      db.exec("DELETE FROM settings WHERE key = 'prefs_seeded';");
+      // 重置"已播种"标记：清空数据后，她应该回到出厂偏好（否则会零偏好且不再播种）。
+      // T02 收尾：播种标记已按伴侣私有命名空间（'prefs_seeded' / 'prefs_seeded#c{id}'），两种都要清。
+      db.exec("DELETE FROM settings WHERE key = 'prefs_seeded' OR key LIKE 'prefs_seeded#%';");
     }
     // seed 放进同一个事务：中途失败就整体回滚，不会出现"库已清空但只重建了一半"
     seed(db);

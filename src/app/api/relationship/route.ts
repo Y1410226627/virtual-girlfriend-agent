@@ -7,6 +7,7 @@ import { stageOf, stageListForUi } from '@/lib/stages';
 import { listBankEntries, bankStats } from '@/lib/emotionalBank';
 import { nowIso, round1, daysSince } from '@/lib/utils';
 import { listDailySummaries } from '@/lib/memory';
+import { withRequestCompanion } from '@/lib/companion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +17,9 @@ interface MessageRow {
   content: string | null;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // T02 收尾 D2：在请求所指伴侣的上下文内读取
+  return withRequestCompanion(req, () => {
   const rel = getRelationshipState();
   const stage = stageOf(rel.stage);
   return Response.json({
@@ -52,9 +55,11 @@ export async function GET() {
     ),
     summaries: listDailySummaries(20),
   });
+  });
 }
 
 export async function POST(req: Request) {
+  return withRequestCompanion(req, async () => {
   const body = await req.json().catch(() => ({}));
   const action = String(body?.action || '');
 
@@ -190,4 +195,5 @@ export async function POST(req: Request) {
   }
 
   return Response.json({ error: '未知操作' }, { status: 400 });
+  });
 }

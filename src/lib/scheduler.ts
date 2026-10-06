@@ -5,6 +5,8 @@ import { seedProfilesIfEmpty } from './profiles';
 import { getCounter, setCounter } from './db';
 import { drainAnalysisQueue } from './analysisQueue';
 import { errMsg } from './utils';
+import { withCompanion } from './companion-context';
+import { listAdvanceableCompanions } from './companion';
 
 interface SchedulerGlobal {
   __gfSchedulerStarted?: boolean;
@@ -85,24 +87,34 @@ export function ensureScheduler(): void {
       } catch (e) {
         console.warn('[analysisQueue] drain failed:', errMsg(e));
       }
-      try {
-        // 她的生活先推进（按流逝时间推导，幂等）
-        const { ensureLife, advanceLife, saveWeeklyWorldSnapshot, tickLifeArc, ensureDailyDiaries } = await import('./life');
-        const { advanceIntimacy } = await import('./intimacy');
-        ensureLife();
-        advanceLife();
-        advanceIntimacy();
-        saveWeeklyWorldSnapshot();
-        // 跨天剧情线 + 她的日记（内部有节流、失败静默，不会阻塞主流程）
-        await tickLifeArc();
-        await ensureDailyDiaries();
-      } catch (e) {
-        console.warn('[life] advance failed:', errMsg(e));
-      }
-      try {
-        await tickProactive(force);
-      } catch (e) {
-        console.warn('[proactive] tick failed:', errMsg(e));
+      // 生活依赖按需加载（与既有实现一致：不在模块顶层引入重依赖）
+      const life = await import('./life');
+      const { advanceIntimacy } = await import('./intimacy');
+
+      // §3.8 后台任务按伴侣遍历：对每个 girlfriend 伴侣（含 id=1 主女友）在其作用域内推进同一套逻辑，
+      // 避免只服务主女友。主女友（id=1）无上下文即默认目标 → 行为与原实现逐字段一致（零回归）。
+      // 租约键（scheduler_lease_*）保持全局；各伴侣的节流窗口已是私有键，遍历时仍各自生效。
+      const ids = listAdvanceableCompanions();
+      for (const id of ids) {
+        await withCompanion(id, async () => {
+          try {
+            life.ensureLife();
+            life.advanceLife();
+            advanceIntimacy();
+            life.saveWeeklyWorldSnapshot();
+            // 跨天剧情线 + 她的日记（内部有节流、失败静默，不会阻塞主流程）
+            await life.tickLifeArc();
+            await life.ensureDailyDiaries();
+          } catch (e) {
+            // 单伴侣失败不得中断其它伴侣
+            console.warn(`[life] companion ${id} advance failed:`, errMsg(e));
+          }
+          try {
+            await tickProactive(force);
+          } catch (e) {
+            console.warn(`[proactive] companion ${id} tick failed:`, errMsg(e));
+          }
+        });
       }
     } finally {
       running = false;

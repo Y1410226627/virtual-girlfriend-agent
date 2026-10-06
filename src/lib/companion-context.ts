@@ -49,3 +49,20 @@ export function cId(): number {
 export function hasCompanionContext(): boolean {
   return companionStore.getStore() !== undefined;
 }
+
+/**
+ * 私有计数器键命名空间（对齐架构文档 §2.4）：
+ *   ck('turn_count') → 主女友（c1）返回 'turn_count'；其它伴侣返回 'turn_count#c{id}'
+ * 仅用于「按伴侣隔离」的计数器键；全局键（scheduler_lease_pid / config_version / llm_calls_* 等）
+ * **不要**改用它，否则会把全局语义误私有化。
+ *
+ * 关于主女艾（c1）沿用「无后缀全局键」这一点（T02 收尾 D3）：
+ * - 向后兼容：既有库里主女友的计数/标记都存于无后缀键，无需迁移、老数据不丢；
+ * - 零回归：既有测试直接 setCounter/getCounter('turn_count') 等无后缀键，主女友仍映射到同一键；
+ * - 隔离性：非主女友一律落到 'key#c{id}'，与主女友及彼此互不干扰。
+ * 本函数只依赖 cId()，不依赖 db.ts（保持本模块零依赖，避免与 db.ts 成环）。
+ */
+export function ck(key: string): string {
+  const id = cId();
+  return id === PRIMARY_COMPANION_ID ? key : `${key}#c${id}`;
+}

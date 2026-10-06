@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import type { AppState } from '@/components/chat/shared';
 
 /* 事件条：当前事件控制（立即结束 / 智能时长 / 自定义时长）与倒计时刷新（原 page.tsx 逻辑原样搬移） */
@@ -10,8 +11,10 @@ export function useEventBar(params: {
   loadMessages: () => Promise<void>;
   loadState: () => Promise<void>;
   setToast: (v: string | null) => void;
+  /** 当前聊天对象；事件操作随它定位到对应伴侣。 */
+  companionId?: number;
 }) {
-  const { state, loadMessages, loadState, setToast } = params;
+  const { state, loadMessages, loadState, setToast, companionId = 1 } = params;
 
   // 当前事件控制（她开始睡觉/吃饭/洗澡这类事情时，由你决定它什么时候结束）
   const [evBusy, setEvBusy] = useState(false);
@@ -38,7 +41,7 @@ export function useEventBar(params: {
   const eventAction = async (body: Record<string, unknown>) => {
     setEvBusy(true);
     try {
-      const r = await fetch('/api/life', {
+      const r = await fetch(withCompanionQuery('/api/life', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

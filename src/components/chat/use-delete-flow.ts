@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import type { Msg } from '@/components/chat/shared';
 
 /* 删除流：删除确认弹窗状态、Esc 聚焦、执行删除（原 page.tsx 逻辑原样搬移） */
@@ -9,8 +10,10 @@ export function useDeleteFlow(params: {
   setMessages: Dispatch<SetStateAction<Msg[]>>;
   loadState: () => Promise<void>;
   setToast: (v: string | null) => void;
+  /** 当前聊天对象；删除请求随它定位到对应伴侣的数据。 */
+  companionId?: number;
 }) {
-  const { setMessages, loadState, setToast } = params;
+  const { setMessages, loadState, setToast, companionId = 1 } = params;
 
   const [delTarget, setDelTarget] = useState<Msg | null>(null);
   const [delCascade, setDelCascade] = useState(false); // 默认不连带撤销记忆/数值（要撤销需自己勾）
@@ -38,7 +41,7 @@ export function useDeleteFlow(params: {
     }
     setDeleting(true);
     try {
-      const r = await fetch(`/api/messages?id=${delTarget.id}&cascade=${delCascade ? 1 : 0}`, { method: 'DELETE' });
+      const r = await fetch(withCompanionQuery(`/api/messages?id=${delTarget.id}&cascade=${delCascade ? 1 : 0}`, companionId), { method: 'DELETE' });
       const j = await r.json();
       if (!j.ok) throw new Error(j?.error || '删除失败');
       setMessages((prev) => prev.filter((m) => m.id !== delTarget.id));

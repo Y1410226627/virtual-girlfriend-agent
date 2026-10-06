@@ -664,7 +664,7 @@ export function dailySummaryBlock(days = 2): string {
 
 export function recentMessagesForSummary(date: string) {
   return cAll<MessageRow & { agent_name: string | null }>(
-    `SELECT m.*, p.agent_name FROM messages m LEFT JOIN personas p ON p.user_id = m.user_id
+    `SELECT m.*, p.agent_name FROM messages m LEFT JOIN personas p ON p.companion_id = m.companion_id
      WHERE m.companion_id = ? AND date(m.created_at, 'localtime') = ? ORDER BY m.id ASC`,
     date
   );
