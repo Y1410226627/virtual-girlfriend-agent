@@ -285,10 +285,10 @@ test('A3 候选人生成：dedupe 防重 + 待处理上限 3 + 种子可复现 +
   assert.equal(dup.code, 'DUPLICATE');
   assert.equal(countRows('SELECT COUNT(*) AS c FROM companions WHERE dedupe_hash = ?', hash), 1, '同 hash 只应落库一条');
 
-  // (b) 待处理上限 3：第 4 个应被拒
+  // (b) 数量无上限（需求变更）：已存在软上限数量的待处理候选人时，仍可继续生成
   dbRun('DELETE FROM companions WHERE pending = 1');
   const now = new Date().toISOString();
-  for (let i = 0; i < genMod.MAX_PENDING_CANDIDATES; i++) {
+  for (let i = 0; i < genMod.PENDING_SOFT_LIMIT; i++) {
     dbRun(
       `INSERT INTO companions (user_id, name, age, gender, status, is_primary, is_discovered, pending, pursue_opt_in, reject_count, created_at, updated_at)
        VALUES (?, ?, 24, 'female', 'stranger', 0, 0, 1, 0, 0, ?, ?)`,
@@ -298,10 +298,12 @@ test('A3 候选人生成：dedupe 防重 + 待处理上限 3 + 种子可复现 +
       now
     );
   }
-  assert.equal(genMod.countPendingCandidates(), genMod.MAX_PENDING_CANDIDATES);
+  assert.equal(genMod.countPendingCandidates(), genMod.PENDING_SOFT_LIMIT);
+  assert.equal(genMod.pendingOverSoftLimit(), false, '恰好等于软上限时不算超限');
   const over = await genMod.generateCandidate({ forceTemplate: true, seed: 'A3-OVER' });
-  assert.ok(!over.ok);
-  assert.equal(over.code, 'PENDING_LIMIT');
+  assert.ok(over.ok, '无上限：超过软上限仍应能生成候选人');
+  assert.equal(genMod.countPendingCandidates(), genMod.PENDING_SOFT_LIMIT + 1);
+  assert.equal(genMod.pendingOverSoftLimit(), true, '超过软上限仅作 UI 提示，不阻塞');
   dbRun('DELETE FROM companions WHERE pending = 1');
 
   // (c) gen_seed 可复现：同种子端到端一致
@@ -401,6 +403,7 @@ const SECRET_STORY = '★私密自述：她怕黑，小时候被锁在储藏间'
 const SECRET_MSG = '★私聊专属：只有我和她知道的悄悄话';
 const SECRET_PROFILE = '★用户画像：本名韩梅梅，住杭州市西湖区，怕高';
 const SECRET_NAME = '韩梅梅';
+const SECRET_C2_MEMORY = '★乙的私密记忆：她问我下周能不能去看她的咖啡店';
 
 test('B5 隐私红线强化：私密记忆/向量/画像/私聊/self_story 绝不进入任何群上下文产物（含运行时与活动复用路径）', async () => {
   // 构造 c1（主女友）的各类私密内容
@@ -424,6 +427,15 @@ test('B5 隐私红线强化：私密记忆/向量/画像/私聊/self_story 绝�
   dbMod.setSetting('user_name', SECRET_NAME);
 
   const c2 = makeGirlfriend('B5群友乙', { identity: '咖啡师', personality_tags: ['元气'] });
+  // c2 也有一条只属于她自己的记忆（用于验证双向隔离）
+  dbRun(
+    `INSERT INTO memories (companion_id, user_id, type, content, importance, created_at, status, access_count)
+     VALUES (?, ?, 'relationship', ?, 9, ?, 'active', 0)`,
+    c2,
+    dbMod.DEFAULT_USER_ID,
+    SECRET_C2_MEMORY,
+    new Date().toISOString()
+  );
   const g = groupMod.createGroup('B5隐私群', '随便聊聊', [1, c2]);
   assert.ok(g.ok && g.group);
   const gid = g.group.id;
@@ -438,13 +450,14 @@ test('B5 隐私红线强化：私密记忆/向量/画像/私聊/self_story 绝�
     await groupRunMod.withGroupLock(gid, () =>
       groupMod.runGroupTurn(gid, i === 0 ? '大家晚上好呀' : '嗯嗯继续说', {
         chatFn: capChat,
-        rng: () => 0.9,
+        rng: () => 0.3,
         newRun: i === 0,
       })
     );
   }
 
   // —— 直接调用 builder 的多种分支（不同历史窗口 / 不同发言人）——
+  // 注意：不传 speakerMemories 时，prompt 里**不应有任何记忆**（builder 本身不读库）
   const history = groupMod.listMessages(gid);
   for (const speaker of [1, c2]) {
     for (const maxHistory of [0, 1, 4, 16, 999]) {
@@ -464,14 +477,49 @@ test('B5 隐私红线强化：私密记忆/向量/画像/私聊/self_story 绝�
     return '（笑）那我先说说今天。';
   };
   await groupRunMod.withGroupLock(gid, () =>
-    activityMod.runActivityTurn(Number(act.activity!.id), '今晚聊点走心的', { chatFn: actChat, rng: () => 0.9, newRun: true })
+    activityMod.runActivityTurn(Number(act.activity!.id), '今晚聊点走心的', { chatFn: actChat, rng: () => 0.3, newRun: true })
   );
 
-  // —— 断言：任何捕获到的 prompt 都不得含私密内容 ——
+  // —— 断言 1：永不出现的内容（向量 / 用户画像 / 真实姓名 / 别人的 self_story / 私聊）——
   const joined = captured.join('\n');
-  for (const secret of [SECRET_MEMORY, SECRET_VECTOR, SECRET_STORY, SECRET_MSG, SECRET_PROFILE, SECRET_NAME, '怕黑', '怕高', '储藏间']) {
-    assert.ok(!joined.includes(secret), `群上下文（所有调用路径）不得包含私密内容：${secret}`);
+  for (const secret of [SECRET_VECTOR, SECRET_STORY, SECRET_MSG, SECRET_PROFILE, SECRET_NAME, '怕黑', '怕高', '储藏间']) {
+    assert.ok(!joined.includes(secret), `群上下文（所有调用路径）不得包含：${secret}`);
   }
+
+  // —— 断言 2：双向记忆隔离 —— 每个人的记忆只进她自己的 prompt ——
+  const speakerOf = (json: string): string => {
+    const m = /当前发言人：([^）)、]+)/.exec(json);
+    return m ? m[1]!.trim() : '';
+  };
+  const c1Prompts = captured.filter((j) => speakerOf(j) === '她');
+  const c2Prompts = captured.filter((j) => speakerOf(j) === 'B5群友乙');
+  for (const p of c2Prompts) {
+    assert.ok(!p.includes(SECRET_MEMORY), 'c2 的上下文绝不含 c1 的记忆（记忆不混用）');
+  }
+  for (const p of c1Prompts) {
+    assert.ok(!p.includes(SECRET_C2_MEMORY), 'c1 的上下文绝不含 c2 的记忆（双向隔离）');
+  }
+
+  // —— 断言 3：她自己的记忆**可以**出现在她自己的发言上下文里（这是需求："按各自的记忆聊起来"）——
+  const c1WithMem = groupMod.buildGroupPrompt({
+    speakerId: 1,
+    memberIds: [1, c2],
+    history,
+    topic: '随便聊聊',
+    speakerMemories: [SECRET_MEMORY],
+  });
+  assert.ok(
+    JSON.stringify(c1WithMem).includes(SECRET_MEMORY),
+    '显式传入的「发言人自己的记忆」应出现在她的 prompt 里'
+  );
+  const c2WithC1Mem = groupMod.buildGroupPrompt({
+    speakerId: c2,
+    memberIds: [1, c2],
+    history,
+    topic: '随便聊聊',
+    speakerMemories: [SECRET_C2_MEMORY],
+  });
+  assert.ok(!JSON.stringify(c2WithC1Mem).includes(SECRET_MEMORY), 'c2 的 prompt 不会因为传参而混入 c1 的记忆');
   // 反向对照：公开字段（identity / tags）应当出现，证明 builder 确实取到了角色卡
   assert.ok(joined.includes('咖啡师'), '应包含公开身份');
 
@@ -537,7 +585,7 @@ test('B6 调度与收尾边界：仅 1 成员被拒；@ 多名全发言；全员
   const g1 = groupMod.createGroup('B6一轮群', null, [a, b]);
   assert.ok(g1.ok && g1.group);
   groupRunMod.createRun(g1.group!.id, { maxRounds: 1 });
-  const r1 = await groupMod.runGroupTurn(g1.group!.id, '开始', { chatFn: fakeChat, rng: () => 0.9 });
+  const r1 = await groupMod.runGroupTurn(g1.group!.id, '开始', { chatFn: fakeChat, rng: () => 0.3 });
   assert.equal(r1.ok, true);
   const last1 = groupRunMod.getLastRun(g1.group!.id);
   assert.equal(last1?.status, 'ended');
@@ -546,7 +594,7 @@ test('B6 调度与收尾边界：仅 1 成员被拒；@ 多名全发言；全员
   const g2 = groupMod.createGroup('B6两轮群', null, [a, b]);
   assert.ok(g2.ok && g2.group);
   groupRunMod.createRun(g2.group!.id, { maxRounds: 2 });
-  const r2 = await groupMod.runGroupTurn(g2.group!.id, '开始', { chatFn: fakeChat, rng: () => 0.9 });
+  const r2 = await groupMod.runGroupTurn(g2.group!.id, '开始', { chatFn: fakeChat, rng: () => 0.3 });
   assert.equal(r2.ok, true);
   const last2 = groupRunMod.getLastRun(g2.group!.id);
   assert.equal(last2?.status, 'ended');
@@ -573,7 +621,7 @@ test('B6b abort 竞态：在"写最后一条消息"期间 abort → 收敛（can
     return '（挥手）那先这样吧。';
   };
   const r = await groupRunMod.withGroupLock(gid, () =>
-    groupMod.runGroupTurn(gid, '开始', { chatFn: raceChat, rng: () => 0.9, newRun: true })
+    groupMod.runGroupTurn(gid, '开始', { chatFn: raceChat, rng: () => 0.3, newRun: true })
   );
   assert.equal(r.ok, true);
   assert.equal(groupRunMod.getLastRun(gid)?.status, 'cancelled', 'abort 后 run 应收敛为 cancelled');
@@ -610,7 +658,7 @@ test('B7 群聊 × 私聊并发：无死锁、两侧数据各自正确、零串�
   };
 
   const groupTurn = groupRunMod.withGroupLock(gid, () =>
-    groupMod.runGroupTurn(gid, '我们开始吧', { chatFn: slowChat, rng: () => 0.9, newRun: true })
+    groupMod.runGroupTurn(gid, '我们开始吧', { chatFn: slowChat, rng: () => 0.3, newRun: true })
   );
   await sleep(120);
 
@@ -628,7 +676,7 @@ test('B7 群聊 × 私聊并发：无死锁、两侧数据各自正确、零串�
   assert.ok(elapsed < 2000, `私聊不应被群锁长时间阻塞（实际 ${elapsed}ms）`);
 
   // 并发：对 b 再发一次群聊（同一群）→ 应被群锁串行化、最终成功
-  const second = groupRunMod.withGroupLock(gid, () => groupMod.runGroupTurn(gid, '队列里的一句', { chatFn: fakeChat, rng: () => 0.9 }));
+  const second = groupRunMod.withGroupLock(gid, () => groupMod.runGroupTurn(gid, '队列里的一句', { chatFn: fakeChat, rng: () => 0.3 }));
 
   release('（笑）好呀，那就开始。');
   const gr = await groupTurn;
@@ -748,15 +796,14 @@ test('C8 端到端主流程：生成→攻略→晋升→建群→群聊(@/react
   assert.equal(sch[0]?.status, 'done');
   assert.equal(sch[1]?.status, 'current');
 
-  // 线下互动：只让焦点 c2 发言
+  // 线下互动：焦点优先（加权必开口）；rng=0.9 下非焦点基础概率不过 → 本轮大概率只有焦点
   const actChat: ChatFn = async () => '（点头）嗯，我在。';
   const ar = await groupRunMod.withGroupLock(gid, () =>
     activityMod.runActivityTurn(aid, '现在就我们俩', { chatFn: actChat, rng: () => 0.9, newRun: true })
   );
   assert.equal(ar.ok, true);
   const focusSpoke = ar.messages.filter((m) => m.speaker_type === 'companion');
-  assert.ok(focusSpoke.length >= 1, '焦点应发言');
-  for (const m of focusSpoke) assert.equal(Number(m.companion_id), c2, '线下互动应只由焦点发言');
+  assert.ok(focusSpoke.some((m) => Number(m.companion_id) === c2), '焦点（加权 p>=1）必须发言');
 
   // 6) 结算
   const end = activityMod.endActivity(aid);
@@ -770,9 +817,12 @@ test('C8 端到端主流程：生成→攻略→晋升→建群→群聊(@/react
   assert.equal(sceneSrcOf(1), null, '恢复后应清空 scene_source');
 
   // —— 断言 B：关系 delta 归属正确、规范序唯一 ——
+  // 线下「各说各话」后，除同场 +3 / 偏心 -2 外还有群聊社交互动的小额增减（每条 ±1~3），
+  // 故断言为「同场结算确实发生 + 净增量有界」，不再钉死 39。
   const rel12 = relationsMod.getRelation(1, c2);
   assert.ok(rel12, '应产生 c1↔c2 关系边');
-  assert.equal(rel12!.value, 39, '同场 +3 与被冷落 -2 应叠加为 39');
+  const baseDelta = activityMod.ACTIVITY_PAIR_DELTA + activityMod.ACTIVITY_NEGLECT_DELTA;
+  assert.ok(rel12!.value >= baseDelta && rel12!.value <= 60, `关系净增量应有界且含同场结算（实际 ${rel12!.value}）`);
   const [lo, hi] = relationsMod.normalizePair(1, c2);
   assert.equal(countRows('SELECT COUNT(*) AS c FROM companion_relations WHERE a_id = ? AND b_id = ?', lo, hi), 1);
   assert.equal(countRows('SELECT COUNT(*) AS c FROM companion_relations WHERE a_id = ? AND b_id = ?', hi, lo), 0, '不得有反向行');
@@ -868,7 +918,7 @@ test('C9 场景恢复对抗性：cancel 恢复；重复 end 幂等；篡改 curr
   assert.equal(sceneOf(b3), 'online', 'b3 应恢复为 online');
 });
 
-test('C9b 线下聚焦看门狗（D1 回归）：焦点仅发 reaction 时非焦点产出（含 reaction）恒为 0', async () => {
+test('C9b 线下聚焦（各说各话）：焦点加权必参与；非焦点可参与但受概率约束；三连击不破', async () => {
   const a = makeGirlfriend('C9b甲');
   const b = makeGirlfriend('C9b乙');
   const act = activityMod.createActivity({ kind: 'offline', memberIds: [a, b] });
@@ -877,17 +927,35 @@ test('C9b 线下聚焦看门狗（D1 回归）：焦点仅发 reaction 时非焦
   const gid = Number(act.activity.group_id ?? 0);
   assert.ok(activityMod.focus(aid, b).ok, '聚焦 b');
 
-  // 原始泄露序列：焦点 b 先 reaction（0.0）；旧实现在此之后会回退轮转、选中 a 正式发言（0.9）
+  // 原始泄露序列保留作回归输入：rng[0]=0.0 → 焦点先 reaction
   const rng = seqRng([0.0, 0.0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9]);
   const r = await groupRunMod.withGroupLock(gid, () =>
     activityMod.runActivityTurn(aid, '就我们两个哦', { chatFn: fakeChat, rng, newRun: true })
   );
   assert.equal(r.ok, true);
-  assert.equal(nonFocusOutputs(r.messages, b).length, 0, '线下聚焦时非焦点产出（含 reaction）应恒为 0');
-  assert.ok(focusOutputs(r.messages, b).length >= 1, '焦点应至少产出一条');
+  // 加权 3.5 → 焦点概率 >= 1：本拍焦点必开口
+  assert.ok(focusOutputs(r.messages, b).length >= 1, '焦点应至少产出一条（加权主导）');
+  // 注意：不断言"高 rng 下非焦点沉默"——冷场升温/关系加成等因子叠加后 p 可能超过 0.9，
+  // 这正是「自由发挥」的本意（不确定性），只断言有界与三连击不破。
+  // 低 rng：非焦点也会参与 —— 这正是「各说各话」
+  const r2 = await groupRunMod.withGroupLock(gid, () =>
+    activityMod.runActivityTurn(aid, '再聊聊', { chatFn: fakeChat, rng: seqRng([0.1, 0.1, 0.1, 0.1]) })
+  );
+  assert.equal(r2.ok, true);
+  assert.ok(nonFocusOutputs(r2.messages, b).length > 0, '低 rng 下非焦点应可参与（非独占）');
+  // 三连击硬不变量
+  const rows = groupMod.listMessages(gid).filter((m) => m.speaker_type === 'companion');
+  let streak = 0;
+  let prev: number | null = null;
+  for (const m of rows) {
+    const id = m.companion_id == null ? null : Number(m.companion_id);
+    streak = id !== null && id === prev ? streak + 1 : 1;
+    assert.ok(streak <= 2, '任何人不得连说 3 条');
+    prev = id;
+  }
 });
 
-test('D1-a 线下聚焦矩阵：8 组自选 rng × 4 轮，非焦点产出恒为 0 且每轮有界', async () => {
+test('D1-a 线下矩阵：8 组 rng × 4 轮，焦点主导参与、产出有界、三连击不破', async () => {
   const combos: number[][] = [
     [0.0, 0.0, 0.9, 0.9, 0.0, 0.0, 0.9, 0.9], // reaction 未命中/命中交替
     [0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9], // 全正式
@@ -918,14 +986,27 @@ test('D1-a 线下聚焦矩阵：8 组自选 rng × 4 轮，非焦点产出恒为
       assert.equal(r.ok, true, `combo ${idx} turn ${turn} 应成功`);
       focusTotal += focusOutputs(r.messages, b).length;
       nonFocusTotal += nonFocusOutputs(r.messages, b).length;
-      assert.ok(r.messages.length <= 2, `combo ${idx} turn ${turn} 产出应有界（≤2，实际 ${r.messages.length}）`);
+      // 每拍产出有界（自由发言下：@ 强制 + 概率型 ≤3 人 + reaction + 用户消息，不会刷屏失控）
+      assert.ok(r.messages.length <= 8, `combo ${idx} turn ${turn} 产出应有界（≤8，实际 ${r.messages.length}）`);
     }
-    assert.equal(nonFocusTotal, 0, `combo ${idx} 非焦点产出应恒为 0（实际 ${nonFocusTotal}）`);
-    assert.ok(focusTotal >= 4, `combo ${idx} 焦点应每轮均有产出（实际 ${focusTotal}）`);
+    // 焦点作为主导者应显著参与（4 轮中至少 2 轮有她；三连击会让她偶让位）
+    assert.ok(focusTotal >= 2, `combo ${idx} 焦点应显著参与（实际 ${focusTotal}）`);
+    // 各说各话：非焦点允许参与（不再要求恒为 0）
+    assert.ok(nonFocusTotal >= 0, `combo ${idx} 非焦点参与次数 ${nonFocusTotal}（允许，无上限约束）`);
+    // 三连击硬不变量（跨轮检查）
+    const rows = groupMod.listMessages(gid).filter((m) => m.speaker_type === 'companion');
+    let streak = 0;
+    let prev: number | null = null;
+    for (const m of rows) {
+      const id = m.companion_id == null ? null : Number(m.companion_id);
+      streak = id !== null && id === prev ? streak + 1 : 1;
+      assert.ok(streak <= 2, `combo ${idx} 任何人不得连说 3 条`);
+      prev = id;
+    }
   }
 });
 
-test('D1-b 第二条根因：焦点已连续 2 轮发言（触发反三连击封禁）后，仍只有焦点产出', async () => {
+test('D1-b 焦点被反三连击封禁的那一拍：不会死局 —— 其他人接上或焦点合法回归', async () => {
   const a = makeGirlfriend('D1b甲');
   const b = makeGirlfriend('D1b乙');
   const act = activityMod.createActivity({ kind: 'offline', memberIds: [a, b] });
@@ -934,26 +1015,36 @@ test('D1-b 第二条根因：焦点已连续 2 轮发言（触发反三连击封
   const gid = Number(act.activity.group_id ?? 0);
   assert.ok(activityMod.focus(aid, b).ok);
 
-  // 两轮正式发言 → recent_speakers 尾部 = [b, b]（旧实现里 b 会被反三连击封禁、
-  // mentions 过滤空 → 轮转选中非焦点 a）
+  // 两轮正式发言 → recent_speakers 尾部 = [b, b]：第 3 拍 b 被反三连击硬封禁
   for (let i = 0; i < 2; i++) {
     await groupRunMod.withGroupLock(gid, () =>
       activityMod.runActivityTurn(aid, `前置${i}`, { chatFn: fakeChat, rng: () => 0.9, newRun: i === 0 })
     );
   }
   const run = groupRunMod.getCurrentRun(gid);
-  const recent = groupRunMod.readRecentSpeakers(run);
-  assert.ok(
-    recent.length >= 2 && recent[recent.length - 1] === b && recent[recent.length - 2] === b,
-    `前置后 recent_speakers 尾部应为 [b,b]（实际 ${JSON.stringify(recent)}）`
-  );
+  assert.ok(run, '前置后应有进行中的 run');
 
+  // 直接构造「焦点已连说 2 条」的状态（recent_speakers 尾部 = [b, b]）：
+  // 概率模型下靠真实对话凑 [b,b] 不可靠（非焦点可能自然参与）——这正是各说各话。
+  dbRun('UPDATE group_runs SET recent_speakers = ? WHERE id = ?', JSON.stringify([b, b]), Number(run!.id));
+
+  // 第 3 拍：焦点被三连击硬封禁 → 要么她不被选中（别人接上，各说各话），要么冷场后升温由焦点合法回归；
+  // 不变量只有两个：run 正常、三连击不破
   const r = await groupRunMod.withGroupLock(gid, () =>
     activityMod.runActivityTurn(aid, '再来一句', { chatFn: fakeChat, rng: seqRng([0.9, 0.9, 0.9]) })
   );
-  assert.equal(r.ok, true);
-  assert.equal(nonFocusOutputs(r.messages, b).length, 0, '焦点被反三连击封禁后仍不得放行非焦点');
-  assert.ok(focusOutputs(r.messages, b).length >= 1, '焦点仍应产出（绕过对焦点的封禁）');
+  assert.equal(r.ok, true, '焦点被封禁时本轮不应报错/死局');
+  const before = groupRunMod.getCurrentRun(gid);
+  assert.ok(before === null || before.status === 'running' || before.status === 'ended', 'run 状态应收敛');
+  const rows = groupMod.listMessages(gid).filter((m) => m.speaker_type === 'companion');
+  let streak = 0;
+  let prev: number | null = null;
+  for (const m of rows) {
+    const id = m.companion_id == null ? null : Number(m.companion_id);
+    streak = id !== null && id === prev ? streak + 1 : 1;
+    assert.ok(streak <= 2, '三连击不破（即使焦点被封、他人接话）');
+    prev = id;
+  }
 });
 
 test('D1-c 群聊零回归（不传 onlySpeakers）：多角色照常轮流、@ 优先仍生效、无反三连击破例', async () => {
@@ -967,7 +1058,7 @@ test('D1-c 群聊零回归（不传 onlySpeakers）：多角色照常轮流、@ 
 
   // @ 优先：第一条 companion 消息应来自 a
   const t1 = await groupRunMod.withGroupLock(gid, () =>
-    groupMod.runGroupTurn(gid, `@${nameA} 你先说`, { chatFn: fakeChat, rng: () => 0.9, newRun: true })
+    groupMod.runGroupTurn(gid, `@${nameA} 你先说`, { chatFn: fakeChat, rng: () => 0.3, newRun: true })
   );
   const firstSpeaker = t1.messages.find((m) => m.speaker_type === 'companion')?.companion_id;
   assert.equal(Number(firstSpeaker), a, '@ 优先：被 @ 者应首先发言');
@@ -975,7 +1066,7 @@ test('D1-c 群聊零回归（不传 onlySpeakers）：多角色照常轮流、@ 
   // 多轮：应出现多个不同发言人（不是只有一个人说话）
   const speakers = new Set<number>();
   for (let i = 0; i < 6; i++) {
-    const r = await groupRunMod.withGroupLock(gid, () => groupMod.runGroupTurn(gid, `继续${i}`, { chatFn: fakeChat, rng: () => 0.9 }));
+    const r = await groupRunMod.withGroupLock(gid, () => groupMod.runGroupTurn(gid, `继续${i}`, { chatFn: fakeChat, rng: () => 0.3 }));
     for (const m of r.messages) if (m.speaker_type === 'companion' && m.companion_id != null) speakers.add(Number(m.companion_id));
   }
   assert.ok(speakers.size >= 2, `群聊应多角色轮流发言（实际 ${speakers.size} 人）`);
@@ -999,15 +1090,15 @@ test('D1-d 中止语义：焦点产出后本轮中止，run 仍 running；每轮
       activityMod.runActivityTurn(aid, `句${i}`, { chatFn: fakeChat, rng: () => 0.9, newRun: i === 0 })
     );
     assert.equal(r.ok, true);
-    assert.equal(focusOutputs(r.messages, b).length, 1, '每轮焦点应恰好产出 1 条');
-    assert.equal(nonFocusOutputs(r.messages, b).length, 0);
-    assert.equal(r.messages.length, 2, '每轮消息应为 [用户, 焦点]');
-    assert.equal(r.ended, false, '中止只影响本轮调度，不应结束 run');
+    // 焦点每轮都开口（加权 p>=1）；非焦点不禁止（自由发言），但有界
+    assert.ok(focusOutputs(r.messages, b).length >= 1, '每轮焦点应开口（加权主导）');
+    assert.ok(r.messages.length <= 6, '每轮产出应有界（用户 + @ 强制 + 概率型 ≤3 + reaction）');
+    assert.equal(r.ended, false, '本轮结束不应结束 run');
     assert.equal(groupRunMod.getCurrentRun(gid)?.status, 'running', 'run 应仍为 running（未被标 cancelled）');
   }
 });
 
-test('D1-e 焦点切换与 @ 非焦点：线下只认当前焦点（@ 非焦点被忽略）', async () => {
+test('D1-e 焦点切换与 @ ：@ 谁谁就说（加权让焦点更容易开口，但不独占）', async () => {
   const a = makeGirlfriend('D1e甲');
   const b = makeGirlfriend('D1e乙');
   const act = activityMod.createActivity({ kind: 'offline', memberIds: [a, b] });
@@ -1020,18 +1111,16 @@ test('D1-e 焦点切换与 @ 非焦点：线下只认当前焦点（@ 非焦点�
   let r = await groupRunMod.withGroupLock(gid, () =>
     activityMod.runActivityTurn(aid, '轮到你', { chatFn: fakeChat, rng: () => 0.9, newRun: true })
   );
-  assert.ok(focusOutputs(r.messages, a).length >= 1 && nonFocusOutputs(r.messages, a).length === 0, '焦点 a 时只有 a 产出');
+  assert.ok(focusOutputs(r.messages, a).length >= 1, '焦点 a（加权 p>=1）应开口');
 
-  // @ 非焦点 b —— 应被忽略（聚焦模式只认焦点 a）
+  // @ 非焦点 b —— @ 是强制信号：被 @ 的人必须开口（planBeat 不变），其余按概率
   r = await groupRunMod.withGroupLock(gid, () => activityMod.runActivityTurn(aid, `@${nameB} 你说`, { chatFn: fakeChat, rng: () => 0.9 }));
-  assert.equal(nonFocusOutputs(r.messages, a).length, 0, '@ 非焦点成员在聚焦模式下应被忽略');
-  assert.ok(focusOutputs(r.messages, a).length >= 1, '仍应由焦点 a 产出');
+  assert.ok(nonFocusOutputs(r.messages, a).length >= 1, '@ 非焦点成员 → 她应被强制点名发言');
 
   // 切换到 b
   assert.ok(activityMod.focus(aid, b).ok);
   r = await groupRunMod.withGroupLock(gid, () => activityMod.runActivityTurn(aid, '现在换你', { chatFn: fakeChat, rng: () => 0.9 }));
-  assert.ok(focusOutputs(r.messages, b).length >= 1, '切换后应由 b 产出');
-  assert.equal(nonFocusOutputs(r.messages, b).length, 0, '切换后 a 不得产出');
+  assert.ok(focusOutputs(r.messages, b).length >= 1, '切换后新焦点（加权）应开口');
 });
 
 test('D1-f 线下 max_rounds 边界：maxRounds=1 时恰好 1 轮且只有焦点产出', async () => {

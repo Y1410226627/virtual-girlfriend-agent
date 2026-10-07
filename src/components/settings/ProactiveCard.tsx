@@ -2,6 +2,7 @@
 
 import { Card } from '@/components/ui';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import type { SaveFn, SetFieldFn, SetToast } from './shared';
 
 export function ProactiveCard({
@@ -11,6 +12,7 @@ export function ProactiveCard({
   saving,
   setToast,
   reload,
+  companionId,
 }: {
   form: Record<string, string>;
   set: SetFieldFn;
@@ -18,6 +20,8 @@ export function ProactiveCard({
   saving: boolean;
   setToast: SetToast;
   reload: () => void;
+  /** 当前伴侣：让她"立刻试一次"主动消息时针对该伴侣触发 */
+  companionId: number;
 }) {
   return (
     <Card
@@ -27,7 +31,7 @@ export function ProactiveCard({
           className="btn-ghost"
           onClick={async () => {
             try {
-              const r = await fetch('/api/proactive', {
+              const r = await fetch(withCompanionQuery('/api/proactive', companionId), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ force: true }),

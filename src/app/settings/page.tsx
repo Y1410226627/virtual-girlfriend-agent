@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi, PageHeader, Loading, ErrorBox, Toast } from '@/components/ui';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 import type { SettingsResponse, EffectiveInfo, ProfileForm, ProfileTestResult, CustomValues, PingResult } from '@/components/settings/shared';
 import { AppearanceCard } from '@/components/settings/AppearanceCard';
 import { ModelProfileCard } from '@/components/settings/ModelProfileCard';
@@ -20,7 +22,11 @@ import { PrivacyCard } from '@/components/settings/PrivacyCard';
 import { AboutCard } from '@/components/settings/AboutCard';
 
 export default function SettingsPage() {
-  const { data, loading, error, reload } = useApi<SettingsResponse>('/api/settings');
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：
+  // 只有「伴侣级」取数才带它（她的 persona/名字、/api/state 数值、伴侣级导出、custom_values、
+  // 主动消息试一次、只清空本伴侣聊天记录）；LLM/向量/模型档案/语音/自检/恢复出厂等全局配置一律不带。
+  const companionId = useCompanionId();
+  const { data, loading, error, reload } = useApi<SettingsResponse>(withCompanionQuery('/api/settings', companionId));
   const [form, setForm] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
   const [ping, setPing] = useState<PingResult | null>(null);
@@ -116,7 +122,8 @@ export default function SettingsPage() {
 
   const loadCv = async () => {
     try {
-      const r = await fetch('/api/state', { cache: 'no-store' });
+      // /api/state 返回的是"该伴侣"的关系/性格/依恋/亲密数值 → 伴侣级，必须带 companionId
+      const r = await fetch(withCompanionQuery('/api/state', companionId), { cache: 'no-store' });
       const j = await r.json();
       setCv({
         intimacy: j?.relationship?.intimacy ?? 0,
@@ -156,9 +163,20 @@ export default function SettingsPage() {
     }
   }, [data]);
 
+  // 切换伴侣：清空"未保存草稿"标记（dirty）与非法值提示，避免把 A 的未保存内容写进 B。
+  // 用 prevRef 守卫：初次挂载（companionId=1）与后续取值不变时不触发，零额外渲染/请求、交互不变。
+  const prevCompanionRef = useRef(companionId);
+  useEffect(() => {
+    if (prevCompanionRef.current === companionId) return;
+    prevCompanionRef.current = companionId;
+    dirtyRef.current.clear();
+    setSaveErrors([]);
+  }, [companionId]);
+
+  // 切换伴侣后重新读取该伴侣的数值直控面板（loadCv 每次都按当前 companionId 取数）
   useEffect(() => {
     void loadCv();
-  }, []);
+  }, [companionId]);
 
   const set = (k: string, v: string) => {
     dirtyRef.current.add(k);
@@ -181,7 +199,7 @@ export default function SettingsPage() {
       payload[k] = v;
     }
     try {
-      const r = await fetch('/api/settings', {
+      const r = await fetch(withCompanionQuery('/api/settings', companionId), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ settings: payload }),
@@ -251,8 +269,11 @@ export default function SettingsPage() {
     }
   };
 
-  const profilePost = async (body: Record<string, unknown>, reloadAfter = true) => {
-    const r = await fetch('/api/settings', {
+  // 模型档案 / 向量重建 / 连接测试等属于全局配置（profile 表全局），**不带** companionId；
+  // 仅「数值直控 custom_values」写的是该伴侣的关系/性格/依恋/亲密 → 由调用方传 companionScoped=true。
+  const profilePost = async (body: Record<string, unknown>, reloadAfter = true, companionScoped = false) => {
+    const url = companionScoped ? withCompanionQuery('/api/settings', companionId) : '/api/settings';
+    const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -272,7 +293,8 @@ export default function SettingsPage() {
   };
 
   const download = async () => {
-    const r = await fetch('/api/settings', {
+    // 导出（action=export）里绝大多数表按 companion_id 取数 → 伴侣级，带 companionId
+    const r = await fetch(withCompanionQuery('/api/settings', companionId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'export' }),
@@ -331,6 +353,7 @@ export default function SettingsPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader title="设置" desc="模型、身份、主动消息、隐私。所有数据都存在你自己电脑上。" />
 
@@ -362,23 +385,23 @@ export default function SettingsPage() {
 
         <SceneCard form={form} save={save} />
 
-        <LifeIntimacyCard form={form} set={set} save={save} saving={saving} />
+        <LifeIntimacyCard form={form} set={set} save={save} saving={saving} companionId={companionId} />
 
         <CustomModeCard customOn={customOn} setForm={setForm} setToast={setToast} cv={cv} setCv={setCv} loadCv={loadCv} save={save} profilePost={profilePost} />
 
         <IdentityCard form={form} set={set} save={save} saving={saving} />
 
-        <ProactiveCard form={form} set={set} save={save} saving={saving} setToast={setToast} reload={reload} />
+        <ProactiveCard form={form} set={set} save={save} saving={saving} setToast={setToast} reload={reload} companionId={companionId} />
 
         <NotificationCard notifyStatusText={notifyStatusText} notifyOn={notifyOn} toggleNotify={toggleNotify} notifyPerm={notifyPerm} notifySupported={notifySupported} />
 
         <VoiceCard form={form} set={set} save={save} saving={saving} testTts={testTts} ttsTesting={ttsTesting} />
 
-        <PhotoCard form={form} set={set} save={save} saving={saving} />
+        <PhotoCard form={form} set={set} save={save} saving={saving} companionId={companionId} />
 
         <PacingCard form={form} set={set} save={save} saving={saving} />
 
-        <PrivacyCard download={download} reset={reset} setToast={setToast} reload={reload} />
+        <PrivacyCard download={download} reset={reset} setToast={setToast} reload={reload} companionId={companionId} />
 
         <AboutCard />
       </div>

@@ -4,10 +4,10 @@
 // - 线上活动（kind='online'）：**复用群聊引擎**（group.ts 的调度/发言/reaction/收尾）+ 活动模板库
 //   （movie/game/nighttalk/co_listen）；场景保持 online；产物 = 群聊记录 + summary。
 // - 线下活动（kind='offline'）：复用 scene.ts 的 offline 概念；buildDateSchedule() 生成日程
-//   （见面→…→收尾）写入 activity_schedule_items；**轮流聚焦**一名参与者（activities.focus_companion_id，
-//   用户可 focus() 切换）——线下互动以引擎「onlySpeakers=[焦点]」硬约束**只有焦点能产出**
-//   （非焦点任何轮次都不产出，含 reaction），并在焦点产出后 abort 本轮，真正做到「一次只说一个人」
-//   （见 runActivityTurn）；
+//   （见面→…→收尾）写入 activity_schedule_items；**聚焦**一名参与者（activities.focus_companion_id，
+//   用户可 focus() 切换）——聚焦是「主导者加权」而非独占：焦点的开口概率 ×FOCUS_BOOST(3.5)，
+//   更容易先开口/接话；其他人不被禁言，会按情境（被点到名字、与上一位发言者的关系、冷场升温）
+//   自然插话，做到「线上线下都可以各说各话」（见 runActivityTurn）；
 //   不做真实日历集成；end() 回落 online，并把日程/记录/summary/对好感与伴侣关系的 delta 落库。
 // - 场景落点（避免互相污染）：活动进行中把参与者的 relationship_state.scene 强制置 offline
 //   （scene_source='activity'），并把原场景记进 activities.meta_json，结束后逐一如实恢复；
@@ -19,14 +19,12 @@
 import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
 import { nowIso, safeJson } from './utils';
 import { applyDelta } from './companion-relations';
-import { getCurrentRun } from './group-run';
 import {
   createGroup,
   isGirlfriend,
   listMessages,
   listMemberIds,
   runGroupTurn,
-  GROUP_MAX_MEMBERS,
   GROUP_MIN_MEMBERS,
   type GroupTurnOptions,
   type GroupTurnResult,
@@ -36,6 +34,10 @@ import type { ActivityRow, ActivityScheduleItemRow, GroupMessageRow } from './ty
 /* ------------------------------------------------------------------ */
 /* 常量 / 模板                                                         */
 /* ------------------------------------------------------------------ */
+/** 线下聚焦对象的概率权重（**加权而非独占**）：让被约的人更容易开口/接话，
+ *  但不禁止其他人按情境参与——需求：「线上线下都可以各说各话」。 */
+export const FOCUS_BOOST = 3.5;
+
 /** 线上活动模板库（key 存 activities.template_key） */
 export const ACTIVITY_TEMPLATES = {
   movie: { label: '一起看电影', topic: '挑一部电影，边看边聊' },
@@ -237,7 +239,7 @@ function validateParticipants(ids: number[]): { ok: true } | { ok: false; code: 
  * 发起一次活动。
  * - 线上：kind='online'，template_key 取模板库；场景保持 online；复用群聊引擎互动。
  * - 线下：kind='offline'，强制参与者进入 offline 场景（并记忆原场景），生成约会日程，聚焦首位参与者。
- * 参与者 2–6 名已晋升女友（与群聊一致）；活动会挂到一个群（沿用传入 groupId，或按标题新建）。
+ * 参与者 ≥2 名已晋升女友（与群聊一致，**无上限**）；活动会挂到一个群（沿用传入 groupId，或按标题新建）。
  */
 export function createActivity(input: CreateActivityInput): ActivityOpResult {
   const kind = input?.kind === 'offline' ? 'offline' : input?.kind === 'online' ? 'online' : null;
@@ -246,9 +248,6 @@ export function createActivity(input: CreateActivityInput): ActivityOpResult {
   const ids = uniqueIds(input.memberIds ?? []);
   if (ids.length < GROUP_MIN_MEMBERS) {
     return { ok: false, code: 'INVALID_INPUT', error: `活动至少需要 ${GROUP_MIN_MEMBERS} 名已晋升女友` };
-  }
-  if (ids.length > GROUP_MAX_MEMBERS) {
-    return { ok: false, code: 'GROUP_MEMBER_LIMIT', error: `活动参与者最多 ${GROUP_MAX_MEMBERS} 名` };
   }
   const v = validateParticipants(ids);
   if (!v.ok) return { ok: false, code: v.code, error: v.error };
@@ -270,9 +269,6 @@ export function createActivity(input: CreateActivityInput): ActivityOpResult {
     if (!g) return { ok: false, code: 'GROUP_NOT_FOUND', error: '指定的群不存在' };
     const existing = listMemberIds(groupId);
     const toAdd = ids.filter((id) => !existing.includes(id));
-    if (existing.length + toAdd.length > GROUP_MAX_MEMBERS) {
-      return { ok: false, code: 'GROUP_MEMBER_LIMIT', error: `群成员最多 ${GROUP_MAX_MEMBERS} 名` };
-    }
     const now0 = nowIso();
     for (const id of toAdd) {
       dbRun('INSERT OR IGNORE INTO group_members (group_id, companion_id, joined_at) VALUES (?, ?, ?)', groupId, id, now0);
@@ -423,40 +419,21 @@ export async function runActivityTurn(
 
   if (isOffline) {
     if (!focusId) {
-      // 防御性（当前 API 不可达，但杜绝退化）：线下没有有效焦点 → 视为「本轮无人可产出」。
-      // **绝不**落入下面的普通群聊分支——那会让多角色同时抢话，违反架构 §3.7
-      // 「线下轮流聚焦、一次只说一个人」。线下宁可本轮沉默，也不放行多人。
-      // 不改 run 状态、不写任何消息，安全收敛。
-      return {
-        ok: false,
-        code: 'NO_FOCUS',
-        error: '当前没有有效的聚焦对象，本轮无人发言',
-        messages: [],
-        run: getCurrentRun(groupId),
-        ended: false,
-      };
+      // 防御性（当前 API 不可达，但杜绝退化）：线下没有有效焦点 → 无人主导，
+      // 仍按「自由发言」跑（不做硬独占），只是没有加权对象。
+      // 这样即使数据异常，也只会退化成"普通自由群聊"，不会出现"谁都不能说话"的死局。
+      const mentions = opts.mentions && opts.mentions.length ? opts.mentions : undefined;
+      return runGroupTurn(groupId, text, { ...opts, mentions });
     }
-    // 线下：引擎层硬约束「只有焦点能产出」+ 焦点产出任意类型后中止本轮
-    const controller = new AbortController();
-    const outer = opts.signal;
-    if (outer) {
-      if (outer.aborted) controller.abort();
-      else outer.addEventListener('abort', () => controller.abort(), { once: true });
-    }
-    const userOnMessage = opts.onMessage;
-    let stopped = false;
+    // 线下约会：**焦点优先，但各说各话**（需求：线上线下都可以各说各话）。
+    // 焦点（被约出来的那个人）权重 ×3.5，更容易先开口/接话；其他人不被禁言，
+    // 会按情境（被点到名字、和上一位发言者关系、冷场升温）自然插话。
+    // 不再用 onlySpeakers 独占——那会变成"一人独白、其余噤声"。
+    const mentions = opts.mentions && opts.mentions.length ? opts.mentions : undefined;
     return runGroupTurn(groupId, text, {
       ...opts,
-      onlySpeakers: [focusId],
-      signal: controller.signal,
-      onMessage: (m) => {
-        userOnMessage?.(m);
-        // 任意类型（正式发言 / reaction）都算「焦点已产出」→ 本轮到此为止
-        if (!stopped && Number(m.companion_id) === focusId) {
-          stopped = true;
-          controller.abort();
-        }
-      },
+      mentions,
+      boost: { ...(opts.boost ?? {}), [focusId]: FOCUS_BOOST },
     });
   }
 

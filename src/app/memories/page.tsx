@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react';
 import { useApi, PageHeader, Loading, ErrorBox, Toast } from '@/components/ui';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 import { TYPES, type MemoriesData, type NewMem } from '@/components/memories/shared';
 import { StarMapCard } from '@/components/memories/StarMapCard';
 import { StatsCard } from '@/components/memories/StatsCard';
@@ -11,9 +13,13 @@ import { MemoryList } from '@/components/memories/MemoryList';
 import { SummariesCard } from '@/components/memories/SummariesCard';
 
 export default function MemoriesPage() {
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：切换伴侣要重新加载该伴侣的记忆
+  const companionId = useCompanionId();
   const [type, setType] = useState('');
   const [status, setStatus] = useState('active');
-  const { data, loading, error, reload } = useApi<MemoriesData>(`/api/memories?type=${type}&status=${status}`);
+  const { data, loading, error, reload } = useApi<MemoriesData>(
+    withCompanionQuery(`/api/memories?type=${type}&status=${status}`, companionId)
+  );
   const [toast, setToast] = useState<string | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
@@ -24,7 +30,7 @@ export default function MemoriesPage() {
 
   const act = async (body: Record<string, unknown>, msg?: string): Promise<boolean> => {
     try {
-      const r = await fetch('/api/memories', {
+      const r = await fetch(withCompanionQuery('/api/memories', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -42,7 +48,7 @@ export default function MemoriesPage() {
 
   const saveEdit = async (id: number) => {
     try {
-      const r = await fetch('/api/memories', {
+      const r = await fetch(withCompanionQuery('/api/memories', companionId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, content: draft }),
@@ -60,7 +66,7 @@ export default function MemoriesPage() {
   const remove = async (id: number) => {
     if (!confirm('删除这条记忆？')) return;
     try {
-      const r = await fetch(`/api/memories?id=${id}`, { method: 'DELETE' });
+      const r = await fetch(withCompanionQuery(`/api/memories?id=${id}`, companionId), { method: 'DELETE' });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j?.error || `删除失败 ${r.status}`);
       setToast('已删除');
@@ -72,7 +78,7 @@ export default function MemoriesPage() {
 
   const changeImportance = async (id: number, importance: number): Promise<boolean> => {
     try {
-      const r = await fetch('/api/memories', {
+      const r = await fetch(withCompanionQuery('/api/memories', companionId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, importance }),
@@ -92,6 +98,7 @@ export default function MemoriesPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="记忆"

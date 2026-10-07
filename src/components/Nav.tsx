@@ -126,7 +126,7 @@ export default function Nav() {
         {ITEMS.map((it) => (
           <Link
             key={it.href}
-            href={it.href}
+            href={withCompanionQuery(it.href, companionId)}
             aria-current={isActive(it.href) ? 'page' : undefined}
             className={`flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm transition ${
               isActive(it.href)
@@ -152,7 +152,7 @@ export default function Nav() {
           {ITEMS.map((it) => (
             <Link
               key={it.href}
-              href={it.href}
+              href={withCompanionQuery(it.href, companionId)}
               aria-current={isActive(it.href) ? 'page' : undefined}
               className={`flex min-w-[62px] flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] ${
                 isActive(it.href) ? 'acc font-medium' : 'ink-2'

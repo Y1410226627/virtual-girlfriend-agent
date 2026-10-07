@@ -1,6 +1,7 @@
 'use client';
 
 import { Card } from '@/components/ui';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import type { SetToast } from './shared';
 
 export function PrivacyCard({
@@ -8,11 +9,14 @@ export function PrivacyCard({
   reset,
   setToast,
   reload,
+  companionId,
 }: {
   download: () => void;
   reset: (keepSettings: boolean) => void;
   setToast: SetToast;
   reload: () => void;
+  /** 当前伴侣：「只清空聊天记录」只清空该伴侣的消息（wipeAllMessages 走 cId 作用域） */
+  companionId: number;
 }) {
   return (
     <Card title="隐私与数据">
@@ -25,7 +29,7 @@ export function PrivacyCard({
           onClick={async () => {
             if (!confirm('确定清空聊天记录吗？记忆、性格、关系状态会保留。')) return;
             try {
-              const r = await fetch('/api/messages?all=1', { method: 'DELETE' });
+              const r = await fetch(withCompanionQuery('/api/messages?all=1', companionId), { method: 'DELETE' });
               if (!r.ok) throw new Error();
               setToast('聊天记录已清空');
               reload();

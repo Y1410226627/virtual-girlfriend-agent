@@ -1220,4 +1220,16 @@ DROP INDEX IF EXISTS idx_agent_diaries_user_date;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_diaries_companion_date ON agent_diaries(companion_id, date);
 `,
   },
+  {
+    version: 15,
+    name: 'companion_origin',
+    sql: `
+-- 候选人/伴侣的「来历」：谁介绍、在哪认识（用于通讯录展示与关系网初始化）。
+--   origin_kind: 'cast'（她的室友/同事/朋友等身边人升格）| 'auto'（交往中被自动识别）| 'random'（陌生人）| NULL（主女友/老数据）
+--   origin_companion_id: 通过哪位伴侣认识（cast/auto 时有值），晋升时据此建立初始伴侣关系边
+ALTER TABLE companions ADD COLUMN origin_kind TEXT;
+ALTER TABLE companions ADD COLUMN origin_companion_id INTEGER;
+CREATE INDEX IF NOT EXISTS idx_companions_origin ON companions(origin_kind, origin_companion_id);
+`,
+  },
 ];

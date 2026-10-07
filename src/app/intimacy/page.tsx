@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useApi, PageHeader, Card, Stat, Loading, ErrorBox, Toast, fmtTime, Chip } from '@/components/ui';
 import { Gauge } from '@/components/charts';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 
 interface IntimacyState {
   libido: number;
@@ -52,7 +54,9 @@ const LEVELS = [
 ];
 
 export default function IntimacyPage() {
-  const { data, loading, error, reload } = useApi<IntimacyResponse>('/api/intimacy');
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：切换伴侣要重新加载该伴侣的亲密状态
+  const companionId = useCompanionId();
+  const { data, loading, error, reload } = useApi<IntimacyResponse>(withCompanionQuery('/api/intimacy', companionId));
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newPref, setNewPref] = useState({ type: 'custom', content: '' });
@@ -60,7 +64,7 @@ export default function IntimacyPage() {
   const post = async (body: Record<string, unknown>, msg?: string) => {
     setBusy(true);
     try {
-      const r = await fetch('/api/intimacy', {
+      const r = await fetch(withCompanionQuery('/api/intimacy', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -87,6 +91,7 @@ export default function IntimacyPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="亲密"

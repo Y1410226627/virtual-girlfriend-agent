@@ -5,6 +5,8 @@ import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, fmtTime, Chip, Bar 
 import { RadarChart, LineChart } from '@/components/charts';
 import { STAGES } from '@/lib/stages';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 
 const COLORS = ['#F65C8A', '#FF8F6B', '#C084FC', '#38BDF8', '#34D399', '#FBBF24'];
 
@@ -102,7 +104,9 @@ function SliderRow({ value, label, onCommit }: { value: number; label: string; o
 }
 
 export default function PersonalityPage() {
-  const { data, loading, error, reload } = useApi<PersonalityData>('/api/personality');
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：切换伴侣要重新加载该伴侣的性格
+  const companionId = useCompanionId();
+  const { data, loading, error, reload } = useApi<PersonalityData>(withCompanionQuery('/api/personality', companionId));
   const [toast, setToast] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -110,7 +114,7 @@ export default function PersonalityPage() {
   const post = async (body: Record<string, unknown>, msg?: string) => {
     setSaving(true);
     try {
-      const r = await fetch('/api/personality', {
+      const r = await fetch(withCompanionQuery('/api/personality', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -128,7 +132,7 @@ export default function PersonalityPage() {
 
   const adjust = async (key: string, value: number) => {
     try {
-      const r = await fetch('/api/personality', {
+      const r = await fetch(withCompanionQuery('/api/personality', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'adjust', dimension: key, value }),
@@ -161,6 +165,7 @@ export default function PersonalityPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="性格"

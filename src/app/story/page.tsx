@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import { useApi, PageHeader, Card, Loading, ErrorBox, fmtTime, Chip } from '@/components/ui';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 
 interface Milestone {
   kind: string;
@@ -97,7 +99,9 @@ function DiaryList({ diaries }: { diaries: Diary[] }) {
 }
 
 export default function StoryPage() {
-  const { data, loading, error, reload } = useApi<StoryResponse>('/api/story');
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：切换伴侣要重新加载该伴侣的纪念册
+  const companionId = useCompanionId();
+  const { data, loading, error, reload } = useApi<StoryResponse>(withCompanionQuery('/api/story', companionId));
 
   // 里程碑 + 大额情感流水，按时间倒序合并成一条时间轴
   const timeline = useMemo(() => {
@@ -133,6 +137,7 @@ export default function StoryPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader title="纪念册" desc="你们之间发生过的重要时刻。" />
 

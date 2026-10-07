@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi, PageHeader, Loading, ErrorBox, Toast } from '@/components/ui';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 import type { LifeData } from '@/components/world/shared';
 import { NowDoingCard } from '@/components/world/NowDoingCard';
 import { BodyCard } from '@/components/world/BodyCard';
@@ -28,8 +30,10 @@ const TABS = [
 ] as const;
 
 export default function WorldPage() {
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：切换伴侣要重新加载该伴侣的世界
+  const companionId = useCompanionId();
   // P1-55：一次取最多 200 条生活日记，"展开全部"才有真实数据可展示（默认只返回 30）
-  const { data, loading, error, reload } = useApi<LifeData>('/api/life?limit=200');
+  const { data, loading, error, reload } = useApi<LifeData>(withCompanionQuery('/api/life?limit=200', companionId));
   const [tab, setTab] = useState<(typeof TABS)[number]['k']>('now');
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -51,7 +55,7 @@ export default function WorldPage() {
   const post = async (body: Record<string, unknown>, msg?: string) => {
     setBusy(true);
     try {
-      const r = await fetch('/api/life', {
+      const r = await fetch(withCompanionQuery('/api/life', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -92,6 +96,7 @@ export default function WorldPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       <PageHeader
         title="她的世界"
         desc="她不是只在聊天时才存在的人。你有你的事，她也有她的日子。"

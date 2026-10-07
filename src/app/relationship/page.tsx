@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useApi, PageHeader, Stat, Loading, ErrorBox, Toast } from '@/components/ui';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 import { FORM_ACTIONS, type Tab, type Edits, type PostBody, type RelationshipData, type RelationshipInfo } from '@/components/relationship/shared';
 import { StageCard } from '@/components/relationship/StageCard';
 import { BankCard } from '@/components/relationship/BankCard';
@@ -25,7 +27,9 @@ const ACTION_KEYS: Record<string, (keyof Edits)[]> = {
 };
 
 export default function RelationshipPage() {
-  const { data, loading, error, reload } = useApi<RelationshipData>('/api/relationship');
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：切换伴侣要重新加载该伴侣的关系
+  const companionId = useCompanionId();
+  const { data, loading, error, reload } = useApi<RelationshipData>(withCompanionQuery('/api/relationship', companionId));
   const [toast, setToast] = useState<string | null>(null);
   const [edits, setEdits] = useState<Edits>({});
   const [newEvent, setNewEvent] = useState({ title: '', event_date: '', kind: 'anniversary', repeat_yearly: true });
@@ -55,6 +59,15 @@ export default function RelationshipPage() {
     });
   }, [data]);
 
+  // 切换伴侣：清空"未保存草稿"标记（dirty），避免把 A 的未保存内容写进 B。
+  // 用 prevRef 守卫：初次挂载（companionId=1）与取值不变时不触发，零额外渲染/请求、交互不变。
+  const prevCompanionRef = useRef(companionId);
+  useEffect(() => {
+    if (prevCompanionRef.current === companionId) return;
+    prevCompanionRef.current = companionId;
+    dirtyRef.current.clear();
+  }, [companionId]);
+
   const setEdit = (k: keyof Edits, v: string | number) => {
     dirtyRef.current.add(k);
     setEdits((s) => ({ ...s, [k]: v }) as Edits);
@@ -62,7 +75,7 @@ export default function RelationshipPage() {
 
   const post = async (body: PostBody, msg?: string) => {
     try {
-      const r = await fetch('/api/relationship', {
+      const r = await fetch(withCompanionQuery('/api/relationship', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -92,6 +105,7 @@ export default function RelationshipPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="关系"
@@ -151,7 +165,7 @@ export default function RelationshipPage() {
               <RelationWeb />
               {/* 关系网联动：一起参加活动会改变伴侣间关系（同场 +、线下被冷落 −） */}
               <div className="flex flex-wrap items-center gap-2">
-                <Link className="btn-ghost" href="/activities">
+                <Link className="btn-ghost" href={withCompanionQuery('/activities', companionId)}>
                   去「活动」页，让她们一起玩 →
                 </Link>
                 <span className="dim text-[11px]">同场活动会拉近彼此关系；线下被冷落的一方会有点小情绪。</span>

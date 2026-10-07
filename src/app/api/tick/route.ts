@@ -5,7 +5,7 @@
 // 避免只服务主女友。主女友无上下文即默认目标，行为与旧实现逐字段一致（零回归）。
 import { errMsg } from '@/lib/utils';
 import { withCompanion } from '@/lib/companion-context';
-import { listAdvanceableCompanions } from '@/lib/companion';
+import { listAdvanceableCompanions, displayNameOf } from '@/lib/companion';
 import {
   ensureLife,
   advanceLife,
@@ -35,6 +35,9 @@ export async function POST() {
           await ensureDailyDiaries();
           // 主动消息检查（仍受频率 / 深夜免打扰等闸门约束）
           await tickProactive(false);
+          // 自动识别：交往中反复出现的人浮现为可攻略对象（6 小时节流、失败静默）
+          const { maybeAutoDiscover } = await import('@/lib/candidate-gen');
+          await maybeAutoDiscover(id, { ownerName: displayNameOf(id, '她') });
         } catch (e) {
           // 单伴侣失败不得中断其它伴侣，也不让整体 500
           console.warn(`[tick] companion ${id} failed:`, errMsg(e));

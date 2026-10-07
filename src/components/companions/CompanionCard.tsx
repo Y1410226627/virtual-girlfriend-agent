@@ -37,6 +37,12 @@ export function CompanionCard({ entry, href }: { entry: RosterEntry; href?: stri
         <div className="dim mt-0.5 truncate">
           {entry.age} 岁{entry.identity ? ` · ${entry.identity}` : ''}
         </div>
+        {entry.origin_label ? (
+          <div className="mt-0.5 truncate text-[11px] acc" title={entry.origin_label}>
+            {entry.origin_kind === 'cast' ? '👥 ' : entry.origin_kind === 'auto' ? '✨ ' : '🎲 '}
+            {entry.origin_label}
+          </div>
+        ) : null}
         {entry.status !== 'girlfriend' && entry.status !== 'closed' ? (
           <div className="mt-1.5">
             <Bar value={entry.attraction} tone="peach" height={6} />

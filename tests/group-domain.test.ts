@@ -1,9 +1,10 @@
 // T04 群聊域回归：
 //  ① 隐私红线（buildGroupPrompt 不含私密记忆 / 向量 / 用户画像，只含公开角色卡）；
-//  ② 发言调度优先级（@ 优先 / 未发言轮转 / 随机平衡 + 固定种子确定性）；
-//  ③ 禁三连击 / reaction 替代发言 / 收尾词 & 达 12 轮自然结束并插分隔 / abort 立即停止；
-//  ④ 建群成员校验（非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；>6 → GROUP_MEMBER_LIMIT）；
-//  ⑤ 并发不串扰不死锁（群聊 run 与伴侣私聊互不阻塞，叶子锁原则）。
+//  ② 自由发言模型 planBeat（@ 强制 / 可 0 人开口 / 冷场后升温 / 多人陆续接话 / 禁三连击）；
+//  ③ reaction 替代发言 / 收尾词 & 达 12 轮自然结束并插分隔 / abort 立即停止 / 连续 2 拍冷场结束；
+//  ④ 建群成员校验（非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；≥2 且**无硬上限**）；
+//  ⑤ prompt 角色卡裁剪（人数 > 12 时完整卡 ≤ 12，其余仅列名）；
+//  ⑥ 并发不串扰不死锁（群聊 run 与伴侣私聊互不阻塞，叶子锁原则）。
 // 隐私：使用独立的临时库（os.tmpdir），绝不触碰 data/ 下的真实数据。
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -198,43 +199,84 @@ test('隐私红线：buildGroupPrompt 不调用任何加载私密数据的入口
 });
 
 /* ================================================================== */
-/* 2. 发言调度优先级 + 禁三连击 + reaction                              */
+/* 2. 自由发言模型 planBeat + 禁三连击 + reaction                       */
 /* ================================================================== */
-test('planSpeakers：@ 优先（强制全部发言）', () => {
+test('planBeat：@ 强制发言（不受概率影响），且会三连击者被硬不变量剔除', () => {
+  const members = [11, 22, 33];
+  // 高 rng（0.99）会让所有概率型成员沉默；被 @ 者仍必须发言
+  const run = runLike([11], { 11: 3, 22: 0, 33: 0 });
+  assert.deepEqual(groupMod.planBeat(run, members, { rng: seqRng([0.99]), mentions: [22] }), [22], '@ 提及者应强制发言');
+  assert.deepEqual(
+    groupMod.planBeat(run, members, { rng: seqRng([0.99]), mentions: [22, 33] }),
+    [22, 33],
+    '@ 多人应全部强制发言'
+  );
+  // 会三连击者即便被 @ 也应被剔除（硬不变量优先于 @）
+  const blockedRun = runLike([11, 11], { 11: 2 });
+  assert.deepEqual(
+    groupMod.planBeat(blockedRun, members, { rng: seqRng([0.99]), mentions: [11] }),
+    [],
+    '会三连击者即便被 @ 也应被剔除'
+  );
+});
+
+test('planBeat：可 0 人开口（冷场）——固定 rng 使全员不通过', () => {
+  const members = [11, 22, 33];
+  // base=0.45；rng=0.99 >= p → 全部沉默；无 recent → 无 ×1.5；无 @ → 不强制
+  assert.deepEqual(groupMod.planBeat(runLike([], {}), members, { rng: () => 0.99 }), [], '允许一拍 0 人开口');
+});
+
+test('planBeat：冷场后升温（上一拍 0 人 → 下一拍概率提高）', () => {
+  const members = [11, 22, 33];
+  const run = runLike([], {});
+  // rng=0.6：base=0.45 → 0.6>=0.45 全员沉默
+  assert.deepEqual(groupMod.planBeat(run, members, { rng: () => 0.6, prevSilent: false }), [], '升温前应冷场');
+  // prevSilent=true → p=0.45*1.6=0.72 → 0.6<0.72 全员通过（上限 3）
+  assert.deepEqual(
+    groupMod.planBeat(run, members, { rng: () => 0.6, prevSilent: true }),
+    [11, 22, 33],
+    '冷场后应升温'
+  );
+});
+
+test('planBeat：多人陆续接话（一拍可 2–3 人）+ maxSpeakers 上限', () => {
+  const members = [11, 22, 33];
+  const run = runLike([], {});
+  // rng=0.1 < 0.45 → 全员通过 → 一拍 3 人（AI 之间陆续聊起来）
+  const many = groupMod.planBeat(run, members, { rng: () => 0.1 });
+  assert.equal(many.length, 3, '一拍可多人接话');
+  // maxSpeakers=2 → 至多 2 人
+  const capped = groupMod.planBeat(run, members, { rng: () => 0.1, maxSpeakers: 2 });
+  assert.equal(capped.length, 2, 'maxSpeakers 应限制同拍人数');
+  // temperature=0 → 基础概率 0 → 无人开口
+  assert.deepEqual(groupMod.planBeat(run, members, { rng: () => 0.0, temperature: 0 }), [], 'temperature=0 应全员沉默');
+});
+
+test('planBeat：固定种子确定性', () => {
+  const members = [11, 22, 33, 44];
+  const run = runLike([11, 22], { 11: 1, 22: 1 });
+  const a = groupMod.planBeat(run, members, { rng: seqRng([0.2, 0.7, 0.4, 0.5]) });
+  const b = groupMod.planBeat(run, members, { rng: seqRng([0.2, 0.7, 0.4, 0.5]) });
+  assert.deepEqual(a, b, '同一固定种子应产出完全一致的调度结果');
+  assert.equal(new Set(a).size, a.length, '同拍内不应重复同一发言人');
+});
+
+test('禁三连击：同一人不得连说 3 条（planBeat 硬不变量）', () => {
+  // 尾部已连 2 次者被禁，即便 rng 极低（其余人都想说话）
+  const run = runLike([11, 11], { 11: 2, 22: 0 });
+  const picked = groupMod.planBeat(run, [11, 22, 33], { rng: () => 0.0 });
+  assert.ok(!picked.includes(11), '会三连击的发言者应被排除');
+  assert.deepEqual(picked, [22, 33]);
+  // 唯一候选会三连击 → 返回空
+  assert.deepEqual(groupMod.planBeat(run, [11], { rng: () => 0.0 }), [], '唯一候选会三连击时应返回空');
+});
+
+test('planSpeakers（@deprecated 过渡）：仍可用且行为不变', () => {
   const members = [11, 22, 33];
   const run = runLike([11], { 11: 3, 22: 0, 33: 0 });
-  const picked = groupMod.planSpeakers(run, members, { rng: seqRng([0.9]), mentions: [22, 33] });
-  assert.deepEqual(picked, [22, 33], '@ 提及者应全部发言（强制），且优先于轮转');
-});
-
-test('planSpeakers：未发言者轮转（确定性，发言次数最少者优先）', () => {
-  const members = [11, 22, 33];
-  // 最近窗口（长度=成员数3）= [11]（不足则取全部）；未发言者=[22,33]；22 发言次数更少 → 选 22
-  const run = runLike([11], { 11: 3, 22: 0, 33: 1 });
-  const picked = groupMod.planSpeakers(run, members, { rng: seqRng([0.99]) });
-  assert.deepEqual(picked, [22], '轮转应取「本轮窗口内未发言 + 发言次数最少」者（确定性）');
-});
-
-test('planSpeakers：随机 1–2 人 + 固定种子确定性', () => {
-  const members = [11, 22, 33];
-  // 窗口已覆盖全部成员 → 走随机分支
-  const run = runLike([11, 22, 33], { 11: 1, 22: 1, 33: 1 });
-  const a1 = groupMod.planSpeakers(run, members, { rng: seqRng([0.42, 0.42, 0.42]) });
-  const a2 = groupMod.planSpeakers(run, members, { rng: seqRng([0.42, 0.42, 0.42]) });
-  assert.deepEqual(a1, a2, '同一固定种子应产出完全一致的调度结果');
-  assert.ok(a1.length >= 1 && a1.length <= 2, '随机分支应选 1–2 人');
-  // 平衡：同样计数下，随机结果不得出现重复发言人
-  assert.equal(new Set(a1).size, a1.length, '同轮内不应重复同一发言人');
-});
-
-test('禁三连击：同一人不得连说 3 条', () => {
-  const run = runLike([11, 11], { 11: 2, 22: 0 });
-  // 唯一候选 11 已被禁（尾部已连 2 次）→ 返回空
-  assert.deepEqual(groupMod.planSpeakers(run, [11], { rng: seqRng([0.5]) }), [], '唯一候选会三连击时应返回空');
-  // 有其它候选时，禁选会三连击者
-  const picked = groupMod.planSpeakers(run, [11, 22], { rng: seqRng([0.5]) });
-  assert.ok(!picked.includes(11), '会三连击的发言者应被排除');
-  assert.deepEqual(picked, [22]);
+  assert.deepEqual(groupMod.planSpeakers(run, members, { rng: seqRng([0.9]), mentions: [22, 33] }), [22, 33]);
+  const picked = groupMod.planSpeakers(run, members, { rng: seqRng([0.42, 0.42]) });
+  assert.ok(picked.length >= 1 && picked.length <= 2, '旧调度仍返回 1–2 人');
 });
 
 test('maybeReact / pickReactionEmoji：概率与确定性', () => {
@@ -276,7 +318,7 @@ test('达 12 轮自然结束并插入摘要分隔', async () => {
   while (!ended && guard++ < 60) {
     const r = await groupMod.runGroupTurn(gid, `第 ${guard} 句`, {
       chatFn: fakeChat,
-      rng: () => 0.9,
+      rng: () => 0.3,
       newRun: guard === 1,
     });
     ended = r.ended;
@@ -306,21 +348,95 @@ test('abort：立即中止后续发言，且对已中止的 run 再发言 → GR
     if (calls === 1) groupMod.abort(gid);
     return '（点头）嗯。';
   };
-  await groupMod.runGroupTurn(gid, '开始吧', { chatFn: abortAfterFirst, rng: () => 0.9, newRun: true });
+  await groupMod.runGroupTurn(gid, '开始吧', { chatFn: abortAfterFirst, rng: () => 0.3, newRun: true });
   const runRow = groupRunMod.getLastRun(gid);
   assert.equal(runRow?.status, 'cancelled', 'abort 后 run 应为 cancelled');
   assert.equal(calls, 1, '中止后不应再产生新的 AI 发言（应立即停止）');
 
   // 已中止的 run 再发言 → GROUP_ENDED
-  const again = await groupMod.runGroupTurn(gid, '还在吗', { chatFn: fakeChat, rng: () => 0.9 });
+  const again = await groupMod.runGroupTurn(gid, '还在吗', { chatFn: fakeChat, rng: () => 0.3 });
   assert.equal(again.ok, false);
   assert.equal(again.code, 'GROUP_ENDED');
 });
 
+test('自由发言：连续 2 拍冷场 → 本轮自然结束（不空跑 LLM、run 保持 running）', async () => {
+  const a = makeGirlfriend('冷场甲');
+  const b = makeGirlfriend('冷场乙');
+  const g = groupMod.createGroup('冷场群', null, [a, b]);
+  const gid = g.group!.id;
+
+  let calls = 0;
+  const countingChat: ChatFn = async () => {
+    calls++;
+    return '（笑）嗯。';
+  };
+  // rng=0.99 → 客观概率全不通过；无 @ → 无人开口；连续 2 拍冷场即结束
+  const r = await groupMod.runGroupTurn(gid, '有人吗', { chatFn: countingChat, rng: () => 0.99, newRun: true });
+  assert.equal(r.ok, true);
+  assert.equal(r.silent, true, '本轮应如实反映「冷场」');
+  assert.equal(calls, 0, '冷场不应空跑 LLM');
+  assert.equal(r.messages.filter((m) => m.speaker_type === 'companion' || m.speaker_type === 'reaction').length, 0);
+  const run = groupRunMod.getLastRun(gid);
+  assert.equal(run?.status, 'running', '纯冷场只是本轮结束，不结束整个 run');
+});
+
 /* ================================================================== */
-/* 4. 建群成员校验                                                      */
+/* 3b. prompt 角色卡裁剪（人数无上限下的上下文预算）                     */
 /* ================================================================== */
-test('建群校验：非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；>6 → GROUP_MEMBER_LIMIT', () => {
+test('prompt 裁剪：人数 > 12 时完整角色卡 ≤ 12，其余仅列名（不阻塞参与）', () => {
+  const ids: number[] = [];
+  for (let i = 1; i <= 15; i++) ids.push(makeGirlfriend(`裁剪${i}`, { identity: `身份${i}` }));
+  const g = groupMod.createGroup('裁剪群', '聊聊最近的电影', ids);
+  assert.ok(g.ok && g.group);
+  const gid = g.group!.id;
+  const memberIds = groupMod.listMemberIds(gid);
+  assert.equal(memberIds.length, 15);
+
+  const messages = groupMod.buildGroupPrompt({ speakerId: memberIds[0]!, memberIds, history: [], topic: '聊聊最近的电影' });
+  const text = JSON.stringify(messages);
+
+  // 完整角色卡（形如「裁剪N：身份=...」）数量应 ≤ 12
+  const fullCards = memberIds.filter((id) => {
+    const name = dbGet<{ name: string }>('SELECT name FROM companions WHERE id = ?', id)?.name ?? '';
+    return name && text.includes(`${name}：身份=`);
+  });
+  assert.ok(fullCards.length <= groupMod.GROUP_PROMPT_CARD_LIMIT, `完整角色卡应 ≤ 12（实际 ${fullCards.length}）`);
+  assert.equal(fullCards.length, groupMod.GROUP_PROMPT_CARD_LIMIT, '应恰好裁剪到上限 12 张完整卡');
+  // 其余成员仅列名
+  assert.ok(text.includes('群成员还有：'), '其余成员应以名单形式出现');
+  // 当前发言人必须有完整卡
+  assert.ok(text.includes('当前发言人：'), '应指明当前发言人');
+});
+
+test('prompt 裁剪：被 @ / 最近发言者优先获得完整角色卡', () => {
+  const ids: number[] = [];
+  for (let i = 1; i <= 15; i++) ids.push(makeGirlfriend(`优先${i}`, { identity: `优先身份${i}` }));
+  const g = groupMod.createGroup('优先群', null, ids);
+  const memberIds = groupMod.listMemberIds(g.group!.id);
+  const speaker = memberIds[0]!;
+  const mentioned = memberIds[14]!; // 最后一名（默认按顺序会被裁掉）
+  const recent = memberIds[13]!;
+
+  const { cardIds } = groupMod.selectPromptMembers({
+    memberIds,
+    speakerId: speaker,
+    mentionIds: [mentioned],
+    recentSpeakerIds: [recent],
+    topic: null,
+  });
+  assert.equal(cardIds.length, 12);
+  assert.equal(cardIds[0], speaker, '当前发言人应第一优先');
+  assert.ok(cardIds.includes(mentioned), '被 @ 者应优先获得完整卡');
+  assert.ok(cardIds.includes(recent), '最近发言者应优先获得完整卡');
+  // 未被优先的成员应落在「仅列名」
+  const nameOnly = memberIds.filter((id) => !cardIds.includes(id));
+  assert.equal(nameOnly.length, 3);
+});
+
+/* ================================================================== */
+/* 4. 建群成员校验（人数无硬上限）                                       */
+/* ================================================================== */
+test('建群校验：非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；<2 → INVALID_INPUT；>6 仍允许', () => {
   const gf = makeGirlfriend('校验女友');
   const stranger = companionMod.createCompanion({ name: '校验陌生人', age: 22 });
   assert.ok(stranger.ok);
@@ -334,14 +450,15 @@ test('建群校验：非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；>6 → GROU
   assert.equal(few.ok, false);
   assert.equal(few.code, 'INVALID_INPUT');
 
+  // 人数无硬上限：8 名女友应允许建群
   const many: number[] = [];
-  for (let i = 1; i <= 7; i++) many.push(makeGirlfriend(`群员${i}`));
-  const tooMany = groupMod.createGroup('人太多', null, many);
-  assert.equal(tooMany.ok, false);
-  assert.equal(tooMany.code, 'GROUP_MEMBER_LIMIT');
+  for (let i = 1; i <= 8; i++) many.push(makeGirlfriend(`群员${i}`));
+  const big = groupMod.createGroup('人很多', null, many);
+  assert.ok(big.ok, '>6 名应有允许（无硬上限）');
+  assert.equal(groupMod.listMemberIds(big.group!.id).length, 8);
 });
 
-test('建群/改群/解散：消息落 group_messages，成员增删受 [2,6] 约束', () => {
+test('建群/改群/解散：消息落 group_messages，成员增删下限 2（无上限）', () => {
   const a = makeGirlfriend('增删甲');
   const b = makeGirlfriend('增删乙');
   const c = makeGirlfriend('增删丙');
@@ -356,12 +473,18 @@ test('建群/改群/解散：消息落 group_messages，成员增删受 [2,6] �
   assert.equal(groupMod.listMemberIds(gid).length, 3);
   assert.equal(groupMod.getGroup(gid)?.name, '改名群');
 
+  // 大批量加成员（>6）应允许（无硬上限）
+  const extra: number[] = [];
+  for (let i = 1; i <= 6; i++) extra.push(makeGirlfriend(`增删批量${i}`));
+  assert.ok(groupMod.updateGroup(gid, { add: extra }).ok, '批量加成员应无上限');
+  assert.equal(groupMod.listMemberIds(gid).length, 9);
+
   // 减到只剩 1 名 → 拒绝
-  const shrink = groupMod.updateGroup(gid, { remove: [b, c] });
+  const shrink = groupMod.updateGroup(gid, { remove: [b, c, ...extra] });
   assert.equal(shrink.ok, false);
   assert.equal(shrink.code, 'INVALID_INPUT');
-  // 合法减员
-  assert.ok(groupMod.updateGroup(gid, { remove: [c] }).ok);
+  // 合法减员（移除其余，回到 2 人）
+  assert.ok(groupMod.updateGroup(gid, { remove: [c, ...extra] }).ok);
   assert.equal(groupMod.listMemberIds(gid).length, 2);
 
   // 消息落库
@@ -396,7 +519,7 @@ test('并发：群聊 run 与某成员私聊并发互不阻塞、数据各自正
   };
 
   const groupTurn = groupRunMod.withGroupLock(gid, () =>
-    groupMod.runGroupTurn(gid, '我们开始吧', { chatFn: slowChat, rng: () => 0.9, newRun: true })
+    groupMod.runGroupTurn(gid, '我们开始吧', { chatFn: slowChat, rng: () => 0.3, newRun: true })
   );
 
   // 等群聊 run 真正拿到群锁并停在 LLM 调用上

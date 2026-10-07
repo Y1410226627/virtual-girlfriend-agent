@@ -114,6 +114,14 @@ export function ensureScheduler(): void {
           } catch (e) {
             console.warn(`[proactive] companion ${id} tick failed:`, errMsg(e));
           }
+          // 自动识别（需求：交往中出现的人自动浮现为可攻略对象）：6 小时节流，失败静默
+          try {
+            const { maybeAutoDiscover } = await import('./candidate-gen');
+            const { displayNameOf } = await import('./companion');
+            await maybeAutoDiscover(id, { ownerName: displayNameOf(id, '她') });
+          } catch (e) {
+            console.warn(`[autoDiscover] companion ${id} failed:`, errMsg(e));
+          }
         });
       }
     } finally {

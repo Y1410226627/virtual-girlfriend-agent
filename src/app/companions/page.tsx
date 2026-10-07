@@ -20,6 +20,10 @@ export default function CompanionsPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [discovering, setDiscovering] = useState(false);
+  const [showCast, setShowCast] = useState(false);
+  const [castList, setCastList] = useState<{ name: string; role: string; note: string }[] | null>(null);
+  const [castOwner, setCastOwner] = useState<string | null>(null);
+  const [casting, setCasting] = useState<string | null>(null);
 
   const post = async (url: string, body: Record<string, unknown>, msg: string) => {
     try {
@@ -46,6 +50,30 @@ export default function CompanionsPage() {
     }
   };
 
+  /** 打开「她身边的人」：拉取当前伴侣社交圈里可认识的人（室友/同事/朋友…） */
+  const openCast = async () => {
+    setShowCast(true);
+    if (castList) return;
+    try {
+      const r = await fetch('/api/companions/discover');
+      const j = await r.json().catch(() => ({}));
+      setCastList(Array.isArray(j?.cast) ? j.cast : []);
+      setCastOwner(j?.owner ?? null);
+    } catch {
+      setCastList([]);
+    }
+  };
+
+  const knowCast = async (name: string) => {
+    setCasting(name);
+    try {
+      await post('/api/companions/discover', { mode: 'cast', castName: name }, `你见到了${name}，去发现区看看`);
+      setCastList((prev) => (prev ? prev.filter((c) => c.name !== name) : prev));
+    } finally {
+      setCasting(null);
+    }
+  };
+
   const act = async (id: number, action: string, msg: string) => {
     setBusyId(id);
     try {
@@ -63,13 +91,60 @@ export default function CompanionsPage() {
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="通讯录"
-        desc="你能认识不止一个人。有人只是认识，有人正在攻略中，有人已经是女友——每段关系都有独立的关系、记忆与生活。"
+        desc="你能认识不止一个人。最常见的是通过她已经认识的人——室友、同事、朋友；也可能在生活里偶遇某个陌生人。每段关系都有独立的关系、记忆与生活。"
         right={
-          <button className="btn" disabled={discovering} onClick={discover}>
-            {discovering ? '发现中…' : '发现新的人'}
-          </button>
+          <div className="flex gap-2">
+            <button className="btn btn-ghost" onClick={openCast}>
+              她身边的人
+            </button>
+            <button className="btn" disabled={discovering} onClick={discover}>
+              {discovering ? '发现中…' : '遇见陌生人'}
+            </button>
+          </div>
         }
       />
+
+      {showCast ? (
+        <div className="px-5 pb-4 md:px-8">
+          <div className="card-tight">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-sm font-medium ink-1">
+                {castOwner ? `${castOwner}身边的人` : '她身边的人'}
+                <span className="dim ml-2 text-xs">你见过这些人，也可以选择去认识她们</span>
+              </div>
+              <button className="text-xs dim hover:underline" onClick={() => setShowCast(false)}>
+                收起
+              </button>
+            </div>
+            {castList === null ? (
+              <div className="dim py-3 text-sm">读取中…</div>
+            ) : castList.length === 0 ? (
+              <div className="dim py-3 text-sm">她身边暂时没有可认识的人（可以先和她聊聊她的朋友、同事）</div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {castList.map((c) => (
+                  <li key={c.name} className="flex items-center justify-between gap-3 rounded-xl accent-soft px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm ink-1">
+                        {c.name} <span className="dim">· {c.role}</span>
+                      </div>
+                      {c.note ? <div className="dim truncate text-xs">{c.note}</div> : null}
+                    </div>
+                    <button
+                      className="btn-soft shrink-0"
+                      disabled={casting === c.name}
+                      onClick={() => knowCast(c.name)}
+                    >
+                      {casting === c.name ? '…' : '认识她'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      ) : null}
+
       <div className="px-5 md:px-8">
         <CompanionList
           view={data ?? EMPTY}

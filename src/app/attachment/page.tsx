@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useApi, PageHeader, Card, Loading, ErrorBox, Toast, fmtTime, Chip } from '@/components/ui';
 import { Gauge, LineChart } from '@/components/charts';
 import { errMsg } from '@/lib/utils';
+import { withCompanionQuery } from '@/components/chat/companion-query';
+import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 
 interface AttachmentStateView {
   anxiety: number;
@@ -51,7 +53,9 @@ const STYLE_INFO: Record<string, { desc: string; tone: string }> = {
 };
 
 export default function AttachmentPage() {
-  const { data, loading, error, reload } = useApi<AttachmentResponse>('/api/attachment');
+  // 当前伴侣（URL ?companionId= → localStorage → 缺省主女友）：切换伴侣要重新加载该伴侣的依恋状态
+  const companionId = useCompanionId();
+  const { data, loading, error, reload } = useApi<AttachmentResponse>(withCompanionQuery('/api/attachment', companionId));
   const [toast, setToast] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ anxiety: number; avoidance: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,7 +63,7 @@ export default function AttachmentPage() {
   const post = async (body: Record<string, unknown>, msg?: string) => {
     setBusy(true);
     try {
-      const r = await fetch('/api/attachment', {
+      const r = await fetch(withCompanionQuery('/api/attachment', companionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -89,6 +93,7 @@ export default function AttachmentPage() {
 
   return (
     <div className="pb-10">
+      <CompanionScopeBar companionId={companionId} />
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
       <PageHeader
         title="依恋"

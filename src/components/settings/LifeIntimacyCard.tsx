@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { Card } from '@/components/ui';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import type { SaveFn, SetFieldFn } from './shared';
 
 export function LifeIntimacyCard({
@@ -9,11 +10,14 @@ export function LifeIntimacyCard({
   set,
   save,
   saving,
+  companionId,
 }: {
   form: Record<string, string>;
   set: SetFieldFn;
   save: SaveFn;
   saving: boolean;
+  /** 当前伴侣：让「她的世界 / 亲密设置」入口保留当前伴侣上下文 */
+  companionId: number;
 }) {
   return (
     <Card title="她的生活与亲密">
@@ -35,17 +39,17 @@ export function LifeIntimacyCard({
         <div>
           <label className="label">亲密内容与同意</label>
           <p className="dim">分级与偏好揭露在亲密页统一管理。</p>
-          <Link href="/intimacy" className="btn-ghost mt-2">打开亲密设置</Link>
+          <Link href={withCompanionQuery('/intimacy', companionId)} className="btn-ghost mt-2">打开亲密设置</Link>
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button className="btn" onClick={() => save(['life_enabled', 'cycle_enabled'], '已保存，立即生效')} disabled={saving}>
           保存
         </button>
-        <Link href="/world" className="btn-ghost">
+        <Link href={withCompanionQuery('/world', companionId)} className="btn-ghost">
           她的世界 →
         </Link>
-        <Link href="/intimacy" className="btn-ghost">
+        <Link href={withCompanionQuery('/intimacy', companionId)} className="btn-ghost">
           亲密设置 →
         </Link>
       </div>

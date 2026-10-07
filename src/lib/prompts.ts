@@ -577,8 +577,19 @@ export interface GroupSystemPromptOptions {
   topic?: string | null;
   /** 群内【公开】角色卡（不含任何私密信息） */
   cards: GroupPublicCard[];
+  /**
+   * 仅列名（不展开角色卡）的其余成员 —— 人数很多时的上下文裁剪：
+   * 这些成员只以「群成员还有：小雨、阿岚、知夏…」的名单形式出现（仍可参与，只是不展开卡片）。
+   */
+  nameOnlyMembers?: string[];
   /** 用户在此群中的称呼 */
   userName: string;
+  /**
+   * **当前发言人自己**记得的事（她与用户的共同经历）。
+   * ★只允许传该发言人自己作用域下的记忆：其他人的记忆绝不进入本 prompt。
+   * 让她「按自己的记忆聊」——她提起的是她和你的事，别人只听到她说出口的那句。
+   */
+  speakerMemories?: string[];
 }
 
 /**
@@ -605,10 +616,22 @@ export function buildGroupSystemPrompt(opts: GroupSystemPromptOptions): string {
     })
     .join('\n');
 
+  const nameOnly = (opts.nameOnlyMembers ?? []).map((n) => String(n).trim()).filter((n) => n && n !== speaker);
+  const nameOnlyLine = nameOnly.length ? `\n群成员还有：${nameOnly.join('、')}（同上成员，只列名）` : '';
+
+  // 她自己记得的事（只有她自己的记忆；别人的私事她不知道）
+  const memories = (opts.speakerMemories ?? []).map((m) => String(m).trim()).filter(Boolean).slice(0, 8);
+  const memoryBlock = memories.length
+    ? `\n（你（${speaker}）自己记得的事 —— 这些是你和「${opts.userName || '我'}」之间发生过的事，只有你知道；` +
+      `在自然需要的时候可以顺口提起，不要念清单、不要逐条复述，也不要说得像在汇报：\n` +
+      memories.map((m) => `- ${m}`).join('\n') +
+      `）`
+    : '';
+
   return `[system] 你正在一个群聊里。成员有：${membersLine}。
 规则：只输出「${speaker}」这一刻要说的话，不要替别人发言、不要旁白、不要角色名前缀；1-2 句、口语、像真人随手发在群里的消息。
-（群内公开信息 —— 不包含任何私密记忆）
-${cardLines || '（暂无角色卡）'}
+（群内公开信息 —— 只有公开角色卡与群内历史；**别人和「我」之间的私事你并不知道**，不要替别人回忆，也不要假装听过${memoryBlock}
+${cardLines || '（暂无角色卡）'}${nameOnlyLine}
 话题：${opts.topic ? String(opts.topic) : '随便聊聊。'}
 
 ${DATA_GUARD_NOTE}`;

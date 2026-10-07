@@ -17,8 +17,10 @@
 import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
 import { nowIso, clamp, safeJson, errMsg } from './utils';
 import { chat, cleanContent, type ChatMessage } from './llm';
-import { applyDelta } from './companion-relations';
+import { applyDelta, getRelation } from './companion-relations';
 import { getCompanion } from './companion';
+import { withCompanion } from './companion-context';
+import { memoriesByType } from './memory';
 import { buildGroupSystemPrompt, type GroupPublicCard } from './prompts';
 import {
   GROUP_MAX_ROUNDS,
@@ -39,10 +41,24 @@ import type { GroupRow, GroupMessageRow, GroupRunRow, CompanionRow } from './typ
 /* ------------------------------------------------------------------ */
 /* 常量                                                                */
 /* ------------------------------------------------------------------ */
-/** 群成员上限（常量，对齐架构 §7） */
-export const GROUP_MAX_MEMBERS = 6;
+/**
+ * 群成员【软上限】——仅用于 prompt/UI 的提示与预算控制，**不再阻塞任何人**。
+ * 产品要求：女友数量 / 群成员数 / 活动参与人数均无硬上限。
+ */
+export const GROUP_SOFT_MEMBER_LIMIT = 30;
+/**
+ * @deprecated 旧名（原名是 6 的【硬上限】，会拒绝建群/加人）。硬上限已废弃：
+ * 保留此导出仅为兼容既有引用（如 api 层 `max: GROUP_MAX_MEMBERS` 展示），
+ * 现语义 = {@link GROUP_SOFT_MEMBER_LIMIT}（软上限，不阻塞）。
+ */
+export const GROUP_MAX_MEMBERS = GROUP_SOFT_MEMBER_LIMIT;
 /** 群成员下限（群聊至少两人） */
 export const GROUP_MIN_MEMBERS = 2;
+/**
+ * 群聊 prompt 中最多展开【完整公开角色卡】的成员数。
+ * 人数超过此值时，其余成员只以名单形式出现（`群成员还有：…`）——**纯上下文裁剪，不阻塞任何人参与**。
+ */
+export const GROUP_PROMPT_CARD_LIMIT = 12;
 /** reaction 代替发言的概率 */
 export const REACTION_CHANCE = 0.25;
 /** 单次用户发言后，最多推进的「轮」数（每轮选 1–2 人 → 支撑"AI 互聊 2–4 句"） */
@@ -55,6 +71,28 @@ export const MAX_LLM_CALLS_PER_RUN = 40;
 export const GROUP_CALL_TIMEOUT_MS = 30000;
 /** 群发言的 maxTokens */
 export const GROUP_MAX_TOKENS = 300;
+
+/* ------------------------------------------------------------------ */
+/* 自由发言模型（planBeat）的规则常量                                   */
+/* ------------------------------------------------------------------ */
+/** 每名成员每个「拍」的基础开口概率（temperature 可整体缩放） */
+const BEAT_BASE_P = 0.45;
+/** 名字被最近一条消息（话题）点到 → 更想接话 */
+const BEAT_TOPIC_MENTION_BOOST = 2.2;
+/** 刚发过言（最近 1 条内）→ 明显收敛 */
+const BEAT_JUST_SPOKE_DECAY = 0.25;
+/** 很久没发言（最近 members.length*2 条里都没出现）→ 想补位 */
+const BEAT_NEW_FACE_BOOST = 1.5;
+/** 与上一位发言者关系好（value>0）→ 更可能接话 */
+const BEAT_RELATION_GOOD_BOOST = 1.3;
+/** 与上一位发言者关系差（value<0）→ 更可能沉默 */
+const BEAT_RELATION_BAD_DECAY = 0.7;
+/** 上一拍冷场 → 本拍升温 */
+const BEAT_SILENT_BOOST = 1.6;
+/** 单个「拍」最多几人开口（@ 强制者不受此上限约束） */
+export const GROUP_BEAT_MAX_SPEAKERS = 3;
+/** 连续多少拍为空 → 本轮自然结束（不空跑 LLM） */
+export const MAX_SILENT_BEATS = 2;
 
 /** reaction 用的 emoji 池 */
 export const REACTION_EMOJIS = ['👍', '😄', '😂', '🤔', '👀', '😮', '🙌', '😊', '👏', '🤭', '😅', '🥺'];
@@ -167,6 +205,10 @@ export interface PlanSpeakersOptions {
  *   ② 否则「上次未发言者」轮转（用 recent_speakers：取最近一轮窗口内未出现者，发言次数最少者优先）；
  *   ③ 否则随机 1–2 人（spoke_counts 平衡，避免抢话）。
  * 返回值：本轮的发言者 id 数组（有序）；无可用发言者时返回空数组。
+ *
+ * @deprecated 旧的「一人发言 → 全员指派应答」模型。群聊引擎 `runGroupTurn` 已改用
+ * {@link planBeat}（情境驱动的自由发挥：谁想接话谁接、可 0 人开口）。此函数**保留导出**
+ * 仅为过渡期兼容（部分调用方/测试仍在用）；新代码请使用 `planBeat`。
  */
 export function planSpeakers(run: GroupRunRow | null, members: number[], opts: PlanSpeakersOptions): number[] {
   const rng = opts.rng;
@@ -209,6 +251,111 @@ export function planSpeakers(run: GroupRunRow | null, members: number[], opts: P
     if (idx >= 0) pool.splice(idx, 1);
   }
   return chosen;
+}
+
+/* ------------------------------------------------------------------ */
+/* 自由发言模型（planBeat · 情境驱动）                                  */
+/* ------------------------------------------------------------------ */
+export interface PlanBeatOptions {
+  /** 注入的 RNG（返回 [0,1)），便于单测确定性复现 */
+  rng: () => number;
+  /** 被 @ 提及的 companion id（强制发言，不受概率影响） */
+  mentions?: number[];
+  /** 整体温度：>1 更活跃、<1 更沉默（默认 1.0，作用于基础概率） */
+  temperature?: number;
+  /** 本拍最多几人开口（@ 强制者不受此上限约束；默认 GROUP_BEAT_MAX_SPEAKERS） */
+  maxSpeakers?: number;
+  /** 上一拍是否冷场（0 人开口）→ 本拍整体升温 */
+  prevSilent?: boolean;
+  /** 最近一条消息文本（用于判断"自己的名字被话题点到"） */
+  lastText?: string | null;
+  /** 关系取值注入（默认读 companion_relations.value，规范序）；便于单测 */
+  relationValue?: (id: number, other: number) => number;
+  /** 逐成员权重乘数（默认 1）。用于「主导者优先」场景（如线下约会聚焦对象 ×3.5），
+   *  注意这是**加权而非独占**——其他人仍有概率开口，符合"各说各话"。 */
+  boost?: Record<number, number>;
+}
+
+/**
+ * 「一拍」的发言人集合（纯函数 + 可注入 RNG，允许返回**空数组**）。
+ *
+ * 这是取代「一人发言 → 全员指派应答」的**情境驱动自由发挥**模型：每名成员**独立**判定
+ * 是否开口，谁想接话谁接、可以没人接（冷场）、也可以几个人陆续聊起来（AI 互聊）。
+ *
+ * 规则（最终实现）：
+ *   基础概率 base = 0.45 × temperature（默认 1.0）
+ *   ├─ 被 @ 提及                        → p = 1（强制；但若会三连击则被硬不变量剔除）
+ *   ├─ 名字出现在最近一条消息文本里     → ×2.2（被话题点名）
+ *   ├─ 尾部已连续 2 条同一人（三连击）  → p = 0（**硬不变量，不得突破**）
+ *   ├─ 刚发过言（最近 1 条内）          → ×0.25
+ *   ├─ 很久没发言（最近 members.length*2 条里都没出现）→ ×1.5
+ *   ├─ 与上一位发言者关系好（value>0）  → ×1.3；关系差（value<0）→ ×0.7
+ *   └─ 上一拍冷场                       → ×1.6（冷场后升温，避免一直没人说话）
+ *   每拍最多 maxSpeakers 人（默认 3，避免刷屏）；@ 强制者不计入该上限。
+ *
+ * 返回值：本拍发言者 id（按成员顺序，稳定有序）；可以为空。
+ */
+export function planBeat(run: GroupRunRow | null, members: number[], opts: PlanBeatOptions): number[] {
+  const rng = opts.rng;
+  const uniqueMembers = uniqueIds(members);
+  if (!uniqueMembers.length) return [];
+
+  const memberSet = new Set(uniqueMembers);
+  const recent = readRecentSpeakers(run);
+  const temperature = Number.isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 1.0;
+  const base = clamp(BEAT_BASE_P * temperature, 0, 1);
+  const maxSpeakers = clamp(
+    Math.trunc(Number(opts.maxSpeakers ?? GROUP_BEAT_MAX_SPEAKERS)) || GROUP_BEAT_MAX_SPEAKERS,
+    1,
+    500
+  );
+
+  const mentionSet = new Set(uniqueIds(opts.mentions ?? []).filter((id) => memberSet.has(id)));
+  const lastText = String(opts.lastText ?? '');
+  const prevSpeaker = recent.slice(-1)[0] ?? null;
+  const recentWindow = recent.slice(-(uniqueMembers.length * 2));
+  const relationValue =
+    opts.relationValue ??
+    ((id: number, other: number): number => {
+      try {
+        return Number(getRelation(id, other)?.value ?? 0);
+      } catch {
+        return 0;
+      }
+    });
+
+  // 硬不变量：再说一条就会"三连击"（尾部已连续 2 次）→ 本拍禁开口（@ 也不例外）
+  const blocked = (id: number): boolean => consecutiveStreak(recent, id) >= 2;
+
+  // ① @ 强制（过滤掉会三连击者）——不受概率与 maxSpeakers 约束
+  const forced = uniqueIds(opts.mentions ?? []).filter((id) => memberSet.has(id) && !blocked(id));
+
+  // ② 其余成员各自独立判定
+  const probabilistic: number[] = [];
+  for (const id of uniqueMembers) {
+    if (blocked(id)) continue;
+    if (mentionSet.has(id)) continue; // 已在 forced 中（@ 强制）
+    let p = base;
+    const boost = Number(opts.boost?.[id]);
+    if (Number.isFinite(boost) && boost > 0) p *= boost; // 逐成员加权（如线下焦点优先）
+    const name = companionName(id);
+    if (name && lastText.includes(name)) p *= BEAT_TOPIC_MENTION_BOOST;
+    if (recent.length && recent[recent.length - 1] === id) p *= BEAT_JUST_SPOKE_DECAY;
+    else if (recent.length && !recentWindow.includes(id)) p *= BEAT_NEW_FACE_BOOST;
+    if (prevSpeaker && prevSpeaker !== id) {
+      const v = relationValue(id, prevSpeaker);
+      if (v > 0) p *= BEAT_RELATION_GOOD_BOOST;
+      else if (v < 0) p *= BEAT_RELATION_BAD_DECAY;
+    }
+    if (opts.prevSilent) p *= BEAT_SILENT_BOOST;
+    p = clamp(p, 0, 1);
+    // 仅在概率为"模糊区间"时消耗 RNG（p>=1 必开口、p<=0 必沉默，都短路）
+    if (p >= 1 || (p > 0 && rng() < p)) probabilistic.push(id);
+  }
+
+  const room = Math.max(0, maxSpeakers - forced.length);
+  const chosen = probabilistic.slice(0, room);
+  return uniqueMembers.filter((id) => forced.includes(id) || chosen.includes(id));
 }
 
 /** reaction 是否发生（概率 REACTION_CHANCE） */
@@ -286,6 +433,25 @@ function publicCardOf(id: number): GroupPublicCard {
 /* ------------------------------------------------------------------ */
 /* buildGroupPrompt（★隐私红线★）                                       */
 /* ------------------------------------------------------------------ */
+/** 当前发言者「自己」记得的事（她与用户的共同经历摘要）。
+ *  ★隐私不变量（三条，缺一不可）：
+ *   1. 只读**该发言者自己**作用域下的 memories（`withCompanion(speakerId)`）；
+ *   2. 其他成员的任何数据（记忆/关系数值/私聊）绝不进入本 prompt；
+ *   3. 群聊**只读不写**——不产生新记忆，避免把群聊内容混进各人的个人记忆库。
+ *  用于「女友之间根据各自的记忆聊起来」：她说的是她和你的事，别人只听到她说出口的那句。 */
+function memoryLinesFor(speakerId: number, limit = 6): string[] {
+  try {
+    return withCompanion(speakerId, () =>
+      memoriesByType(['fact', 'relationship', 'preference'], limit)
+        .map((m) => String(m.content || '').trim())
+        .filter(Boolean)
+        .map((s) => (s.length > 120 ? `${s.slice(0, 120)}…` : s))
+    );
+  } catch {
+    return [];
+  }
+}
+
 export interface BuildGroupPromptOptions {
   speakerId: number;
   memberIds: number[];
@@ -293,6 +459,53 @@ export interface BuildGroupPromptOptions {
   topic?: string | null;
   userName?: string;
   maxHistory?: number;
+  /** 本拍被 @ 的成员（角色卡裁剪优先级最高；可选） */
+  mentionIds?: number[];
+  /** 最近发言者 id（角色卡裁剪优先级；可选） */
+  recentSpeakerIds?: number[];
+  /**
+   * **当前发言者自己**记得的事（她与用户的共同经历摘要）。
+   * ★隐私不变量：只允许传该发言者自己作用域下的记忆——其他人的记忆/关系数值
+   * 绝不进入 prompt。群聊只读不写（不产生新记忆，避免把群聊内容混进个人记忆库）。
+   */
+  speakerMemories?: string[];
+}
+
+/**
+ * 选择「哪些成员展开完整公开角色卡」——人数很多时做**纯上下文裁剪**（不阻塞任何人参与）：
+ * 优先级：当前发言人 → 被 @ 的 → 最近发言的（新→旧）→ 名字出现在话题里的 → 其余按成员顺序。
+ * 取前 `limit`（默认 {@link GROUP_PROMPT_CARD_LIMIT}）名为「完整角色卡」，其余进「仅列名」。
+ */
+export function selectPromptMembers(input: {
+  memberIds: number[];
+  speakerId: number;
+  mentionIds?: number[];
+  recentSpeakerIds?: number[];
+  topic?: string | null;
+  limit?: number;
+}): { cardIds: number[]; nameOnlyIds: number[] } {
+  const members = uniqueIds(input.memberIds);
+  const memberSet = new Set(members);
+  const limit = clamp(
+    Math.trunc(Number(input.limit ?? GROUP_PROMPT_CARD_LIMIT)) || GROUP_PROMPT_CARD_LIMIT,
+    1,
+    1000
+  );
+  const ordered: number[] = [];
+  const push = (id: number): void => {
+    if (id && memberSet.has(id) && !ordered.includes(id)) ordered.push(id);
+  };
+  push(input.speakerId); // ① 当前发言人（必须完整）
+  for (const id of uniqueIds(input.mentionIds ?? [])) push(id); // ② 被 @ 的
+  for (const id of uniqueIds(input.recentSpeakerIds ?? []).reverse()) push(id); // ③ 最近发言的（新→旧）
+  const topic = String(input.topic ?? '');
+  if (topic) {
+    for (const id of members) if (topic.includes(companionName(id))) push(id); // ④ 名字出现在话题里
+  }
+  for (const id of members) push(id); // ⑤ 其余按成员顺序
+  const cardIds = ordered.slice(0, limit);
+  const cardSet = new Set(cardIds);
+  return { cardIds, nameOnlyIds: members.filter((id) => !cardSet.has(id)) };
 }
 
 /** 把一条群内历史格式化成一行（reaction 显示为（emoji）） */
@@ -307,18 +520,29 @@ export function formatHistoryLine(m: GroupMessageRow): string {
  * 组装群聊的完整 messages（投给同一个 chat()）。
  * 只使用 companions 公开角色卡 + group_messages 群内历史；
  * 群内历史【只】来自 group_messages（各角色私聊 messages 不得进入群上下文）。
+ * 人数很多时，仅对优先的至多 {@link GROUP_PROMPT_CARD_LIMIT} 名成员展开完整角色卡，
+ * 其余成员只以名单形式出现（`群成员还有：…`）——纯裁剪，不阻塞参与。
  */
 export function buildGroupPrompt(opts: BuildGroupPromptOptions): ChatMessage[] {
   const speakerCard = publicCardOf(opts.speakerId);
   const memberIds = uniqueIds(opts.memberIds);
-  const cards = memberIds.map((id) => publicCardOf(id));
+  const { cardIds, nameOnlyIds } = selectPromptMembers({
+    memberIds,
+    speakerId: opts.speakerId,
+    mentionIds: opts.mentionIds,
+    recentSpeakerIds: opts.recentSpeakerIds,
+    topic: opts.topic ?? null,
+  });
+  const cards = cardIds.map((id) => publicCardOf(id));
 
   const sys = buildGroupSystemPrompt({
     speakerName: speakerCard.name,
-    memberNames: cards.map((c) => c.name),
+    memberNames: memberIds.map((id) => companionName(id)),
     topic: opts.topic ?? null,
     cards,
+    nameOnlyMembers: nameOnlyIds.map((id) => companionName(id)),
     userName: opts.userName ?? GROUP_USER_LABEL,
+    speakerMemories: opts.speakerMemories,
   });
 
   const history = opts.history.slice(-(opts.maxHistory ?? 16));
@@ -475,16 +699,13 @@ function validateNewMembers(ids: number[]): { ok: true } | { ok: false; code: st
   return { ok: true };
 }
 
-/** 建群：2–6 名【已晋升女友】；非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；>6 → GROUP_MEMBER_LIMIT */
+/** 建群：≥2 名【已晋升女友】；非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；人数**无硬上限** */
 export function createGroup(name: string, topic: string | null, memberIds: number[]): GroupOpResult {
   const nm = String(name ?? '').trim().slice(0, 30);
   if (!nm) return { ok: false, code: 'INVALID_INPUT', error: '群名不能为空' };
   const ids = uniqueIds(memberIds);
   if (ids.length < GROUP_MIN_MEMBERS) {
     return { ok: false, code: 'INVALID_INPUT', error: `群聊至少需要 ${GROUP_MIN_MEMBERS} 名已晋升女友` };
-  }
-  if (ids.length > GROUP_MAX_MEMBERS) {
-    return { ok: false, code: 'GROUP_MEMBER_LIMIT', error: `群成员最多 ${GROUP_MAX_MEMBERS} 名` };
   }
   const v = validateNewMembers(ids);
   if (!v.ok) return { ok: false, code: v.code, error: v.error };
@@ -515,7 +736,7 @@ export interface UpdateGroupPatch {
   remove?: number[];
 }
 
-/** 改群名 / 话题 / 增删成员（PATCH）。成员总数须落在 [2, 6]；新增者必须是已晋升女友。 */
+/** 改群名 / 话题 / 增删成员（PATCH）。成员总数下限为 2，**无上限**；新增者必须是已晋升女友。 */
 export function updateGroup(groupId: number, patch: UpdateGroupPatch): GroupOpResult {
   const gid = asId(groupId);
   const group = getGroup(gid);
@@ -529,9 +750,6 @@ export function updateGroup(groupId: number, patch: UpdateGroupPatch): GroupOpRe
   const toAdd = uniqueIds(patch.add ?? []).filter((id) => !currentSet.has(id) && !removeSet.has(id));
 
   const total = remaining.length + toAdd.length;
-  if (total > GROUP_MAX_MEMBERS) {
-    return { ok: false, code: 'GROUP_MEMBER_LIMIT', error: `群成员最多 ${GROUP_MAX_MEMBERS} 名` };
-  }
   if (total < GROUP_MIN_MEMBERS) {
     return { ok: false, code: 'INVALID_INPUT', error: `群聊至少保留 ${GROUP_MIN_MEMBERS} 名成员` };
   }
@@ -638,11 +856,17 @@ export interface GroupTurnOptions {
   now?: string;
   /**
    * 仅允许这些 companionId 发言（用于线下「轮流聚焦」等单人对场）：
-   * 非空时，本轮发言者**只**从该名单里取（成员存在者），完全绕过 planSpeakers 的
-   * @提及/轮转/反三连击逻辑——保证除名单外的人一条都不产出（含 reaction）。
-   * 缺省 undefined = 不限制，既有群聊多角色调度行为零变化。
+   * 非空时，本轮发言者**只**从该名单里取（成员存在者），完全绕过 planBeat 的
+   * @提及/概率/反三连击逻辑——保证除名单外的人一条都不产出（含 reaction）。
+   * 缺省 undefined = 不限制，走 planBeat 的自由发言模型。
    */
   onlySpeakers?: number[];
+  /**
+   * 逐成员权重乘数（默认 1）——**加权而非独占**。
+   * 用于「主导者优先」场景：线下约会把被约对象的概率乘以 FOCUS_BOOST，
+   * 让她更容易先开口/接话，但其他人仍按情境自然参与（各说各话）。
+   */
+  boost?: Record<number, number>;
 }
 
 export interface GroupTurnResult {
@@ -655,6 +879,8 @@ export interface GroupTurnResult {
   run: GroupRunRow | null;
   ended: boolean;
   endedReason?: string | null;
+  /** 本轮是否「冷场」：没有任何 AI 产出（正式发言与 reaction 都没有） */
+  silent?: boolean;
 }
 
 /**
@@ -662,7 +888,8 @@ export interface GroupTurnResult {
  *   1) 取/建 run；若上一轮已结束且未要求新开 → GROUP_ENDED；
  *   2) 落用户消息；
  *   3) 命中收尾词 → 直接结束并插 system 分隔；
- *   4) 否则按 planSpeakers 调度，逐条生成 AI 发言 / reaction，直到达到单轮上限、轮数上限、收尾或中止。
+ *   4) 否则按 planBeat（自由发言模型）逐「拍」调度 AI 发言 / reaction，直到达到单轮上限、
+ *      轮数上限、收尾或中止；一拍可为 0 人（冷场），连续 2 拍冷场 → 本轮自然结束。
  * 整段应在 withGroupLock(groupId, …) 内调用。
  */
 export async function runGroupTurn(groupId: number, text: string, opts: GroupTurnOptions = {}): Promise<GroupTurnResult> {
@@ -754,6 +981,7 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
       run: getRunById(Number(run.id)),
       ended: true,
       endedReason: 'farewell',
+      silent: false,
     };
   }
 
@@ -764,6 +992,11 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
   let utterancesThisTurn = 0;
   let prevSpeaker: number | null = readRecentSpeakers(run).slice(-1)[0] ?? null;
   let guard = 0;
+  // 自由发言模型：允许一拍 0 人开口（冷场）；连续 2 拍冷场 → 本轮自然结束
+  let silentBeats = 0;
+  let prevSilent = false;
+  let producedAi = 0;
+  let recentText = cleanText;
 
   while (guard++ < 100) {
     if (opts.signal?.aborted) break;
@@ -786,14 +1019,25 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
     const speakers =
       opts.onlySpeakers && opts.onlySpeakers.length
         ? uniqueIds(opts.onlySpeakers).filter((id) => members.includes(id))
-        : planSpeakers(fresh, members, {
+        : planBeat(fresh, members, {
             rng,
             mentions: roundsThisTurn === 0 ? mentions : [],
-            maxSpeakers: 2,
+            maxSpeakers: GROUP_BEAT_MAX_SPEAKERS,
+            prevSilent,
+            lastText: recentText,
+            boost: opts.boost,
           });
-    if (!speakers.length) break;
 
-    let emittedThisRound = 0;
+    // 一拍 0 人开口 → 本拍不产出任何消息（这就是「谁想接话谁接、可以没人接」）
+    if (!speakers.length) {
+      silentBeats++;
+      prevSilent = true;
+      if (silentBeats >= MAX_SILENT_BEATS) break; // 连续 2 拍冷场 → 本轮自然结束
+      continue;
+    }
+    prevSilent = false;
+
+    let emittedThisBeat = 0;
     for (const sp of speakers) {
       if (opts.signal?.aborted) break;
       const cur = getRunById(Number(run.id));
@@ -813,7 +1057,9 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
           round: cur.round + 1,
         });
         emit(msg);
-        emittedThisRound++;
+        emittedThisBeat++;
+        producedAi++;
+        recentText = msg.content;
         if (prevSpeaker && prevSpeaker !== sp) applySocialDelta(sp, prevSpeaker, 1, '群聊 reaction');
         continue;
       }
@@ -827,6 +1073,10 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
           history,
           topic: group.topic,
           userName,
+          mentionIds: roundsThisTurn === 0 ? mentions : [],
+          recentSpeakerIds: readRecentSpeakers(cur),
+          // 她「自己」记得的事（只有她自己的记忆进上下文；群聊只读不写）
+          speakerMemories: memoryLinesFor(sp),
         });
         const raw = await chatFn(msgs, {
           maxTokens: GROUP_MAX_TOKENS,
@@ -848,8 +1098,10 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
           round: cur.round + 1,
         });
         emit(msg);
-        emittedThisRound++;
+        emittedThisBeat++;
+        producedAi++;
         utterancesThisTurn++;
+        recentText = content;
 
         // 更新调度状态：recent_speakers（追加）+ spoke_counts（+1）+ last_speaker_id
         const recent = readRecentSpeakers(cur);
@@ -871,7 +1123,14 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
       }
     }
 
-    if (!emittedThisRound) break; // 本轮无任何产出 → 停止，避免空转
+    // 选了人却没有任何产出（LLM 空 / 被中止）→ 视作一拍冷场，避免空转
+    if (!emittedThisBeat) {
+      silentBeats++;
+      prevSilent = true;
+      if (silentBeats >= MAX_SILENT_BEATS) break;
+      continue;
+    }
+    silentBeats = 0;
 
     // 推进一步轮次
     const after = getRunById(Number(run.id));
@@ -924,6 +1183,7 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
     run: latest,
     ended,
     endedReason: latest?.ended_reason ?? endedReason,
+    silent: producedAi === 0,
   };
 }
 

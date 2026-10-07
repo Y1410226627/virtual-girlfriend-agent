@@ -21,7 +21,7 @@ export function CustomModeCard({
   setCv: React.Dispatch<React.SetStateAction<CustomValues | null>>;
   loadCv: () => void;
   save: SaveFn;
-  profilePost: (body: Record<string, unknown>) => Promise<ProfilePostResult>;
+  profilePost: (body: Record<string, unknown>, reloadAfter?: boolean, companionScoped?: boolean) => Promise<ProfilePostResult>;
 }) {
   return (
     <Card title="自定义模式（数值直控）">
@@ -151,7 +151,8 @@ export function CustomModeCard({
                 // 应用数值会整体覆盖她当前的亲密度、性格、依恋与性相关数值，属破坏性操作，先二次确认
                 if (!window.confirm('确定要把这些数值应用到她的当前状态吗？会立即覆盖现有的亲密度、信任、性格、依恋等数值。')) return;
                 // 空 = 未填写 → 不提交（buildCustomValues 已过滤），避免把 0 当成用户意图发出去
-                const j = await profilePost({ action: 'custom_values', values: buildCustomValues(cv) });
+                // companionScoped=true：数值直控写的是「当前伴侣」的关系/性格/依恋/亲密
+                const j = await profilePost({ action: 'custom_values', values: buildCustomValues(cv) }, true, true);
                 setToast(j?.ok ? '数值已应用，从下一句回复开始明显生效' : j?.error || '保存失败');
                 loadCv();
               }}

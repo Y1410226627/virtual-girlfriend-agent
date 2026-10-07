@@ -212,6 +212,10 @@ export interface CompanionRow {
   reject_count: number;
   /** 表白被拒冷却截止（24h）。 */
   cooldown_until: string | null;
+  /** 来历：'cast'（她的室友/同事/朋友等身边人升格）| 'auto'（交往中自动识别）| 'random'（陌生人）| null（主女友/老数据）。 */
+  origin_kind: string | null;
+  /** 通过哪位伴侣认识（cast/auto 时有值）；晋升时据此建立初始伴侣关系边。 */
+  origin_companion_id: number | null;
   established_at: string | null;
   closed_at: string | null;
   last_active_at: string | null;

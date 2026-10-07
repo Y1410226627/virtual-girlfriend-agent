@@ -26,6 +26,14 @@ export interface RosterEntry {
   updated_at: string;
   unread: number;
   isPendingCandidate: boolean;
+  /** 来历：'cast'（她的室友/同事/朋友等身边人）| 'auto'（交往中自动识别）| 'random'（陌生人）| null */
+  origin_kind: string | null;
+  /** 通过哪位伴侣认识（介绍人 id） */
+  origin_companion_id: number | null;
+  /** 介绍人显示名 */
+  origin_from_name: string | null;
+  /** 一句话来历描述（如「通过小雨认识 · 她的室友」） */
+  origin_label: string | null;
 }
 
 export interface RosterView {

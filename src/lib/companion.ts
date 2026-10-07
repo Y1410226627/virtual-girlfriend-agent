@@ -22,7 +22,7 @@ import {
   type PursuitProgress,
 } from './pursuit';
 import { dedupeHash, AGE_MIN } from './candidate-gen';
-import { listRelationsFor, type RelationEdge } from './companion-relations';
+import { listRelationsFor, applyDelta, type RelationEdge } from './companion-relations';
 
 export { AGE_MIN };
 
@@ -156,6 +156,14 @@ export interface RosterEntry {
   updated_at: string;
   unread: number;
   isPendingCandidate: boolean;
+  /** 来历：'cast'（她的室友/同事/朋友等身边人）| 'auto'（交往中自动识别）| 'random'（陌生人）| null（主女友/老数据） */
+  origin_kind: string | null;
+  /** 通过哪位伴侣认识（介绍人 id） */
+  origin_companion_id: number | null;
+  /** 介绍人的显示名（UI 用；无来历则为 null） */
+  origin_from_name: string | null;
+  /** 一句话来历描述（UI 直接展示） */
+  origin_label: string | null;
 }
 
 function parseTags(raw: string | null): string[] {
@@ -205,7 +213,32 @@ export function toRosterEntry(row: CompanionRow): RosterEntry {
     updated_at: row.updated_at,
     unread: unreadCount(Number(row.id)),
     isPendingCandidate: Number(row.pending) === 1,
+    ...originFieldsOf(row),
   };
+}
+
+/** 来历字段（UI 展示用）：谁介绍、怎么认识 */
+function originFieldsOf(row: CompanionRow): {
+  origin_kind: string | null;
+  origin_companion_id: number | null;
+  origin_from_name: string | null;
+  origin_label: string | null;
+} {
+  const kind = row.origin_kind ?? null;
+  const fromId = row.origin_companion_id == null ? null : Number(row.origin_companion_id);
+  const fromName = fromId && getCompanion(fromId) ? displayNameOf(fromId, '她') : null;
+  const role = row.identity ? String(row.identity) : '朋友';
+  const label =
+    kind === 'cast' && fromName
+      ? `通过${fromName}认识 · 她的${role}`
+      : kind === 'auto'
+        ? fromName
+          ? `${fromName}常提到的人`
+          : '交往中注意到的人'
+        : kind === 'random'
+          ? '偶然遇见'
+          : null;
+  return { origin_kind: kind, origin_companion_id: fromId, origin_from_name: fromName, origin_label: label };
 }
 
 export interface RosterView {
@@ -437,12 +470,26 @@ export function pursueOptIn(companionId: number): CompanionResult {
 }
 
 /** 晋升为女友：状态置 girlfriend + established_at + 初始化全套面板（幂等） */
+/** 晋升时的「来历」联动：她是某位伴侣身边的人（室友/同事/朋友）→ 两人天然是熟人，
+ *  建立一条正向初始关系边（+25），让她俩在关系网里一开始就认识，而不是陌生人（0）。
+ *  关系值写入仍只经 applyDelta（其内部经 applyRelationshipDelta 唯一好感写点）。 */
+function linkOriginRelation(id: number): void {
+  const row = getCompanion(id);
+  if (!row) return;
+  const from = Number(row.origin_companion_id ?? 0);
+  if (!Number.isFinite(from) || from <= 0 || from === id) return;
+  if (!getCompanion(from)) return;
+  if (listRelationsFor(id).some((e) => Number(e.a_id) === from || Number(e.b_id) === from)) return; // 幂等：已有关系边就不重复加
+  applyDelta(from, id, 25, `同源相识：她是「${displayNameOf(from, '她')}」身边的人`);
+}
+
 export function promote(companionId: number): CompanionResult {
   const id = normalizeId(companionId);
   const row = getCompanion(id);
   if (!row) return { ok: false, code: 'COMPANION_NOT_FOUND', error: '伴侣不存在' };
   markGirlfriend(id);
   initPanels(id);
+  linkOriginRelation(id);
   return { ok: true, companion: getCompanion(id)! };
 }
 
@@ -465,7 +512,10 @@ export function confess(companionId: number): PursueOutcome {
     return { ok: true, accepted: true, status: 'girlfriend', code: 'ALREADY_GIRLFRIEND', companion: row };
   }
   const res = resolveConfession(id);
-  if (res.accepted) initPanels(id);
+  if (res.accepted) {
+    initPanels(id);
+    linkOriginRelation(id);
+  }
   return {
     ok: true,
     accepted: res.accepted,

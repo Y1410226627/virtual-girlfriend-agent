@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { Card, Chip } from '@/components/ui';
+import { withCompanionQuery } from '@/components/chat/companion-query';
 import type { SaveFn, SetFieldFn } from './shared';
 
 export function PhotoCard({
@@ -9,11 +10,14 @@ export function PhotoCard({
   set,
   save,
   saving,
+  companionId,
 }: {
   form: Record<string, string>;
   set: SetFieldFn;
   save: SaveFn;
   saving: boolean;
+  /** 当前伴侣：让"去聊天页"入口保留当前伴侣上下文 */
+  companionId: number;
 }) {
   return (
     <Card
@@ -69,7 +73,7 @@ export function PhotoCard({
         >
           保存
         </button>
-        <Link href="/" className="btn-ghost">
+        <Link href={withCompanionQuery('/', companionId)} className="btn-ghost">
           去聊天页点头像看看 →
         </Link>
       </div>
