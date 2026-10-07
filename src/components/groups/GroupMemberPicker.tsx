@@ -1,9 +1,11 @@
 'use client';
 
 import { colorOf, type GroupMemberLite } from './shared';
+import { statusLabelOf, STATUS_TONE } from '@/components/companions/shared';
+import { Chip } from '@/components/ui';
 
 /**
- * 成员多选：从「已晋升女友」中选 2–6 名入群。
+ * 成员多选：从「认识及以上」的角色中选 2–6 名入群。
  * 已选中的卡片高亮显示专属色；达到上限后其余不可选。
  */
 export function GroupMemberPicker({
@@ -21,7 +23,7 @@ export function GroupMemberPicker({
   const full = selected.length >= max;
 
   if (!members.length) {
-    return <div className="dim">还没有可入群的女友。先去通讯录攻略并晋升一位吧。</div>;
+    return <div className="dim">还没有可入群的角色。先去通讯录认识一些人吧。</div>;
   }
 
   return (
@@ -51,6 +53,9 @@ export function GroupMemberPicker({
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-2">
                 <span className="truncate text-sm font-medium ink-1">{m.name}</span>
+                {m.status ? (
+                  <Chip tone={STATUS_TONE[m.status] ?? 'plain'}>{statusLabelOf(m.status)}</Chip>
+                ) : null}
                 {on ? <span className="chip">已选</span> : null}
               </span>
               <span className="dim mt-0.5 block truncate">

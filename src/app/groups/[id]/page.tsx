@@ -7,6 +7,7 @@ import { PageHeader, Loading, ErrorBox, Toast, Chip } from '@/components/ui';
 import { GroupChatView } from '@/components/groups/GroupChatView';
 import { GroupComposer } from '@/components/groups/GroupComposer';
 import { colorOf, runStatusLabel, type GroupDetailData, type GroupMessage, type GroupRunView } from '@/components/groups/shared';
+import { presenceErrText } from '@/components/chat/CopresenceBar';
 import { errMsg } from '@/lib/utils';
 
 export default function GroupChatPage() {
@@ -92,6 +93,26 @@ export default function GroupChatPage() {
     void post({ continue: true });
   }, [post]);
 
+  // 线下共处群：结束共处并写入共处记忆，然后回到群列表
+  const endPresence = useCallback(async () => {
+    setBusy(true);
+    try {
+      const r = await fetch('/api/presence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'end', groupId: gid }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(presenceErrText(j?.code) || j?.error || '结束共处失败');
+      setToast(`已写入 ${Number(j.memoriesWritten || 0)} 条共处回忆`);
+      router.push('/groups');
+    } catch (e) {
+      setToast(errMsg(e) || '结束共处失败');
+    } finally {
+      setBusy(false);
+    }
+  }, [gid, router]);
+
   const onStop = useCallback(async () => {
     setBusy(true);
     try {
@@ -122,6 +143,11 @@ export default function GroupChatPage() {
         desc={detail.group.topic ? `话题：${detail.group.topic}` : '随便聊聊'}
         right={
           <div className="flex items-center gap-1.5">
+            {detail.group.origin === 'presence' ? (
+              <button className="btn-ghost" disabled={busy} onClick={endPresence} title="结束这次线下共处，把共同经历写进每个人的记忆">
+                线下共处 · 结束并记入回忆
+              </button>
+            ) : null}
             <Chip tone={run?.status === 'running' ? 'rose' : 'plain'}>
               {runStatusLabel(run?.status)}
               {run ? ` · ${run.round}/${run.max_rounds}` : ''}

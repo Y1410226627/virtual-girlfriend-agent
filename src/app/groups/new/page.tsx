@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, PageHeader, Card, Loading, ErrorBox, Toast } from '@/components/ui';
 import { GroupMemberPicker } from '@/components/groups/GroupMemberPicker';
+import { presenceErrText } from '@/components/chat/CopresenceBar';
 import { errMsg } from '@/lib/utils';
 import type { GroupMemberLite } from '@/components/groups/shared';
 import type { RosterEntry, RosterView } from '@/components/companions/shared';
@@ -20,17 +21,26 @@ export default function NewGroupPage() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  // 可入群的角色：主女友 + 已晋升女友
+  // 可入群的角色：主女友 + 已晋升女友 + 追求中/认识的人（服务端会拒绝陌生人/closed）
   const candidates: GroupMemberLite[] = useMemo(() => {
     const list: RosterEntry[] = [];
     if (data?.primary) list.push(data.primary);
     for (const g of data?.girlfriends ?? []) list.push(g);
+    for (const p of data?.pursuing ?? []) list.push(p);
+    for (const a of data?.acquaintances ?? []) list.push(a);
     const seen = new Set<number>();
     const out: GroupMemberLite[] = [];
     for (const e of list) {
       if (seen.has(e.id)) continue;
       seen.add(e.id);
-      out.push({ id: e.id, name: e.displayName || e.name, avatar_url: e.avatar_url, identity: e.identity, age: e.age });
+      out.push({
+        id: e.id,
+        name: e.displayName || e.name,
+        avatar_url: e.avatar_url,
+        identity: e.identity,
+        age: e.age,
+        status: e.status,
+      });
     }
     return out;
   }, [data]);
@@ -50,7 +60,7 @@ export default function NewGroupPage() {
       return;
     }
     if (selected.length < MIN) {
-      setToast(`至少选择 ${MIN} 名已晋升女友`);
+      setToast(`至少选择 ${MIN} 名成员`);
       return;
     }
     setBusy(true);
@@ -61,7 +71,10 @@ export default function NewGroupPage() {
         body: JSON.stringify({ name: nm, topic: topic.trim() || null, memberIds: selected }),
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.id) throw new Error(j?.error || `建群失败 ${r.status}`);
+      if (!r.ok || !j?.id) {
+        // 服务端新错误码 → 可读文案（陌生人/closed 不可入群）
+        throw new Error(presenceErrText(j?.code) || j?.error || `建群失败 ${r.status}`);
+      }
       router.push(`/groups/${j.id}`);
     } catch (e) {
       setToast(errMsg(e) || '建群失败');
@@ -76,7 +89,7 @@ export default function NewGroupPage() {
   return (
     <div className="pb-10">
       {error ? <ErrorBox message={error} onRetry={reload} /> : null}
-      <PageHeader title="新建群聊" desc={`选 ${MIN}–${MAX} 名已晋升为女友的角色，她们会在群里彼此认识、互相接话。`} />
+      <PageHeader title="新建群聊" desc={`选 ${MIN}–${MAX} 名认识以上的角色，她们会在群里彼此认识、互相接话。`} />
       <div className="px-5 md:px-8">
         <Card className="mb-4">
           <div className="grid gap-3">

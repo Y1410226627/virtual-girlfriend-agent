@@ -363,7 +363,7 @@ test('cancelActivity：恢复场景、不写 summary / 不写关系', () => {
 /* ================================================================== */
 /* 4. 参数校验                                                          */
 /* ================================================================== */
-test('创建校验：非女友 → PERMISSION_ONLY_GIRLFRIEND；<2 → INVALID_INPUT；>6 仍允许', () => {
+test('创建校验：stranger → PERMISSION_NOT_ACQUAINTED（v16 资格放宽）；<2 → INVALID_INPUT；>6 仍允许', () => {
   const gf = makeGirlfriend('校验女友');
   const stranger = companionMod.createCompanion({ name: '校验陌生人', age: 22 });
   assert.ok(stranger.ok);
@@ -371,7 +371,7 @@ test('创建校验：非女友 → PERMISSION_ONLY_GIRLFRIEND；<2 → INVALID_I
 
   const bad = activityMod.createActivity({ kind: 'online', memberIds: [gf, sid] });
   assert.equal(bad.ok, false);
-  assert.equal(bad.code, 'PERMISSION_ONLY_GIRLFRIEND');
+  assert.equal(bad.code, 'PERMISSION_NOT_ACQUAINTED');
 
   const few = activityMod.createActivity({ kind: 'online', memberIds: [gf] });
   assert.equal(few.ok, false);

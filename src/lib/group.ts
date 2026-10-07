@@ -14,7 +14,7 @@
 //   companion_relations，其好感闭环由该模块内部经 applyRelationshipDelta 完成（群聊里绝不直接改 emotional_balance）。
 // - 并发：群聊运行【只持群锁】（withGroupLock，见 group-run.ts）；对伴侣数据的写入走可重入 tx()（applyDelta 内部），
 //   绝不获取伴侣会话锁（叶子锁原则，避免死锁）。
-import { dbAll, dbGet, dbRun, tx, DEFAULT_USER_ID } from './db';
+import { dbAll, dbGet, dbRun, tx, cGet, cRun, DEFAULT_USER_ID } from './db';
 import { nowIso, clamp, safeJson, errMsg } from './utils';
 import { chat, cleanContent, type ChatMessage } from './llm';
 import { applyDelta, getRelation } from './companion-relations';
@@ -433,16 +433,19 @@ function publicCardOf(id: number): GroupPublicCard {
 /* ------------------------------------------------------------------ */
 /* buildGroupPrompt（★隐私红线★）                                       */
 /* ------------------------------------------------------------------ */
-/** 当前发言者「自己」记得的事（她与用户的共同经历摘要）。
+/**
+ * 当前发言者「自己」记得的事（她与用户的共同经历摘要）。
  *  ★隐私不变量（三条，缺一不可）：
  *   1. 只读**该发言者自己**作用域下的 memories（`withCompanion(speakerId)`）；
  *   2. 其他成员的任何数据（记忆/关系数值/私聊）绝不进入本 prompt；
  *   3. 群聊**只读不写**——不产生新记忆，避免把群聊内容混进各人的个人记忆库。
- *  用于「女友之间根据各自的记忆聊起来」：她说的是她和你的事，别人只听到她说出口的那句。 */
-function memoryLinesFor(speakerId: number, limit = 6): string[] {
+ *  用于「女友之间根据各自的记忆聊起来」：她说的是她和你的事，别人只听到她说出口的那句。
+ *  v16：类型加入 'shared'（共域记忆，source_group_id 指向共处群）——她们能聊起「上次共处时…」；
+ *  不变量依旧：只读该发言者自己的行（withCompanion 作用域），别人的记忆绝不进 prompt。 */
+export function memoryLinesFor(speakerId: number, limit = 6): string[] {
   try {
     return withCompanion(speakerId, () =>
-      memoriesByType(['fact', 'relationship', 'preference'], limit)
+      memoriesByType(['fact', 'relationship', 'preference', 'shared'], limit)
         .map((m) => String(m.content || '').trim())
         .filter(Boolean)
         .map((s) => (s.length > 120 ? `${s.slice(0, 120)}…` : s))
@@ -694,12 +697,36 @@ export interface GroupOpResult {
 function validateNewMembers(ids: number[]): { ok: true } | { ok: false; code: string; error: string } {
   const bad = ids.filter((id) => !getCompanion(id));
   if (bad.length) return { ok: false, code: 'COMPANION_NOT_FOUND', error: '有角色不存在' };
-  const notGf = ids.filter((id) => !isGirlfriend(id));
-  if (notGf.length) return { ok: false, code: 'PERMISSION_ONLY_GIRLFRIEND', error: '只有已晋升为女友的角色才能入群' };
+  return validateMemberStatuses(ids);
+}
+
+/**
+ * @deprecated 旧的成员资格错误码（只有 girlfriend 可入群）。资格已放宽为「认识及以上」
+ * （status NOT IN ('stranger','closed')）；保留此导出仅为兼容既有引用，勿在新代码中使用。
+ */
+export const PERMISSION_ONLY_GIRLFRIEND = 'PERMISSION_ONLY_GIRLFRIEND';
+
+/**
+ * 成员资格校验（群聊 / 活动共用）：认识及以上即可入群（status NOT IN ('stranger','closed')）。
+ * - 陌生人（stranger）→ PERMISSION_NOT_ACQUAINTED（还没认识，不能同群）
+ * - 已关闭（closed）→ COMPANION_CLOSED
+ * - 其余状态（acquaintance/ambiguous/pursuing/girlfriend/cold/rejected）均放行。
+ */
+export function validateMemberStatuses(ids: number[]): { ok: true } | { ok: false; code: string; error: string } {
+  for (const id of ids) {
+    const row = dbGet<{ status: string }>('SELECT status FROM companions WHERE id = ?', asId(id));
+    const status = row?.status ?? '';
+    if (status === 'stranger') {
+      return { ok: false, code: 'PERMISSION_NOT_ACQUAINTED', error: '还没认识的角色不能入群（先认识再说）' };
+    }
+    if (status === 'closed') {
+      return { ok: false, code: 'COMPANION_CLOSED', error: '该角色已关闭，不能入群' };
+    }
+  }
   return { ok: true };
 }
 
-/** 建群：≥2 名【已晋升女友】；非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；人数**无硬上限** */
+/** 建群：≥2 名【认识及以上】（见 validateMemberStatuses）；人数**无硬上限** */
 export function createGroup(name: string, topic: string | null, memberIds: number[]): GroupOpResult {
   const nm = String(name ?? '').trim().slice(0, 30);
   if (!nm) return { ok: false, code: 'INVALID_INPUT', error: '群名不能为空' };
@@ -1026,6 +1053,9 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
             prevSilent,
             lastText: recentText,
             boost: opts.boost,
+            // run 的第一拍整体升温：刚聚起来的场子总得有人先开口，避免「建群即冷场」的糟糕体验。
+            // （@ 强制不受影响；冷场升温机制在后续拍继续兜底。）
+            temperature: fresh.round === 0 ? 1.5 : 1.0,
           });
 
     // 一拍 0 人开口 → 本拍不产出任何消息（这就是「谁想接话谁接、可以没人接」）
@@ -1188,6 +1218,62 @@ export async function runGroupTurn(groupId: number, text: string, opts: GroupTur
 }
 
 /* ------------------------------------------------------------------ */
+/* 共域记忆（v16 同场感知）                                             */
+/* ------------------------------------------------------------------ */
+/**
+ * 为群内**每个成员**各写一条「自己视角」的共处记忆（type='shared'，source_group_id=群 id）。
+ *
+ * ★隔离保证★：每人一行、`companion_id` 各自（经 withCompanion 作用域 + cRun 注入），
+ * 内容模板相同但归属互斥——任何其他成员的记忆行都绝不包含她人私域记忆。
+ *
+ * ★幂等取舍（有意为之，简单够用）★：**每群每人只写一条**。写入前检查该成员是否已有
+ * `source_group_id=gid` 的记忆行，有则跳过；内容取「截至本次调用时」的群消息摘要。
+ * 不做「每满 12 条消息自动续写」——那需要记录消息水位（key 膨胀/重复累积两难），
+ * 而共处记忆的价值在「记得有过这段共处」，不在完整流水。触发点：endPresenceGroup 必写、
+ * 手动（API）可触发；重复调用零副作用。
+ *
+ * 摘要为**确定性统计**（不调 LLM）：用户发言句数、成员互动次数、最近一条用户消息前 60 字。
+ */
+export function writeSharedMemories(groupId: number): number {
+  const gid = asId(groupId);
+  if (!gid) return 0;
+  const members = listMemberIds(gid);
+  if (members.length < 1) return 0;
+
+  const msgs = listMessages(gid, 120);
+  const userSaid = msgs.filter((m) => m.speaker_type === 'user').length;
+  const interacted = msgs.filter((m) => m.speaker_type === 'companion' || m.speaker_type === 'reaction').length;
+  const lastUser = [...msgs].reverse().find((m) => m.speaker_type === 'user');
+  const lastText = lastUser ? String(lastUser.content || '').trim().slice(0, 60) : '（还没聊到什么）';
+  const memberNames = members.map((id) => companionName(id));
+
+  let written = 0;
+  const now = nowIso();
+  for (const memberId of members) {
+    withCompanion(memberId, () => {
+      // 幂等：该成员已有本群的共域记忆 → 跳过（每群每人只写一条）
+      const exists = cGet<{ id: number }>('SELECT id FROM memories WHERE companion_id = ? AND source_group_id = ?', gid);
+      if (exists) return;
+      // 自己视角：列「其他人」的名字（不含自己）
+      const others = memberNames.filter((n, i) => members[i] !== memberId).map((n) => `「${n}」`).join('');
+      const content =
+        `【共处】和${others || '大家'}在一起的时候：你说 ${userSaid} 句、她们互动 ${interacted} 次；` +
+        `最近聊到：${lastText}`;
+      cRun(
+        `INSERT INTO memories (companion_id, user_id, type, content, importance, status, source_group_id, created_at, access_count)
+         VALUES (?, ?, 'shared', ?, 6, 'active', ?, ?, 0)`,
+        DEFAULT_USER_ID,
+        content,
+        gid,
+        now
+      );
+      written++;
+    });
+  }
+  return written;
+}
+
+/* ------------------------------------------------------------------ */
 /* 错误码 → HTTP 状态（沿用既有 { error } 风格）                         */
 /* ------------------------------------------------------------------ */
 export function groupHttpStatus(code: string | undefined): number {
@@ -1196,8 +1282,12 @@ export function groupHttpStatus(code: string | undefined): number {
       return 404;
     case 'COMPANION_NOT_FOUND':
       return 404;
-    case 'PERMISSION_ONLY_GIRLFRIEND':
+    case 'PERMISSION_ONLY_GIRLFRIEND': // deprecated 资格码，保留映射以兼容旧调用方
       return 403;
+    case 'PERMISSION_NOT_ACQUAINTED':
+      return 400;
+    case 'COMPANION_CLOSED':
+      return 410;
     case 'GROUP_ENDED':
     case 'GROUP_MEMBER_LIMIT':
       return 409;

@@ -27,6 +27,8 @@ export interface MemoryRow {
   superseded_by: number | null;
   access_count: number;
   meta: string | null;
+  /** 共域记忆的来源群 id（NULL=私域记忆）。行仍只属于一个 companion_id。 */
+  source_group_id: number | null;
 }
 
 export interface RelationshipState {
@@ -263,6 +265,10 @@ export interface GroupRow {
   /** active|archived */
   status: string;
   last_message_at: string | null;
+  /** 群的来历：'manual'（手动建群）| 'presence'（自动共处群）| 'activity'（活动群，预留）；老数据为 NULL。 */
+  origin: string | null;
+  /** 共处群的主伴侣（通过谁把大家聚起来的）；非共处群为 NULL。 */
+  host_companion_id: number | null;
   created_at: string;
   updated_at: string;
 }

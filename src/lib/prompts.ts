@@ -99,7 +99,9 @@ export function affectPromptBlock(mood: string): string {
 export function buildReplySystemPrompt(
   memoryBlock: string,
   hints: string[] = [],
-  recentActions: string[] = []
+  recentActions: string[] = [],
+  /** v16 同场感知：此刻在场的人名与关系（如 ['室友小雨（就在旁边）']）。为空时不渲染（零回归）。 */
+  copresence: string[] = []
 ): string {
   const rel = getRelationshipState();
   const stage = stageOf(rel.stage);
@@ -214,6 +216,7 @@ ${wrapData(eventBlock)}
 
 【时间】
 ${timeContext}
+${copresence.length ? `\n【此刻和你在一起的人】\n${copresence.join('；')}\n（她们能看到你们的互动，说话做事自然一点，不要装作只有你们两个人）` : ''}
 ${persona.self_story ? `\n【关于你自己】\n${wrapData(truncate(persona.self_story, 2000))}` : ''}
 
 ${sceneBlock((rel.scene === 'offline' ? 'offline' : 'online') as Scene, rel.stage)}
@@ -275,15 +278,16 @@ ${recentActions.length
   : ''}`;
 }
 
-/** 组装本轮对话的完整 messages */
+/** 组装本轮对话的完整 messages（copresence：此刻在场的人，见 buildReplySystemPrompt） */
 export function buildReplyMessages(
   recentMessages: ChatMessage[],
   memoryBlock: string,
   hints: string[] = [],
-  recentActions: string[] = []
+  recentActions: string[] = [],
+  copresence: string[] = []
 ): ChatMessage[] {
   return [
-    { role: 'system', content: buildReplySystemPrompt(memoryBlock, hints, recentActions) },
+    { role: 'system', content: buildReplySystemPrompt(memoryBlock, hints, recentActions, copresence) },
     ...recentMessages,
   ];
 }

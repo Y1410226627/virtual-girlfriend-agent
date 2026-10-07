@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { useApi, PageHeader, Loading, ErrorBox, fmtTime } from '@/components/ui';
+import { useApi, PageHeader, Loading, ErrorBox, Chip, fmtTime } from '@/components/ui';
 import { colorOf } from '@/components/groups/shared';
 
 interface GroupRow {
@@ -15,6 +15,18 @@ interface GroupRow {
   memberIds: number[];
   memberNames: string[];
   lastMessageId: number;
+  /** 群的来历：'manual'（手动建群）| 'presence'（线下共处）| 'activity'（活动）；旧数据可能没有 → 不显示标签 */
+  origin?: string | null;
+  /** 共处群的主伴侣（数据有就显示在标签里） */
+  host_companion_id?: number | null;
+  host_companion_name?: string | null;
+}
+
+/** origin → 列表小标签文案（manual / 未知来历不显示） */
+function originLabel(g: GroupRow): string | null {
+  if (g.origin === 'presence') return g.host_companion_name ? `线下共处 · ${g.host_companion_name}` : '线下共处';
+  if (g.origin === 'activity') return '活动';
+  return null;
 }
 
 interface GroupListResponse {
@@ -73,6 +85,10 @@ export default function GroupsPage() {
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium ink-1">{g.name}</span>
+                    {(() => {
+                      const label = originLabel(g);
+                      return label ? <Chip tone="plain">{label}</Chip> : null;
+                    })()}
                     {unreadIds.includes(g.id) ? (
                       <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium leading-none text-white">
                         新

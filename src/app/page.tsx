@@ -6,6 +6,7 @@ import { Toast } from '@/components/ui';
 import { CompanionSwitcher } from '@/components/companions/CompanionSwitcher';
 import ChatHeader from '@/components/chat/ChatHeader';
 import EventBar from '@/components/chat/EventBar';
+import CopresenceBar from '@/components/chat/CopresenceBar';
 import MessageList from '@/components/chat/MessageList';
 import Composer from '@/components/chat/Composer';
 import StickerPanel from '@/components/chat/StickerPanel';
@@ -157,6 +158,8 @@ export default function ChatPage() {
           setEvCustomOpen={setEvCustomOpen}
           onEventAction={eventAction}
         />
+        {/* 同场感知：有人在当前伴侣身边时显示提示条；无人在场时零渲染 */}
+        <CopresenceBar companionId={companionId} setToast={setToast} />
         {recalling ? (
           <div className="mt-2 text-[11px] acc animate-pulse-soft">她在回味刚才的对话…（更新记忆、性格信号、关系数值）</div>
         ) : null}

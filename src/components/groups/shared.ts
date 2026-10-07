@@ -18,6 +18,8 @@ export interface GroupMemberLite {
   avatar_url: string | null;
   identity: string | null;
   age: number;
+  /** 关系状态（认识以上即可入群；缺省不显示状态标签） */
+  status?: string;
 }
 
 export interface GroupMessage {
@@ -54,6 +56,8 @@ export interface GroupDetailData {
     status: string;
     last_message_at: string | null;
     created_at: string;
+    /** 群的来历：'manual' | 'presence'（线下共处，可结束并写共处记忆）| 'activity'；旧数据可能没有 */
+    origin?: string | null;
   };
   memberIds: number[];
   members: GroupMemberLite[];

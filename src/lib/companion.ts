@@ -624,8 +624,11 @@ export function httpStatusForCode(code: string | undefined): number {
     case 'PERMISSION_ONLY_GIRLFRIEND':
     case 'PERMISSION_PRIMARY':
       return 403;
+    case 'PERMISSION_NOT_ACQUAINTED':
+      return 400;
     case 'PURSUIT_REJECTED_COOLDOWN':
     case 'COMPANION_CLOSED':
+      return 410;
     case 'DUPLICATE':
     case 'PENDING_LIMIT':
       return 409;

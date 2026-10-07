@@ -13,6 +13,7 @@ import { humanizeReply, type HumanizeContext } from './humanize';
 import { detectScene, type Scene } from './scene';
 import { renderContentForModel } from './stickers';
 import { ensureLife, advanceLife, whatHappenedSince, getExpiredEvent, settleExpiredEvent } from './life';
+import { detectCohabitants } from './presence';
 import { createTurn, beginGeneration, completeGeneration, withConversationLock } from './turn';
 import type { MessageRow } from './types';
 
@@ -288,7 +289,18 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
   }
 
   const actions = recentActionPhrases(10);
-  const baseMessages = buildReplyMessages(recent, memoryBlock, hints, actions);
+  // v16 同场感知：此刻在场的「她身边的人」注入提示（只注入人名与角色，不注入任何记忆；
+  // 伴侣型在场者不注入——她们的同场感知走共处群/共域记忆，不进私聊 prompt）。
+  // detectCohabitants 是纯 SQL 读取，每轮调用一次即可，无需缓存。
+  let copresence: string[] = [];
+  try {
+    copresence = detectCohabitants(cId())
+      .filter((p) => p.kind === 'cast')
+      .map((p) => `${p.role}${p.name}（就在旁边）`);
+  } catch {
+    copresence = []; // 在场检测失败不影响正常回复
+  }
+  const baseMessages = buildReplyMessages(recent, memoryBlock, hints, actions, copresence);
   // 本轮带图：把图片以多模态 content parts 附在最后一条用户消息上（历史图片已在 recent 里降级为占位）
   const messages = images.length
     ? withImagesOnLastUserMessage(baseMessages, text, loadImageDataUrls(images))

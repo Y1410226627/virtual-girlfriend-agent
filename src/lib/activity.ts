@@ -21,7 +21,7 @@ import { nowIso, safeJson } from './utils';
 import { applyDelta } from './companion-relations';
 import {
   createGroup,
-  isGirlfriend,
+  validateMemberStatuses,
   listMessages,
   listMemberIds,
   runGroupTurn,
@@ -230,9 +230,8 @@ export interface ActivityOpResult {
 function validateParticipants(ids: number[]): { ok: true } | { ok: false; code: string; error: string } {
   const notFound = ids.filter((id) => !dbGet<{ id: number }>('SELECT id FROM companions WHERE id = ?', id));
   if (notFound.length) return { ok: false, code: 'COMPANION_NOT_FOUND', error: '有角色不存在' };
-  const notGf = ids.filter((id) => !isGirlfriend(id));
-  if (notGf.length) return { ok: false, code: 'PERMISSION_ONLY_GIRLFRIEND', error: '只有已晋升为女友的角色才能参加活动' };
-  return { ok: true };
+  // v16：活动参与者资格与群聊一致放宽为「认识及以上」（stranger → PERMISSION_NOT_ACQUAINTED；closed → COMPANION_CLOSED）
+  return validateMemberStatuses(ids);
 }
 
 /**
@@ -540,8 +539,12 @@ export function activityHttpStatus(code: string | undefined): number {
     case 'GROUP_NOT_FOUND':
     case 'COMPANION_NOT_FOUND':
       return 404;
-    case 'PERMISSION_ONLY_GIRLFRIEND':
+    case 'PERMISSION_ONLY_GIRLFRIEND': // deprecated 资格码，保留映射以兼容旧调用方
       return 403;
+    case 'PERMISSION_NOT_ACQUAINTED':
+      return 400;
+    case 'COMPANION_CLOSED':
+      return 410;
     case 'ACTIVITY_ENDED':
     case 'GROUP_MEMBER_LIMIT':
       return 409;

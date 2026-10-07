@@ -2,7 +2,7 @@
 //  ① 隐私红线（buildGroupPrompt 不含私密记忆 / 向量 / 用户画像，只含公开角色卡）；
 //  ② 自由发言模型 planBeat（@ 强制 / 可 0 人开口 / 冷场后升温 / 多人陆续接话 / 禁三连击）；
 //  ③ reaction 替代发言 / 收尾词 & 达 12 轮自然结束并插分隔 / abort 立即停止 / 连续 2 拍冷场结束；
-//  ④ 建群成员校验（非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；≥2 且**无硬上限**）；
+//  ④ 建群成员校验（stranger → PERMISSION_NOT_ACQUAINTED；≥2 且**无硬上限**）；
 //  ⑤ prompt 角色卡裁剪（人数 > 12 时完整卡 ≤ 12，其余仅列名）；
 //  ⑥ 并发不串扰不死锁（群聊 run 与伴侣私聊互不阻塞，叶子锁原则）。
 // 隐私：使用独立的临时库（os.tmpdir），绝不触碰 data/ 下的真实数据。
@@ -359,7 +359,7 @@ test('abort：立即中止后续发言，且对已中止的 run 再发言 → GR
   assert.equal(again.code, 'GROUP_ENDED');
 });
 
-test('自由发言：连续 2 拍冷场 → 本轮自然结束（不空跑 LLM、run 保持 running）', async () => {
+test('自由发言：round>0 后连续 2 拍冷场 → 本轮自然结束（不空跑 LLM、run 保持 running）', async () => {
   const a = makeGirlfriend('冷场甲');
   const b = makeGirlfriend('冷场乙');
   const g = groupMod.createGroup('冷场群', null, [a, b]);
@@ -370,14 +370,40 @@ test('自由发言：连续 2 拍冷场 → 本轮自然结束（不空跑 LLM�
     calls++;
     return '（笑）嗯。';
   };
-  // rng=0.99 → 客观概率全不通过；无 @ → 无人开口；连续 2 拍冷场即结束
-  const r = await groupMod.runGroupTurn(gid, '有人吗', { chatFn: countingChat, rng: () => 0.99, newRun: true });
+  // 先正常发言，让 run 进入 round>=1（脱离「第一拍升温」保护——新语义：刚聚起来的第一拍必有人开口）
+  const warm = await groupMod.runGroupTurn(gid, '先热个场', { chatFn: countingChat, rng: () => 0.3, newRun: true });
+  assert.equal(warm.ok, true);
+  assert.ok((groupRunMod.getLastRun(gid)?.round ?? 0) >= 1, '预热后 run 应进入 round>=1');
+
+  // 之后 rng=0.99：round>0 无升温 → 全员沉默 → 连续 2 拍 → 本轮自然结束
+  const callsBefore = calls;
+  const r = await groupMod.runGroupTurn(gid, '有人吗', { chatFn: countingChat, rng: () => 0.99 });
   assert.equal(r.ok, true);
   assert.equal(r.silent, true, '本轮应如实反映「冷场」');
-  assert.equal(calls, 0, '冷场不应空跑 LLM');
+  assert.equal(calls, callsBefore, '冷场不应空跑 LLM');
   assert.equal(r.messages.filter((m) => m.speaker_type === 'companion' || m.speaker_type === 'reaction').length, 0);
   const run = groupRunMod.getLastRun(gid);
   assert.equal(run?.status, 'running', '纯冷场只是本轮结束，不结束整个 run');
+});
+
+test('自由发言：新 run 的第一拍升温 —— 刚聚起来的场子必有人开口（即使 rng 很高）', async () => {
+  const a = makeGirlfriend('开场甲');
+  const b = makeGirlfriend('开场乙');
+  const g = groupMod.createGroup('开场群', null, [a, b]);
+  const gid = g.group!.id;
+  // rng=0.99：旧语义（无升温）下第一拍会全员沉默；新语义 base=0.45*1.5=0.675，
+  // 再叠加冷场升温 → 第二拍 p=1.08→1，必有人开口 —— 「建群即冷场」不再发生
+  const r = await groupMod.runGroupTurn(gid, '有人吗', {
+    chatFn: async () => '（笑）我来啦。',
+    rng: () => 0.99,
+    newRun: true,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.silent ?? false, false, '第一拍升温后不应静默冷场');
+  assert.ok(
+    r.messages.some((m) => m.speaker_type === 'companion' || m.speaker_type === 'reaction'),
+    '第一拍升温后应有人产出'
+  );
 });
 
 /* ================================================================== */
@@ -436,7 +462,7 @@ test('prompt 裁剪：被 @ / 最近发言者优先获得完整角色卡', () =>
 /* ================================================================== */
 /* 4. 建群成员校验（人数无硬上限）                                       */
 /* ================================================================== */
-test('建群校验：非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；<2 → INVALID_INPUT；>6 仍允许', () => {
+test('建群校验：stranger → PERMISSION_NOT_ACQUAINTED（v16 资格放宽）；<2 → INVALID_INPUT；>6 仍允许', () => {
   const gf = makeGirlfriend('校验女友');
   const stranger = companionMod.createCompanion({ name: '校验陌生人', age: 22 });
   assert.ok(stranger.ok);
@@ -444,7 +470,7 @@ test('建群校验：非 girlfriend → PERMISSION_ONLY_GIRLFRIEND；<2 → INVA
 
   const bad = groupMod.createGroup('含陌生人', null, [gf, sid]);
   assert.equal(bad.ok, false);
-  assert.equal(bad.code, 'PERMISSION_ONLY_GIRLFRIEND');
+  assert.equal(bad.code, 'PERMISSION_NOT_ACQUAINTED');
 
   const few = groupMod.createGroup('人太少', null, [gf]);
   assert.equal(few.ok, false);

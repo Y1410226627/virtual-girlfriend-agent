@@ -1232,4 +1232,19 @@ ALTER TABLE companions ADD COLUMN origin_companion_id INTEGER;
 CREATE INDEX IF NOT EXISTS idx_companions_origin ON companions(origin_kind, origin_companion_id);
 `,
   },
+  {
+    version: 16,
+    name: 'presence_cohabitation',
+    sql: `
+-- v16：同场感知（人在同一空间就会看见、听见、记住）。
+--   groups.origin: 'manual'（手动建群）| 'presence'（自动共处群）| 'activity'（活动群，预留）
+--   groups.host_companion_id: 共处群的主伴侣（通过谁把大家聚起来的）；普通群为 NULL
+--   memories.source_group_id: 共域记忆的来源群 id（NULL=私域记忆）；每行仍只属于一个 companion_id
+ALTER TABLE groups ADD COLUMN origin TEXT;
+ALTER TABLE groups ADD COLUMN host_companion_id INTEGER;
+ALTER TABLE memories ADD COLUMN source_group_id INTEGER;
+CREATE INDEX IF NOT EXISTS idx_groups_origin ON groups(origin, host_companion_id);
+CREATE INDEX IF NOT EXISTS idx_memories_source_group ON memories(source_group_id);
+`,
+  },
 ];
