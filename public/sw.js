@@ -12,7 +12,8 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// 页面通过 postMessage({type:'notify', title, body}) 触发通知
+// 页面通过 postMessage({type:'notify', title, body, url}) 触发通知
+// url（可选）：点击通知要去的页面（如 /?companionId=2 —— 有未读的那个伴侣）；缺省 '/'
 self.addEventListener('message', (event) => {
   const data = event.data || {};
   if (data.type !== 'notify') return;
@@ -24,22 +25,32 @@ self.addEventListener('message', (event) => {
       icon: '/icon-192.png',
       badge: '/icon-192.png',
       tag: 'gf-message',
+      data: { url: data.url || '/' },
     })
   );
 });
 
-// 点击通知：聚焦已打开的窗口（或用 '/' 打开新窗口）
+// 点击通知：优先导航到通知携带的目标页（有未读的那个伴侣），向后兼容无 data.url 的旧通知（回退 '/'）
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/';
   event.waitUntil(
     self.clients
       .matchAll({ type: 'window', includeUncontrolled: true })
       .then((clientList) => {
         for (let i = 0; i < clientList.length; i++) {
           const c = clientList[i];
-          if ('focus' in c) return c.focus();
+          if ('focus' in c) {
+            // 能原地导航就导航（把已有窗口带到目标伴侣），否则只聚焦
+            if ('navigate' in c) {
+              return c.navigate(new URL(targetUrl, self.location.origin).href)
+                .then(() => c.focus())
+                .catch(() => c.focus());
+            }
+            return c.focus();
+          }
         }
-        if (self.clients.openWindow) return self.clients.openWindow('/');
+        if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
       })
   );
 });
