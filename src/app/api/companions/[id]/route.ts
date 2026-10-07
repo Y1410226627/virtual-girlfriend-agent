@@ -76,6 +76,9 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   });
 }
 
+/** 防御别名：状态操作历史上曾被前端误用 POST 调用（405）。接受 POST 与 PATCH 等价，避免方法错配再次炸出 405。 */
+export const POST = PATCH;
+
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const id = await parseId(ctx);
   if (!id) return notFound();

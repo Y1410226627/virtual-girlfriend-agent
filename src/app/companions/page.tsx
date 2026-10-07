@@ -77,7 +77,18 @@ export default function CompanionsPage() {
   const act = async (id: number, action: string, msg: string) => {
     setBusyId(id);
     try {
-      await post(`/api/companions/${id}`, { action }, msg);
+      // 注意：该路由的状态操作是 PATCH（POST 会 405）——与资料页 patch() 保持一致
+      const r = await fetch(`/api/companions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `操作失败 ${r.status}`);
+      setToast(msg);
+      await reload();
+    } catch (e) {
+      setToast(errMsg(e) || '操作失败');
     } finally {
       setBusyId(null);
     }
