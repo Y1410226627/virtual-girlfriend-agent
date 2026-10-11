@@ -49,7 +49,7 @@ for /f %%i in ('powershell -NoProfile -Command "Get-Random -Minimum 100000 -Maxi
 :pin_ok
 
 rem ---------- 已经在运行：直接显示地址，不再重复启动 ----------
-netstat -ano | findstr "LISTENING" | findstr ":3000 " >nul 2>nul
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>nul
 if not errorlevel 1 goto :already_running
 
 if not exist node_modules (

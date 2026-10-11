@@ -19,6 +19,7 @@
 | --- | --- |
 | `npm run dev` | 开发模式（端口 3000） |
 | `npm run build` / `npm start` | 生产构建 / 启动 |
+| `npm run start:lan` | 局域网模式启动（绑定 0.0.0.0，配合 `ACCESS_PIN` 使用；「启动.cmd」走的就是它，手机同网可访问） |
 | `npm run typecheck` | `tsc --noEmit` 类型检查 |
 | `npm run lint` | ESLint（no-explicit-any / no-unused-vars 为 error，见 ADR-0004） |
 | `npm run test` | Node 原生测试（tests/，零新增依赖） |
@@ -55,6 +56,9 @@
 3. 同步到开源副本 `D:\桌面\虚拟女友-开源版`（robocopy 额外排除 `_sanitize_for_github.mjs`——脚本含关键词清单，**绝不进副本、绝不提交**），然后在**真实项目目录**运行 `node _sanitize_for_github.mjs`（默认清洗副本、幂等、含兜底横扫：敏感串随代码搬家后仍能清到）；其复扫输出必须为「干净 ✓」——**不要把任何内网地址 / Key 片段写进文档、注释或提交信息**（关键词清单只维护在脚本里）；副本绝不允许出现 `data/`、`.env.local*`、`*.bak-*`、`_sanitize_for_github.mjs`。
 4. 副本 git 提交（单主题提交，说明「改了什么、为什么」）。
 5. 用户数据目录永远不参与任何同步。
+
+> **现状备注（2026-10-12）**：桌面目录 `D:\桌面\虚拟女友` 目前就是「真实项目」（最新代码在这里开发与运行）；上面第 3~4 步已由 `同步开源版.cmd`（内部 `node sync-open-source.mjs "提交说明"`）自动化：镜像复制 + 脱敏 + 隐私终检 + 自动提交 + 推送，一条命令替代原来的手工 robocopy/sanitize/commit。工作区（Trae CN 里的项目目录）当前落后于桌面，**以桌面为准**，不要用旧工作区反向覆盖。
+> 手机访问：`启动.cmd` 已内置局域网模式（`start:lan`）+ 访问口令（PIN 保存在 `data\access-pin.txt`，只在本机、不入库不入提交），启动窗口会直接打印手机访问地址；开机自启由「启动」文件夹里的快捷方式负责。
 
 ## 6. 技术债台账（动态更新；已还清的保留一行记录，避免复辟）
 - ✅ **ESLint 已引入**（2026-10-05，ADR-0004）：flat config + Next 桥接；`no-explicit-any` / `no-unused-vars` 为 error，随 `npm run verify` 门禁执行。**Prettier 经评估不引入**（全仓重排 diff 噪音大、单人+AI 场景收益低），理由见 ADR-0004。
