@@ -38,6 +38,20 @@ if defined NODE_TOO_OLD (
   exit /b 1
 )
 
+rem ---------- 访问口令（手机访问用；只存在 data\access-pin.txt，不会被同步/上传）----------
+if not exist "data" mkdir data
+set "PINFILE=data\access-pin.txt"
+set "PIN="
+if exist "%PINFILE%" set /p PIN=<"%PINFILE%"
+if defined PIN goto :pin_ok
+for /f %%i in ('powershell -NoProfile -Command "Get-Random -Minimum 100000 -Maximum 999999"') do set "PIN=%%i"
+>"%PINFILE%" echo %PIN%
+:pin_ok
+
+rem ---------- 已经在运行：直接显示地址，不再重复启动 ----------
+netstat -ano | findstr "LISTENING" | findstr ":3000 " >nul 2>nul
+if not errorlevel 1 goto :already_running
+
 if not exist node_modules (
   echo [1/3] 正在安装依赖……第一次运行才会做，需要几分钟
   call npm install
@@ -49,12 +63,29 @@ if not exist ".next\BUILD_ID" (
   if errorlevel 1 goto fail
 )
 echo [3/3] 正在启动服务 ……  http://localhost:3000
-echo 稍等几秒，服务就绪后会自动帮你打开浏览器。
-start "" /b powershell -NoProfile -Command "for($i=0;$i -lt 60;$i++){ try{ (New-Object Net.Sockets.TcpClient('127.0.0.1',3000)).Close(); Start-Process 'http://localhost:3000'; break }catch{ Start-Sleep -Milliseconds 500 } }"
-call npm start
+call :showurl
+echo   本窗口可以最小化，但请不要关闭（关掉窗口 = 服务停止）。
+echo   稍等几秒，服务就绪后会自动帮你打开浏览器。
+set NEXT_TELEMETRY_DISABLED=1
+set ACCESS_PIN=%PIN%
+start "" /b powershell -NoProfile -Command "for($i=0;$i -lt 60;$i++){ try{ (New-Object Net.Sockets.TcpClient('127.0.0.1',3000)).Close(); Start-Process 'http://localhost:3000/?pin=%PIN%'; break }catch{ Start-Sleep -Milliseconds 500 } }"
+call npm run start:lan
 echo.
 echo 服务已停止。关闭窗口即可，也可以按任意键退出。
 pause
+exit /b 0
+
+:already_running
+echo.
+echo   服务已经在运行中（不用再启动一次）。手机访问地址：
+call :showurl
+echo   提示：想重启服务，请先关掉那个正在运行的窗口，再双击本文件。
+echo.
+pause
+exit /b 0
+
+:showurl
+powershell -NoProfile -Command "$ips = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.|172\.|198\.18\.)' -and $_.InterfaceAlias -notmatch 'vEthernet|WSL|VPN|aTrust|Loopback|Meta' }); if ($ips.Count -eq 0) { $ips = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.|172\.|198\.18\.)' }) }; Write-Host ''; Write-Host '  ── 手机访问（手机和电脑连同一个 Wi-Fi/WLAN 时打开）──' -ForegroundColor Cyan; foreach ($ip in $ips) { Write-Host ('    http://' + $ip.IPAddress + ':3000/?pin=%PIN%') -ForegroundColor Yellow }; Write-Host '  （第一次带 ?pin=... 打开；之后手机直接访问 http://<上面的IP>:3000 即可）' -ForegroundColor DarkGray"
 exit /b 0
 
 :fail
