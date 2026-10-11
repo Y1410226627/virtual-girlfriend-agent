@@ -222,7 +222,7 @@ export default function Composer({
         ) : null}
         <textarea
           ref={taRef}
-          className="textarea max-h-32 min-h-[46px] flex-1 py-3"
+          className="textarea max-h-24 min-h-[46px] flex-1 py-3 md:max-h-32"
           rows={1}
           placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"
           value={input}

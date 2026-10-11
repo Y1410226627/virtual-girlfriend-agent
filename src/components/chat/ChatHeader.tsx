@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Bar } from '@/components/ui';
 import { withCompanionQuery } from '@/components/chat/companion-query';
+import { computeDoki } from '@/lib/doki';
 import DokiMeter from './DokiMeter';
 import type { AppState } from './shared';
 
@@ -42,6 +43,8 @@ export default function ChatHeader({
   const [reaction, setReaction] = useState<{ text: string; note?: string } | null>(null);
   const [patting, setPatting] = useState(false);
   const [coolLeft, setCoolLeft] = useState(0); // 剩余冷却（毫秒）
+  // 手机端：状态详情默认收起（点「状态」展开）；桌面端始终显示（md:block）
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const reactionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const coolTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -104,8 +107,79 @@ export default function ChatHeader({
     }
   }, [coolLeft, companionId, flash, patting, startCooldown]);
 
+  // 手机端紧凑心动指数（完整版在「状态」详情里）：与 DokiMeter 同源计算
+  const doki = computeDoki({
+    intimacy: state?.relationship?.intimacy,
+    trust: state?.relationship?.trust,
+    emotional_balance: state?.relationship?.emotional_balance,
+    repair_credit: state?.relationship?.repair_credit,
+    unresolved_tension: state?.relationship?.unresolved_tension,
+    stage: state?.relationship?.stage,
+  });
+
+  // 她的次要状态标签：桌面端显示在第一行；手机端收进「状态」详情（避免顶栏占两三行）
+  const statusChips = (
+    <>
+      {state?.relationship?.conflict_state && state.relationship.conflict_state !== 'none' ? (
+        <span className="chip !accent-soft">别扭中</span>
+      ) : null}
+      {state?.relationship?.pending_relationship_talk ? <span className="chip-plain">想谈谈</span> : null}
+      {state?.relationship?.pending_stage_confirm ? <span className="chip-plain">想确认关系</span> : null}
+    </>
+  );
+
+  // 线上 / 线下：状态标签 + 三段切换（手机端收进「状态」详情）
+  const sceneControls = (
+    <>
+      <span
+        className={`chip-plain ${scene === 'offline' ? '!accent-soft !acc-2' : ''}`}
+        title={state?.relationship?.sceneReason || ''}
+      >
+        {scene === 'offline' ? '线下相处' : '线上聊天'}
+      </span>
+      <div className="flex items-center gap-0.5 rounded-full border line surf p-0.5 text-[11px]">
+        {(
+          [
+            ['auto', '自动'],
+            ['online', '线上'],
+            ['offline', '线下'],
+          ] as const
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => onSetSceneMode(k)}
+            title={k === 'auto' ? '智能识别线上/线下' : `强制${label}对话`}
+            className={`rounded-full px-2.5 py-1 transition ${
+              sceneMode === k ? 'bg-rose-500 text-white' : 'ink-2 hover:accent-soft'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+
+  // 她此刻的生活状态（位置 / 活动 / 精力 / 情绪）：手机端随「状态」详情一起收起
+  const lifeLine = (
+    <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] ink-2">
+      {state?.life ? (
+        <>
+          <span title="她当前的位置">📍 {state.life.location}</span>
+          <span title="她正在做什么">{state.life.activity}</span>
+          <span title="精力">精力 {Math.round(state.life.energy)}</span>
+          <span title="情绪">{state.life.emotion}</span>
+          {state.life.illness && state.life.illness !== 'none' ? (
+            <span className="acc">🤒 {state.life.illness}中</span>
+          ) : null}
+        </>
+      ) : null}
+      {state?.intimacy?.inAftercare ? <span className="acc">刚亲密过 · 事后</span> : null}
+    </div>
+  );
+
   return (
-    <header className="sticky top-0 z-30 border-b line surf px-5 py-3 backdrop-blur md:px-8">
+    <header className="sticky top-0 z-30 border-b line surf px-4 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] backdrop-blur md:px-8 md:py-3">
       <style>{`
         @keyframes her-halo {
           0%, 100% { opacity: 0; transform: scale(0.9); }
@@ -119,6 +193,8 @@ export default function ChatHeader({
           .her-halo { animation: none !important; opacity: 0.35; }
         }
       `}</style>
+
+      {/* 第一行：头像 + 名字/主要状态 + 右侧（手机：♥Lv + 状态开关；桌面：场景 + 关系面板） */}
       <div className="flex items-center gap-3">
         <span className="relative inline-flex">
           <button
@@ -134,7 +210,7 @@ export default function ChatHeader({
           ) : null}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={quickPat}
@@ -146,51 +222,48 @@ export default function ChatHeader({
             </button>
             <span className="chip">{stageName}期</span>
             <span className="chip-plain">{mood}</span>
-            {state?.relationship?.conflict_state && state.relationship.conflict_state !== 'none' ? (
-              <span className="chip !accent-soft">别扭中</span>
-            ) : null}
-            {state?.relationship?.pending_relationship_talk ? <span className="chip-plain">想谈谈</span> : null}
-            {state?.relationship?.pending_stage_confirm ? <span className="chip-plain">想确认关系</span> : null}
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="text-[11px] ink-3">亲密度 {Math.round(intimacy)}</span>
-            <div className="w-24">
-              <Bar value={intimacy} height={5} />
-            </div>
-            <DokiMeter rel={state?.relationship} />
+            {/* 次要状态：桌面端跟在主状态后面；手机端在「状态」详情里 */}
+            <span className="hidden md:contents">{statusChips}</span>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span
-            className={`chip-plain hidden sm:inline-flex ${scene === 'offline' ? '!accent-soft !acc-2' : ''}`}
-            title={state?.relationship?.sceneReason || ''}
-          >
-            {scene === 'offline' ? '线下相处' : '线上聊天'}
+          <span className="chip-plain md:hidden" title="心动指数（点「状态」看分项）">
+            <span aria-hidden className="acc">
+              ♥
+            </span>
+            Lv.{doki.level}
           </span>
-          <div className="flex items-center gap-0.5 rounded-full border line surf p-0.5 text-[11px]">
-            {(
-              [
-                ['auto', '自动'],
-                ['online', '线上'],
-                ['offline', '线下'],
-              ] as const
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => onSetSceneMode(k)}
-                title={k === 'auto' ? '智能识别线上/线下' : `强制${label}对话`}
-                className={`rounded-full px-2.5 py-1 transition ${
-                  sceneMode === k ? 'bg-rose-500 text-white' : 'ink-2 hover:accent-soft'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <Link href="/relationship" className="btn-ghost hidden sm:inline-flex">
+          <button
+            type="button"
+            onClick={() => setDetailsOpen((v) => !v)}
+            aria-expanded={detailsOpen}
+            aria-label={detailsOpen ? '收起状态详情' : '展开状态详情'}
+            className={`btn-ghost !px-2.5 !py-1.5 text-[11px] md:hidden ${detailsOpen ? '!accent-soft !acc' : ''}`}
+          >
+            状态 {detailsOpen ? '▴' : '▾'}
+          </button>
+          {/* 桌面端：场景状态 + 切换（保持原样） */}
+          <span className="hidden md:contents">{sceneControls}</span>
+          <Link href="/relationship" className="btn-ghost hidden md:inline-flex">
             关系面板
           </Link>
         </div>
+      </div>
+
+      {/* 状态详情：手机默认收起（点「状态」展开）；桌面端始终显示 */}
+      <div className={`${detailsOpen ? 'block' : 'hidden'} md:block`}>
+        <div className="mt-2 flex flex-wrap items-center gap-2 md:hidden">
+          {statusChips}
+          {sceneControls}
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 md:pl-[52px]">
+          <span className="text-[11px] ink-3">亲密度 {Math.round(intimacy)}</span>
+          <div className="w-24">
+            <Bar value={intimacy} height={5} />
+          </div>
+          <DokiMeter rel={state?.relationship} />
+        </div>
+        {lifeLine}
       </div>
 
       {/* 快捷互动的反应气泡（只在这里浮现，不写进聊天记录） */}
@@ -205,20 +278,6 @@ export default function ChatHeader({
         </div>
       ) : null}
 
-      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] ink-2">
-        {state?.life ? (
-          <>
-            <span title="她当前的位置">📍 {state.life.location}</span>
-            <span title="她正在做什么">{state.life.activity}</span>
-            <span title="精力">精力 {Math.round(state.life.energy)}</span>
-            <span title="情绪">{state.life.emotion}</span>
-            {state.life.illness && state.life.illness !== 'none' ? (
-              <span className="acc">🤒 {state.life.illness}中</span>
-            ) : null}
-          </>
-        ) : null}
-        {state?.intimacy?.inAftercare ? <span className="acc">刚亲密过 · 事后</span> : null}
-      </div>
       {children}
     </header>
   );

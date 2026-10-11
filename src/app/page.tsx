@@ -126,7 +126,9 @@ export default function ChatPage() {
   })();
 
   return (
-    <div className="flex h-screen flex-col">
+    // h-dvh：手机浏览器地址栏会让 100vh 比可见区域高，用动态视口高度保证输入区不被顶到屏幕外；
+    // -mb-24：抵消 layout 里 main 为固定底栏预留的 pb-24（本页输入区自己已给导航留空隙），避免整页多出 96px 滚动
+    <div className="flex h-dvh flex-col -mb-24 md:mb-0">
       {/* 顶部状态 */}
       <ChatHeader
         her={her}
@@ -197,9 +199,9 @@ export default function ChatPage() {
         onSkipOnboard={() => setOnboard(false)}
       />
 
-      {/* 输入框固定到底部；移动端有固定底部导航（Nav 移动端约 56px 高），
-          pb-20 为它预留空间避免遮挡，桌面端无底部导航改回 md:pb-3 */}
-      <div className="sticky bottom-0 border-t line surf px-4 py-3 pb-20 backdrop-blur md:px-8 md:pb-3">
+      {/* 输入框固定到底部；移动端为固定底部导航（Nav）留出它自身的空间（含 iPhone 安全区），
+          桌面端无底部导航，改回 md:pb-3。数值与 Nav 的移动端实际高度（约 44px + 安全区）对齐 */}
+      <div className="sticky bottom-0 border-t line surf px-4 pb-[calc(56px+env(safe-area-inset-bottom))] pt-3 backdrop-blur md:px-8 md:pb-3">
         <StickerPanel
           open={stickerOpen}
           stickers={state?.stickers}

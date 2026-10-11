@@ -61,7 +61,7 @@ export default function MessageList({
   onSkipOnboard,
 }: MessageListProps) {
   return (
-    <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 md:px-8">
+    <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-3 md:px-8 md:py-4">
       {loadErr ? (
         <div className="mx-auto max-w-md rounded-2xl border line accent-soft px-4 py-3 text-xs acc">
           {loadErr}

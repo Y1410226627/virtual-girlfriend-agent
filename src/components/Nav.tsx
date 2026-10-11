@@ -146,19 +146,22 @@ export default function Nav() {
         </div>
       </aside>
 
-      {/* 移动端底部导航（可横向滚动，页面多了也不会挤） */}
-      <nav aria-label="主导航" className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t line surf backdrop-blur">
+      {/* 移动端底部导航（可横向滚动，页面多了也不会挤；高度压到最小并适配 iPhone 底部安全区） */}
+      <nav
+        aria-label="主导航"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t line surf backdrop-blur pb-[env(safe-area-inset-bottom)]"
+      >
         <div className="flex items-stretch overflow-x-auto">
           {ITEMS.map((it) => (
             <Link
               key={it.href}
               href={withCompanionQuery(it.href, companionId)}
               aria-current={isActive(it.href) ? 'page' : undefined}
-              className={`flex min-w-[62px] flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] ${
+              className={`flex min-w-[56px] flex-1 flex-col items-center gap-0 py-2 text-[10px] ${
                 isActive(it.href) ? 'acc font-medium' : 'ink-2'
               }`}
             >
-              <span className="relative text-lg leading-none">
+              <span className="relative text-base leading-none">
                 <span aria-hidden>{it.icon}</span>
                 {badge(it.href)}
               </span>
