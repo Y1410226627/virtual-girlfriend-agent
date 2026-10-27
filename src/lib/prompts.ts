@@ -646,7 +646,7 @@ ${DATA_GUARD_NOTE}`;
 }
 
 export function buildProactiveMessages(payload: {
-  kind: 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end';
+  kind: 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end' | 'reminder';
   hoursSinceLast: number;
   memoryBlock: string;
   recentActions?: string[];
@@ -654,6 +654,9 @@ export function buildProactiveMessages(payload: {
   eventActivity?: string;
   /** kind='event_end' 时：是否被打断/提前结束 */
   eventInterrupted?: boolean;
+  /** kind='reminder' 时：他让你提醒的内容与到点时间（人话） */
+  reminderContent?: string;
+  reminderDueText?: string;
   /** 生成"事件已结束"这条消息时：忽略"她正在这件事当中"的注入（避免与任务自相矛盾） */
   ignoreOngoingEvent?: boolean;
   /** "为什么现在想起他"的因果链素材（可选，缺省时行为与旧版一致） */
@@ -678,6 +681,8 @@ export function buildProactiveMessages(payload: {
         ? '他等不及，让你先停下——这件事被你提前收尾了（例如被从睡梦里叫醒、匆匆结束）。'
         : '现在这件事自然结束了。'
     }你要主动给他发一条消息，像真人日常里顺手发的那样，用你自己的口吻告诉他这件事结束了（睡醒了/洗完澡了/吃完饭了/下课了/忙完了），可以带上刚结束时的状态（困、头发还湿着、松了口气、有点饿）。不要像汇报工作，不要解释前因后果，1-2 句就好。`,
+    reminder: `现在是 ${localTimeStr()}，到了他让你提醒他的时间：他之前交代过「${payload.reminderContent || '一件事'}」，约好的时间是 ${payload.reminderDueText || '现在'}。
+你要主动给他发一条消息，用你平时的语气把这件事提醒他（例如"到点啦，你说的那件事该弄了"）。像女朋友随口提醒，不要像闹钟/待办助手，不要说"我帮你记着/提醒设置"这种机械话，也不要报具体时间格式。1-2 句就好。`,
   };
 
   return [

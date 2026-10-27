@@ -7,6 +7,7 @@ import { buildReplyMessages, buildHints } from './prompts';
 import { loadImageDataUrls, parseMetaImages } from './uploads';
 import { retrieveMemories, formatMemoryBlock } from './memory';
 import { buildKbBlock } from './knowledge';
+import { parseReminder } from './reminder-parse';
 import { touchInteraction, agentName, userName, getRelationshipState, saveRelationshipState } from './relationship';
 import { personalityMap } from './personality';
 import { attachmentStyle } from './attachment';
@@ -280,6 +281,13 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
   const kbBlock = await buildKbBlock(text);
 
   const hints = buildHints({ isFirstMeeting: isFirstMeeting(), userMessage: text });
+  // v18 提醒：他若是在交代"到点提醒我"，给她一个自然答应的提示（真正的提醒在回复成功后才落库）
+  const reminderIntent = parseReminder(text);
+  if (reminderIntent) {
+    hints.push(
+      `【他刚交代你的事】他让你在 ${reminderIntent.dueText} 提醒他「${reminderIntent.content}」。回复时自然答应下来（像女朋友那样"好，我记着了"），不要用闹钟/助手的口吻，也不要复述时间格式。`
+    );
+  }
 
   // 隔了一段时间没聊：把她"这段时间在做的事"作为素材，让她自然分享
   if (gapHours >= 3) {

@@ -4,6 +4,7 @@ import { tickProactive } from './proactive';
 import { seedProfilesIfEmpty } from './profiles';
 import { getCounter, setCounter } from './db';
 import { drainAnalysisQueue } from './analysisQueue';
+import { tickReminders } from './reminders';
 import { errMsg } from './utils';
 import { withCompanion } from './companion-context';
 import { listAdvanceableCompanions } from './companion';
@@ -113,6 +114,12 @@ export function ensureScheduler(): void {
             await tickProactive(force);
           } catch (e) {
             console.warn(`[proactive] companion ${id} tick failed:`, errMsg(e));
+          }
+          // v18 提醒：他明确交代过的"到点提醒我"（独立路径，不占主动消息额度）
+          try {
+            await tickReminders();
+          } catch (e) {
+            console.warn(`[reminders] companion ${id} tick failed:`, errMsg(e));
           }
           // 自动识别（需求：交往中出现的人自动浮现为可攻略对象）：6 小时节流，失败静默
           try {

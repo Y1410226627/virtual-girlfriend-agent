@@ -18,6 +18,7 @@ import { detectEventFromConversation } from '@/lib/life';
 import { errMsg } from '@/lib/utils';
 import { withCompanion } from '@/lib/companion-context';
 import { resolveCompanionId } from '@/lib/companion';
+import { createReminderFromMessage } from '@/lib/reminders';
 import {
   withConversationLock,
   createTurn,
@@ -295,7 +296,15 @@ function buildChatStream(
             }
 
             // 成功落库后才提交本轮产物（turn_count / streak / 场景）并收尾生成
-            if (!params.regenerate) commitTurn(prepared);
+            if (!params.regenerate) {
+              commitTurn(prepared);
+              // v18：他若交代"到点提醒我"，落一条提醒（按用户消息幂等，重新生成不会重复创建）
+              try {
+                createReminderFromMessage(prepared.userMessageId, content);
+              } catch (e) {
+                console.warn('[reminders] 创建失败:', errMsg(e));
+              }
+            }
             if (prepared.generationId) completeGeneration(prepared.generationId, savedAssistantId);
 
             // 若触发过自动重答 / 视觉降级，在 notes 里标一下（放最前，避免被.slice(0,3)截掉）

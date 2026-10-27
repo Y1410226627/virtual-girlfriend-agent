@@ -16,7 +16,7 @@ import { maybeGenerateDailySummary } from './analysis';
 import { fadeTension } from './conflict';
 import { analyzeProactiveMessage } from './proactive-analysis';
 
-export type ProactiveKind = 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end';
+export type ProactiveKind = 'greeting' | 'memory' | 'event' | 'relationship_talk' | 'stage_confirm' | 'ritual' | 'miss' | 'event_end' | 'reminder';
 
 export interface ProactiveMessageRow {
   id: number;
@@ -333,6 +333,8 @@ export const PROACTIVE_RULES: Record<ProactiveKind, KindRule> = {
   stage_confirm: { minGapHours: 24, usesGlobalGap: false, minChatGapHours: 6, usesDailyBudget: true, wants: (st) => st.pendingStageConfirm },
   miss: { minGapHours: 12, usesGlobalGap: false, minChatGapHours: 6, usesDailyBudget: true, wants: (st) => st.missingUser > 70 || st.loneliness > 65 },
   event_end: { minGapHours: 0, usesGlobalGap: false, minChatGapHours: 0, usesDailyBudget: false, wants: () => false },
+  // 提醒由 reminders.tickReminders 的独立路径处理（只发出他明确交代过的那条），不参与这里的择优
+  reminder: { minGapHours: 1e9, usesGlobalGap: false, minChatGapHours: 1e9, usesDailyBudget: false, wants: () => false },
 };
 
 /** 择优顺序（对应 tickProactive 里的 if-else 优先级） */

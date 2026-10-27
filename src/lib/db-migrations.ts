@@ -1285,4 +1285,26 @@ CREATE TABLE IF NOT EXISTS kb_chunk_embeddings (
 CREATE INDEX IF NOT EXISTS idx_kb_embeddings_companion ON kb_chunk_embeddings(companion_id);
 `,
   },
+  {
+    version: 18,
+    name: 'reminders',
+    sql: `
+-- v18：他让她"到点提醒我"的事（她按自己的语气在到点时主动发一条，不占主动消息额度）。
+--   status: pending | sent | cancelled
+--   source_message_id: 触发这条提醒的用户消息（唯一索引 → 重新生成/重发也不会重复创建）
+CREATE TABLE IF NOT EXISTS reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion_id INTEGER NOT NULL DEFAULT 1,
+  content TEXT NOT NULL,
+  due_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  source_message_id INTEGER,
+  message_id INTEGER,
+  created_at TEXT NOT NULL,
+  sent_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_source ON reminders(companion_id, source_message_id) WHERE source_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(companion_id, status, due_at);
+`,
+  },
 ];
