@@ -1247,4 +1247,42 @@ CREATE INDEX IF NOT EXISTS idx_groups_origin ON groups(origin, host_companion_id
 CREATE INDEX IF NOT EXISTS idx_memories_source_group ON memories(source_group_id);
 `,
   },
+  {
+    version: 17,
+    name: 'knowledge_base',
+    sql: `
+-- v17：本地知识库（她"读过"的资料）：文档 → 切块 → 向量，全部存在本机 SQLite。
+--   kb_docs: 一份导入的资料（标题/来源/字数/块数），按 companion_id 隔离
+--   kb_chunks: 按句切好的语义块（seq 保证顺序）
+--   kb_chunk_embeddings: 每块向量（与 memory_embeddings 同格式：JSON 文本 + 模型标识，换模型自动重算）
+CREATE TABLE IF NOT EXISTS kb_docs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion_id INTEGER NOT NULL DEFAULT 1,
+  title TEXT NOT NULL,
+  source TEXT,
+  char_count INTEGER NOT NULL DEFAULT 0,
+  chunk_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_docs_companion ON kb_docs(companion_id, id DESC);
+CREATE TABLE IF NOT EXISTS kb_chunks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion_id INTEGER NOT NULL DEFAULT 1,
+  doc_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks(companion_id, doc_id, seq);
+CREATE TABLE IF NOT EXISTS kb_chunk_embeddings (
+  chunk_id INTEGER PRIMARY KEY,
+  companion_id INTEGER NOT NULL DEFAULT 1,
+  model TEXT,
+  dim INTEGER,
+  vector TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_embeddings_companion ON kb_chunk_embeddings(companion_id);
+`,
+  },
 ];

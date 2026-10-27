@@ -101,7 +101,9 @@ export function buildReplySystemPrompt(
   hints: string[] = [],
   recentActions: string[] = [],
   /** v16 同场感知：此刻在场的人名与关系（如 ['室友小雨（就在旁边）']）。为空时不渲染（零回归）。 */
-  copresence: string[] = []
+  copresence: string[] = [],
+  /** v17 本地知识库：engine 已检索好的资料块（含 <DATA> 包裹与引导语）。为空时不渲染（零回归）。 */
+  kbBlock = ''
 ): string {
   const rel = getRelationshipState();
   const stage = stageOf(rel.stage);
@@ -151,6 +153,7 @@ ${hints.length ? `\n【本轮特别提示（按优先级 P1→P8 排列，先照
 
 【相关记忆（较高优先级：他说到相关的事时，可以自然地想起来）】
 ${memoryBlock}
+${kbBlock ? `\n${kbBlock}` : ''}
 
 （这些记忆是你"想起来"的，不要说"根据记录""我的记忆里"，就像人一样自然地回忆）
 
@@ -284,10 +287,11 @@ export function buildReplyMessages(
   memoryBlock: string,
   hints: string[] = [],
   recentActions: string[] = [],
-  copresence: string[] = []
+  copresence: string[] = [],
+  kbBlock = ''
 ): ChatMessage[] {
   return [
-    { role: 'system', content: buildReplySystemPrompt(memoryBlock, hints, recentActions, copresence) },
+    { role: 'system', content: buildReplySystemPrompt(memoryBlock, hints, recentActions, copresence, kbBlock) },
     ...recentMessages,
   ];
 }

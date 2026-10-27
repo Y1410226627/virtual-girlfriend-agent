@@ -145,13 +145,17 @@ function seedC2(): void {
 /* A. 迁移正确性                                                        */
 /* ================================================================== */
 
-test('A1 全新库：schema_migrations 恰好 16 条、版本 1..16；companions id=1 满足红线', () => {
+test('A1 全新库：schema_migrations 恰好 17 条、版本 1..17；companions id=1 满足红线', () => {
   switchTo(freshDbPath);
   dbMod.getDb();
   const versions = dbAll<{ version: number }>('SELECT version FROM schema_migrations ORDER BY version').map((r) =>
     Number(r.version)
   );
-  assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], '应恰好 16 条且严格递增');
+  assert.deepEqual(
+    versions,
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+    '应恰好 17 条且严格递增'
+  );
   const c1 = dbGet<{ id: number; is_primary: number; age: number; status: string }>(
     'SELECT id, is_primary, age, status FROM companions WHERE id = 1'
   );

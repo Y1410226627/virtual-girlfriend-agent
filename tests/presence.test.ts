@@ -71,10 +71,16 @@ function insertMessage(companionId: number, role: 'user' | 'assistant', content:
 /* ================================================================== */
 /* 1. 迁移 v16                                                          */
 /* ================================================================== */
-test('迁移 v16：schema_migrations 共 16 条；groups/memories 新列齐备', () => {
+test('迁移 v16：schema_migrations 共 17 条；groups/memories 新列齐备；v17 知识库表存在', () => {
   const versions = dbAll<{ version: number }>('SELECT version FROM schema_migrations ORDER BY version').map((r) => Number(r.version));
-  assert.equal(versions.length, 16);
-  assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  assert.equal(versions.length, 17);
+  assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+
+  // v17：本地知识库三张表
+  const tables = dbAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").map((t) => t.name);
+  for (const t of ['kb_docs', 'kb_chunks', 'kb_chunk_embeddings']) {
+    assert.ok(tables.includes(t), `v17 应有 ${t} 表`);
+  }
 
   const groupCols = dbAll<{ name: string }>('PRAGMA table_info(groups)').map((c) => c.name);
   assert.ok(groupCols.includes('origin'), 'groups 应有 origin 列');

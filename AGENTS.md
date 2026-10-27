@@ -52,12 +52,12 @@
 
 ## 5. 部署流程（本机工作区 → 桌面运行目录 → GitHub 副本）
 1. 本工作区改好并 `npm run verify` 全绿。
-2. 同步到桌面运行目录 `D:\桌面\虚拟女友`（robocopy，排除 `node_modules/.next/data/.git`，排除 `.env.local*`、`*.bak-*`、`*.tsbuildinfo`），在桌面目录 `npm run build`。
-3. 同步到开源副本 `D:\桌面\虚拟女友-开源版`（robocopy 额外排除 `_sanitize_for_github.mjs`——脚本含关键词清单，**绝不进副本、绝不提交**），然后在**真实项目目录**运行 `node _sanitize_for_github.mjs`（默认清洗副本、幂等、含兜底横扫：敏感串随代码搬家后仍能清到）；其复扫输出必须为「干净 ✓」——**不要把任何内网地址 / Key 片段写进文档、注释或提交信息**（关键词清单只维护在脚本里）；副本绝不允许出现 `data/`、`.env.local*`、`*.bak-*`、`_sanitize_for_github.mjs`。
+2. 同步到运行目录 `E:\虚拟女友`（robocopy，排除 `node_modules/.next/data/.git`，排除 `.env.local*`、`*.bak-*`、`*.tsbuildinfo`），在该目录 `npm run build`。
+3. 同步到开源副本 `E:\虚拟女友-开源版`（robocopy 额外排除 `_sanitize_for_github.mjs`——脚本含关键词清单，**绝不进副本、绝不提交**），然后在**真实项目目录**运行 `node _sanitize_for_github.mjs`（默认清洗副本、幂等、含兜底横扫：敏感串随代码搬家后仍能清到）；其复扫输出必须为「干净 ✓」——**不要把任何内网地址 / Key 片段写进文档、注释或提交信息**（关键词清单只维护在脚本里）；副本绝不允许出现 `data/`、`.env.local*`、`*.bak-*`、`_sanitize_for_github.mjs`。
 4. 副本 git 提交（单主题提交，说明「改了什么、为什么」）。
 5. 用户数据目录永远不参与任何同步。
 
-> **现状备注（2026-10-12）**：桌面目录 `D:\桌面\虚拟女友` 目前就是「真实项目」（最新代码在这里开发与运行）；上面第 3~4 步已由 `同步开源版.cmd`（内部 `node sync-open-source.mjs "提交说明"`）自动化：镜像复制 + 脱敏 + 隐私终检 + 自动提交 + 推送，一条命令替代原来的手工 robocopy/sanitize/commit。工作区（Trae CN 里的项目目录）当前落后于桌面，**以桌面为准**，不要用旧工作区反向覆盖。
+> **现状备注（2026-10-28，项目已整体迁到 E 盘）**：`E:\虚拟女友` 目前就是「真实项目/运行目录」（最新代码在这里开发与运行）；上面第 3~4 步已由 `同步开源版.cmd`（内部 `node sync-open-source.mjs "提交说明"`）自动化：镜像复制 + 脱敏 + 隐私终检 + 自动提交 + 推送，一条命令替代原来的手工 robocopy/sanitize/commit。旧路径 `D:\桌面\...` 已失效（开机自启快捷方式已改指 E 盘）。**以 E 盘为准。**
 > 手机访问：`启动.cmd` 已内置局域网模式（`start:lan`）+ 访问口令（PIN 保存在 `data\access-pin.txt`，只在本机、不入库不入提交），启动窗口会直接打印手机访问地址；开机自启由「启动」文件夹里的快捷方式负责。
 
 ## 6. 技术债台账（动态更新；已还清的保留一行记录，避免复辟）
@@ -71,6 +71,7 @@
 - ✅ **质量层落地**（2026-10-06）：回复校验层（低分自动重答一次，`src/lib/reply-validator.ts`）；记忆事实键 `memories.fact_key` 主判 + 向量辅助；`affect_state`（此刻情绪）与长期指标分家；主动消息做自我暴露抽取（她自己的话进她自己的记忆/计划）；提示词分层 + 数据块 `<DATA>` 包裹。
 - ✅ **本地安全边界**（2026-10-06，ADR-0005）：dev/start 默认只监听 `127.0.0.1`；设置 `ACCESS_PIN` 才启用 middleware 门禁；已保存 Key 绑定保存时 host（换地址不携带旧 Key）；GET 路由只读化，后台推进走 `POST /api/tick` + scheduler。
 - ✅ **多模态与陪伴感**（2026-10-06，参考开源同类项目补全）：语音输入（自配 OpenAI 兼容 ASR，`/api/asr`）、发图给她看（多模态消息 + `data/uploads` + 视觉不可用自动降级，`/api/uploads/[name]`）、触摸互动（`/api/interact` + `src/lib/interactions.ts`，冷却与每日上限）、心动指数（`src/lib/doki.ts`）、主动消息回应率分寸感（`proactive.ts`，仪式/纪念日豁免）。上传图片属用户隐私：`data/uploads/` 已加入 .gitignore，且 `data/` 整体不参与任何同步。
+- ✅ **本地知识库**（2026-10-28，参考 AstrBot `knowledge_base` 的 dense/sparse 融合思路）：v17 新增 `kb_docs` / `kb_chunks` / `kb_chunk_embeddings` 三表；`src/lib/knowledge.ts` 负责切块（按句，≤420 字）+ 向量复用（`embed`，未配接口时自动本地哈希）+ 混合检索（余弦 0.7 + 字二元组 0.3）；`prepareTurn` 按他此刻的话检索 ≤3 段、注入系统提示词（`<DATA>` 包裹），无资料或异常时零回归；设置页「知识库」卡片支持粘贴或读入 `.txt/.md`（≤30 篇、单篇 ≤6 万字），删除时级联清理块与向量。**资料属用户隐私：只存本机数据库，不上传、不参与任何同步。**
 - ⏳ **共享世界规范化拆表**：事务化读改写已消除丢更新；若未来需要逐条查询/统计再拆表，必须走"双写过渡"。
 - ⏳ **事件驱动架构（Turn/Event → projections）**：账本已提供事实源；各模块目前仍以"读当前状态"为主，按需演进。
 - ⏳ **对话质量自动评测基准**：现有单测覆盖行为正确性；100~300 场景的对话质量回归（topic/intent/emotion 命中）留待专项。

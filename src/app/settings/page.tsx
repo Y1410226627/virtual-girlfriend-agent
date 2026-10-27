@@ -16,6 +16,7 @@ import { IdentityCard } from '@/components/settings/IdentityCard';
 import { ProactiveCard } from '@/components/settings/ProactiveCard';
 import { NotificationCard } from '@/components/settings/NotificationCard';
 import { VoiceCard } from '@/components/settings/VoiceCard';
+import { KnowledgeCard } from '@/components/settings/KnowledgeCard';
 import { PhotoCard } from '@/components/settings/PhotoCard';
 import { PacingCard } from '@/components/settings/PacingCard';
 import { PrivacyCard } from '@/components/settings/PrivacyCard';
@@ -396,6 +397,8 @@ export default function SettingsPage() {
         <NotificationCard notifyStatusText={notifyStatusText} notifyOn={notifyOn} toggleNotify={toggleNotify} notifyPerm={notifyPerm} notifySupported={notifySupported} />
 
         <VoiceCard form={form} set={set} save={save} saving={saving} testTts={testTts} ttsTesting={ttsTesting} />
+
+        <KnowledgeCard companionId={companionId} />
 
         <PhotoCard form={form} set={set} save={save} saving={saving} companionId={companionId} />
 

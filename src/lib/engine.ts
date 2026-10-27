@@ -6,6 +6,7 @@ import { chat, chatStream, contentText, IMAGE_PLACEHOLDER, type ChatMessage, typ
 import { buildReplyMessages, buildHints } from './prompts';
 import { loadImageDataUrls, parseMetaImages } from './uploads';
 import { retrieveMemories, formatMemoryBlock } from './memory';
+import { buildKbBlock } from './knowledge';
 import { touchInteraction, agentName, userName, getRelationshipState, saveRelationshipState } from './relationship';
 import { personalityMap } from './personality';
 import { attachmentStyle } from './attachment';
@@ -275,6 +276,8 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
     .slice(-2);
   const memoryRows = await retrieveMemories(text, { extraQueries });
   const memoryBlock = formatMemoryBlock(memoryRows);
+  // v17 本地知识库：按他此刻说的话检索资料片段；没有资料/出错时返回空串（不打扰正常回复）
+  const kbBlock = await buildKbBlock(text);
 
   const hints = buildHints({ isFirstMeeting: isFirstMeeting(), userMessage: text });
 
@@ -300,7 +303,7 @@ export async function prepareTurn(userText: string, opts: PrepareTurnOptions = {
   } catch {
     copresence = []; // 在场检测失败不影响正常回复
   }
-  const baseMessages = buildReplyMessages(recent, memoryBlock, hints, actions, copresence);
+  const baseMessages = buildReplyMessages(recent, memoryBlock, hints, actions, copresence, kbBlock);
   // 本轮带图：把图片以多模态 content parts 附在最后一条用户消息上（历史图片已在 recent 里降级为占位）
   const messages = images.length
     ? withImagesOnLastUserMessage(baseMessages, text, loadImageDataUrls(images))
