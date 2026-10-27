@@ -73,6 +73,7 @@
 - ✅ **多模态与陪伴感**（2026-10-06，参考开源同类项目补全）：语音输入（自配 OpenAI 兼容 ASR，`/api/asr`）、发图给她看（多模态消息 + `data/uploads` + 视觉不可用自动降级，`/api/uploads/[name]`）、触摸互动（`/api/interact` + `src/lib/interactions.ts`，冷却与每日上限）、心动指数（`src/lib/doki.ts`）、主动消息回应率分寸感（`proactive.ts`，仪式/纪念日豁免）。上传图片属用户隐私：`data/uploads/` 已加入 .gitignore，且 `data/` 整体不参与任何同步。
 - ✅ **本地知识库**（2026-10-28，参考 AstrBot `knowledge_base` 的 dense/sparse 融合思路）：v17 新增 `kb_docs` / `kb_chunks` / `kb_chunk_embeddings` 三表；`src/lib/knowledge.ts` 负责切块（按句，≤420 字）+ 向量复用（`embed`，未配接口时自动本地哈希）+ 混合检索（余弦 0.7 + 字二元组 0.3）；`prepareTurn` 按他此刻的话检索 ≤3 段、注入系统提示词（`<DATA>` 包裹），无资料或异常时零回归；设置页「知识库」卡片支持粘贴或读入 `.txt/.md`（≤30 篇、单篇 ≤6 万字），删除时级联清理块与向量。**资料属用户隐私：只存本机数据库，不上传、不参与任何同步。**
 - ✅ **提醒**（2026-10-28，参考 AstrBot cron + 工具意图）：v18 新增 `reminders` 表；在聊天里说「提醒我 20 分钟后… / 明天早上 8 点…」→ **本地确定性解析**（`src/lib/reminder-parse.ts`，不依赖模型）→ 回复成功后才落库（按用户消息幂等，重新生成不重复）→ 调度器 `tickReminders` 到点用她的口吻发一条（不占主动消息额度；生成失败保持 pending，下轮重试）；系统提示词注入"自然答应"提示；设置页「提醒」卡片可查看/取消。支持相对时间、今天/明天/后天/周几、上午/下午/晚上与默认时刻；时间不确定时不误报。
+- ✅ **本地向量后端（2026-10-28）**：`embedding_base_url` / `embedding_model` 可独立于聊天接口配置（已有三态 Key 与 host 绑定保护）；推荐本机 Ollama + `qwen3-embedding:0.6b`（1024 维、免费不限量、数据不出本机），仓库内 `嵌入服务.cmd` 负责拉起服务/首次拉取模型；换模型后用 `POST /api/settings {action:"rebuild_embeddings"}` 重算全部记忆向量（v17 的 KB 向量同源，换模型后旧向量自动失效、按需重算）；向量服务不可用时自动回退本地哈希向量（`embeddingMode()` 可见），不影响聊天。
 - ⏳ **共享世界规范化拆表**：事务化读改写已消除丢更新；若未来需要逐条查询/统计再拆表，必须走"双写过渡"。
 - ⏳ **事件驱动架构（Turn/Event → projections）**：账本已提供事实源；各模块目前仍以"读当前状态"为主，按需演进。
 - ⏳ **对话质量自动评测基准**：现有单测覆盖行为正确性；100~300 场景的对话质量回归（topic/intent/emotion 命中）留待专项。
