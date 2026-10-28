@@ -80,3 +80,25 @@ test('完全空输出走兜底台词', () => {
   assert.ok(r.text.trim().length > 0, '兜底台词不应为空');
   assert.equal(r.fallback, true, '应标记为兜底');
 });
+
+test('机械动作被删除，而不是换成无关的通用动作', () => {
+  const r = humanizeReply('（伸了个懒腰）今天就早点睡吧。\n（把脸埋进枕头）晚安。', ctx);
+  assert.ok(!r.text.includes('伸了个懒腰'), `机械动作应被删除，实际：${r.text}`);
+  assert.ok(r.text.includes('把脸埋进枕头'), `有效动作应保留，实际：${r.text}`);
+  assert.equal(r.addedAction, false, '已有动作时不应再补动作');
+  assert.ok(
+    r.notes.some((n) => n.includes('去掉机械动作')),
+    `notes 应记录去掉机械动作：${JSON.stringify(r.notes)}`
+  );
+});
+
+test('只删"完全相同"的复读动作；同前缀不同细节的动作保留', () => {
+  const c = { ...ctx, recentActions: ['把脸埋进枕头'] };
+  const r = humanizeReply('（把脸埋进枕头）晚安。\n（把脸埋进抱枕里，闷闷地应了一声）明天见。', c);
+  assert.ok(!r.text.includes('（把脸埋进枕头）'), `完全重复的动作应删除，实际：${r.text}`);
+  assert.ok(r.text.includes('把脸埋进抱枕里'), `细节不同的动作应保留，实际：${r.text}`);
+  assert.ok(
+    r.notes.some((n) => n.includes('去掉复读动作')),
+    `notes 应记录去掉复读动作：${JSON.stringify(r.notes)}`
+  );
+});

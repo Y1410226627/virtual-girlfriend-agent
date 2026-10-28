@@ -186,13 +186,16 @@ function filterActions(
       return swap('去掉线下不该有的屏幕动作');
     }
     if (MECHANICAL_ACTION_RE.test(s) && !ACTION_EMOTION_RE.test(s)) {
-      return swap('去掉机械动作');
+      // 删除而不是替换：动作库换出来的通用动作会跟这句话的内容脱节（用户反馈过"动作与内容无关"）
+      notes.push(`去掉机械动作：${s}`);
+      return '';
     }
     const flat = s.replace(/\s/g, '');
-    // 4-5 字的动作原来永远比不出重复（slice(0,6) 定长前缀对短串恒不等）→ 用双方较短长度作比较长度
-    const k1 = Math.min(flat.length, 6);
-    if (flat.length >= 4 && recent.some((r) => r.slice(0, Math.min(r.length, k1)) === flat.slice(0, k1))) {
-      return swap('复读动作');
+    // 只拦"完全相同的写法"；同前缀但细节不同的动作（把脸埋进枕头 / 埋进你肩窝）是合法的新细节，
+    // 以前用 6 字前缀判断会把好动作误删/误换成通用动作
+    if (flat.length >= 4 && recent.includes(flat)) {
+      notes.push(`去掉复读动作：${s}`);
+      return '';
     }
     return full;
   });
