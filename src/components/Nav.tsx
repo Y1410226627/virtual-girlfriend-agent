@@ -107,7 +107,7 @@ export default function Nav() {
     if (count <= 0) return null;
     const label = href === '/groups' ? `有 ${count} 个群有新消息` : `有 ${count} 条未读消息`;
     return (
-      <span className="absolute -right-2 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium leading-none text-white shadow-bubble">
+      <span className="absolute -right-2 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-medium leading-none text-white shadow-bubble">
         <span aria-hidden>{count > 9 ? '9+' : count}</span>
         {/* 挂在 aria-hidden 图标外的可读文本：读屏能把未读数并入链接名称 */}
         <span className="sr-only">{label}</span>
@@ -130,7 +130,7 @@ export default function Nav() {
             aria-current={isActive(it.href) ? 'page' : undefined}
             className={`flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm transition ${
               isActive(it.href)
-                ? 'bg-rose-500 text-white shadow-bubble'
+                ? 'bg-[var(--accent)] text-white shadow-bubble'
                 : 'ink-2 hover:accent-soft'
             }`}
           >

@@ -7,6 +7,7 @@ import { withCompanionQuery } from '@/components/chat/companion-query';
 import { useCompanionId, CompanionScopeBar } from '@/components/CompanionScopeBar';
 import type { SettingsResponse, EffectiveInfo, ProfileForm, ProfileTestResult, CustomValues, PingResult } from '@/components/settings/shared';
 import { AppearanceCard } from '@/components/settings/AppearanceCard';
+import { DEFAULT_SKIN, isSkinId, type SkinId } from '@/lib/skins';
 import { ModelProfileCard } from '@/components/settings/ModelProfileCard';
 import { AdvancedApiCard } from '@/components/settings/AdvancedApiCard';
 import { SceneCard } from '@/components/settings/SceneCard';
@@ -44,6 +45,8 @@ export default function SettingsPage() {
   const [cv, setCv] = useState<CustomValues | null>(null);
   // 外观主题：'light' | 'dark'（默认跟随系统，由 layout 的初始化脚本决定）
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  // 配色皮肤（只存本机 localStorage，不进数据库）
+  const [skin, setSkin] = useState<SkinId>(DEFAULT_SKIN);
   // 桌面通知开关：null = 尚未在客户端读取（SSR 占位）
   const [notifySupported, setNotifySupported] = useState<boolean | null>(null);
   const [notifyPerm, setNotifyPerm] = useState<NotificationPermission>('default');
@@ -68,9 +71,11 @@ export default function SettingsPage() {
     }
   }, []);
 
-  // 读取当前实际生效的主题（<html> 上的 dark class 才是真相）
+  // 读取当前实际生效的主题与皮肤（<html> 上的 class/data-skin 才是真相）
   useEffect(() => {
     setTheme(document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    const saved = document.documentElement.getAttribute('data-skin') ?? window.localStorage.getItem('gf-skin');
+    setSkin(isSkinId(saved) ? saved : DEFAULT_SKIN);
   }, []);
 
   // 立即切换并持久化；下次打开由 layout 的初始化脚本读取
@@ -82,6 +87,18 @@ export default function SettingsPage() {
       /* ignore */
     }
     document.documentElement.classList.toggle('dark', t === 'dark');
+  };
+
+  // 切换配色皮肤：立即生效并持久化；默认皮肤移除 data-skin 即可
+  const applySkin = (s: SkinId) => {
+    setSkin(s);
+    try {
+      window.localStorage.setItem('gf-skin', s);
+    } catch {
+      /* ignore */
+    }
+    if (s === DEFAULT_SKIN) document.documentElement.removeAttribute('data-skin');
+    else document.documentElement.setAttribute('data-skin', s);
   };
 
   // 通知开关：开启时申请权限；关闭时只写本地开关
@@ -366,7 +383,7 @@ export default function SettingsPage() {
       ) : null}
 
       <div className="space-y-4 px-5 md:px-8">
-        <AppearanceCard theme={theme} onApplyTheme={applyTheme} />
+        <AppearanceCard theme={theme} onApplyTheme={applyTheme} skin={skin} onApplySkin={applySkin} />
 
         <ModelProfileCard
           data={data}

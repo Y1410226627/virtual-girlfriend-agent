@@ -164,9 +164,9 @@ export default function MessageList({
         {typing ? (
           <div className="flex justify-start" role="status" aria-live="polite">
             <div className="bubble-agent flex items-center gap-1 border line surf px-4 py-3 shadow-bubble">
-              <span className="dot-1 h-1.5 w-1.5 rounded-full bg-rose-400" />
-              <span className="dot-2 h-1.5 w-1.5 rounded-full bg-rose-400" />
-              <span className="dot-3 h-1.5 w-1.5 rounded-full bg-rose-400" />
+              <span className="dot-1 h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
+              <span className="dot-2 h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
+              <span className="dot-3 h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
               <span className="ml-2 text-[11px] ink-3">{busyNote || '对方正在输入…'}</span>
             </div>
           </div>

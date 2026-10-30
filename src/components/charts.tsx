@@ -236,7 +236,7 @@ export function StageLadder({
           <div key={s.id} className="flex-1">
             <div
               className={`h-2 rounded-full ${
-                active ? 'bg-rose-500' : passed ? 'bg-rose-300' : 'accent-soft'
+                active ? 'bg-[var(--accent)]' : passed ? 'bg-[var(--accent-soft)]' : 'accent-soft'
               }`}
             />
             <div className={`mt-1.5 text-center text-[11px] ${active ? 'font-semibold acc' : 'ink-3'}`}>

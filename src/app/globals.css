@@ -42,6 +42,126 @@ html.dark {
   --scroll-thumb: rgba(251, 113, 133, 0.32);
 }
 
+/* ---------------- 配色皮肤（可选；默认 = 粉樱暖阳） ----------------
+   html[data-skin] 覆盖配色变量，同时适配浅色/深色：浅色用 html[data-skin='x']，
+   深色用 html.dark[data-skin='x']（后者特异性更高）。选择存 localStorage，不进数据库。 */
+html[data-skin='night'] {
+  --bg: #faf7ff;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-2: rgba(255, 255, 255, 0.66);
+  --line: rgba(226, 214, 255, 0.9);
+  --ink-1: #2d2438;
+  --ink-2: #4d3f5e;
+  --ink-3: #8d7fa5;
+  --accent: #8b5cf6;
+  --accent-hover: #7c3aed;
+  --accent-text: #7c3aed;
+  --accent-2-text: #d97706;
+  --accent-soft: rgba(243, 236, 255, 0.9);
+  --glow-1: #ede4ff;
+  --glow-2: #ffe8d9;
+  --scroll-thumb: rgba(139, 92, 246, 0.22);
+}
+html.dark[data-skin='night'] {
+  color-scheme: dark;
+  --bg: #120e1c;
+  --surface: rgba(30, 24, 45, 0.92);
+  --surface-2: rgba(24, 19, 36, 0.92);
+  --line: #322a44;
+  --ink-1: #efe9f7;
+  --ink-2: #c4b8d6;
+  --ink-3: #8a7d9e;
+  --accent: #8b5cf6;
+  --accent-hover: #a78bfa;
+  --accent-text: #b69cff;
+  --accent-2-text: #fb923c;
+  --accent-soft: rgba(167, 139, 250, 0.16);
+  --glow-1: rgba(167, 139, 250, 0.16);
+  --glow-2: rgba(251, 146, 60, 0.1);
+  --scroll-thumb: rgba(167, 139, 250, 0.32);
+}
+
+html[data-skin='mint'] {
+  --bg: #f6fbf9;
+  --surface: rgba(255, 255, 255, 0.88);
+  --surface-2: rgba(255, 255, 255, 0.68);
+  --line: rgba(205, 235, 224, 0.9);
+  --ink-1: #22302c;
+  --ink-2: #40544e;
+  --ink-3: #82988f;
+  --accent: #0d9488;
+  --accent-hover: #0f766e;
+  --accent-text: #0f766e;
+  --accent-2-text: #b45309;
+  --accent-soft: rgba(226, 247, 240, 0.9);
+  --glow-1: #dcf5ea;
+  --glow-2: #f7ead6;
+  --scroll-thumb: rgba(13, 148, 136, 0.22);
+}
+html.dark[data-skin='mint'] {
+  color-scheme: dark;
+  --bg: #0c1513;
+  --surface: rgba(22, 36, 32, 0.92);
+  --surface-2: rgba(17, 28, 25, 0.92);
+  --line: #25403a;
+  --ink-1: #e6f2ee;
+  --ink-2: #b4ccc4;
+  --ink-3: #7d9991;
+  --accent: #0d9488;
+  --accent-hover: #14b8a6;
+  --accent-text: #2dd4bf;
+  --accent-2-text: #fbbf24;
+  --accent-soft: rgba(20, 184, 166, 0.16);
+  --glow-1: rgba(20, 184, 166, 0.14);
+  --glow-2: rgba(180, 83, 9, 0.1);
+  --scroll-thumb: rgba(20, 184, 166, 0.3);
+}
+
+html[data-skin='ocean'] {
+  --bg: #f4f8fe;
+  --surface: rgba(255, 255, 255, 0.88);
+  --surface-2: rgba(255, 255, 255, 0.68);
+  --line: rgba(210, 226, 245, 0.9);
+  --ink-1: #1f2b3a;
+  --ink-2: #3f5166;
+  --ink-3: #8399b3;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-text: #1d4ed8;
+  --accent-2-text: #0e7490;
+  --accent-soft: rgba(230, 240, 255, 0.9);
+  --glow-1: #dfeaff;
+  --glow-2: #e2f4ff;
+  --scroll-thumb: rgba(37, 99, 235, 0.22);
+}
+html.dark[data-skin='ocean'] {
+  color-scheme: dark;
+  --bg: #0a1019;
+  --surface: rgba(20, 29, 42, 0.92);
+  --surface-2: rgba(15, 22, 33, 0.92);
+  --line: #25344a;
+  --ink-1: #e7eef8;
+  --ink-2: #b8c6d8;
+  --ink-3: #7f92a8;
+  --accent: #2563eb;
+  --accent-hover: #3b82f6;
+  --accent-text: #60a5fa;
+  --accent-2-text: #22d3ee;
+  --accent-soft: rgba(37, 99, 235, 0.18);
+  --glow-1: rgba(37, 99, 235, 0.16);
+  --glow-2: rgba(34, 211, 238, 0.1);
+  --scroll-thumb: rgba(96, 165, 250, 0.3);
+}
+
+/* 用户气泡与进度条走主题色（原来硬编码玫瑰色，换肤后不协调） */
+.bubble-user {
+  background-image: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  color: #fff;
+}
+.progress-accent {
+  background-image: linear-gradient(90deg, var(--accent-soft), var(--accent));
+}
+
 html,
 body {
   height: 100%;

@@ -99,7 +99,7 @@ export function Bar({ value, max = 100, min = 0, tone = 'rose', height = 8 }: { 
       ? 'bg-gradient-to-r from-peach-300 to-peach-500'
       : tone === 'gray'
         ? 'bg-gradient-to-r from-ink-300 to-ink-500'
-        : 'bg-gradient-to-r from-rose-300 to-rose-500';
+        : 'progress-accent';
   return (
     <div className="w-full rounded-full accent-soft overflow-hidden" style={{ height }}>
       <div className={`h-full ${bg} transition-all`} style={{ width: `${pct}%` }} />

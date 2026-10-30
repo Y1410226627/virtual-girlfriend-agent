@@ -90,12 +90,12 @@ export default function MessageBubble({
           <div
             className={
               m.role === 'user'
-                ? 'bubble-user bg-gradient-to-br from-rose-400 to-rose-500 px-4 py-2.5 text-sm text-white shadow-bubble whitespace-pre-wrap break-words'
+                ? 'bubble-user px-4 py-2.5 text-sm text-white shadow-bubble whitespace-pre-wrap break-words'
                 : 'bubble-agent border line surf px-4 py-2.5 text-sm ink-1 shadow-bubble whitespace-pre-wrap break-words'
             }
           >
             <RichText text={m.content} tone={m.role === 'user' ? 'user' : 'agent'} stickers={stickers} />
-            {m.streaming ? <span className="ml-1 inline-block h-3 w-1.5 animate-pulse-soft bg-rose-400 align-middle" /> : null}
+            {m.streaming ? <span className="ml-1 inline-block h-3 w-1.5 animate-pulse-soft bg-[var(--accent)] align-middle" /> : null}
           </div>
           <div className={`mt-1 flex items-center gap-2 text-[10px] ink-3 ${m.role === 'user' ? 'justify-end' : ''}`}>
             <span>{fmtTime(m.created_at)}</span>

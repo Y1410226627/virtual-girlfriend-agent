@@ -22,8 +22,8 @@ export const viewport: Viewport = {
   ],
 };
 
-// 防闪烁：渲染前读取 localStorage 的 theme（缺省跟随系统），立即给 <html> 加/去 dark
-const THEME_INIT = `(function(){try{var t=localStorage.getItem('theme');var d=t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',d);}catch(e){}})();`;
+// 防闪烁：渲染前读取 localStorage 的 theme（缺省跟随系统）与配色皮肤（缺省粉樱）
+const THEME_INIT = `(function(){try{var t=localStorage.getItem('theme');var d=t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',d);var s=localStorage.getItem('gf-skin');if(s&&/^(sakura|night|mint|ocean)$/.test(s)&&s!=='sakura'){document.documentElement.setAttribute('data-skin',s);}else{document.documentElement.removeAttribute('data-skin');}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
