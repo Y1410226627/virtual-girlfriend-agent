@@ -65,29 +65,29 @@ export function seedProfilesIfEmpty(): void {
       note: '来自 .env.local / 当前设置（首次启动自动收录）',
     });
   }
-  // 智谱 GLM-4.7-Flash（免费 flash，可作为备用）
+  // 智谱 GLM-4.7-Flash（免费 flash，可作为备用；示例档案，Key 需自行填写）
   seeds.push({
     label: '智谱 GLM-4.7-Flash',
     base_url: 'https://open.bigmodel.cn/api/paas/v4',
     api_key: '',
     chat_model: 'glm-4.7-flash',
     analysis_model: 'glm-4.5-air',
-    embedding_base_url: embBase || '',
-    embedding_api_key: embKey || '',
+    embedding_base_url: embBase,
+    embedding_api_key: embKey,
     embedding_model: embModel,
-    note: '智谱开放平台。免费 flash 模型，高峰期可能限流，会自动切到备用模型',
+    note: '示例档案：智谱开放平台（需在设置页填写你自己的 Key）。免费 flash 模型高峰期可能限流',
   });
-  // 智谱 GLM-4.5-Air（实测最快）
+  // 智谱 GLM-4.5-Air（轻快档；示例档案，Key 需自行填写）
   seeds.push({
     label: '智谱 GLM-4.5-Air',
     base_url: 'https://open.bigmodel.cn/api/paas/v4',
     api_key: '',
     chat_model: 'glm-4.5-air',
     analysis_model: 'glm-4.5-air',
-    embedding_base_url: embBase || '',
-    embedding_api_key: embKey || '',
+    embedding_base_url: embBase,
+    embedding_api_key: embKey,
     embedding_model: embModel,
-    note: '同平台更轻快的模型，实测响应最快',
+    note: '示例档案：同平台更轻快的模型（需在设置页填写你自己的 Key）',
   });
 
   tx(() => {

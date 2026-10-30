@@ -44,7 +44,7 @@ export function AdvancedApiCard({
       <div className="grid gap-3 md:grid-cols-2">
         <div>
           <label className="label">接口地址 Base URL</label>
-          <input className="input" value={form.llm_base_url ?? ''} onChange={(e) => set('llm_base_url', e.target.value)} placeholder="https://api.example.com/v1" />
+          <input className="input" value={form.llm_base_url ?? ''} onChange={(e) => set('llm_base_url', e.target.value)} placeholder="http://127.0.0.1:11434/v1" />
         </div>
         <div>
           <label className="label">API Key</label>
@@ -74,7 +74,7 @@ export function AdvancedApiCard({
         </div>
         <div>
           <label className="label">向量接口地址（留空 = 跟聊天接口相同）</label>
-          <input className="input" value={form.embedding_base_url ?? ''} onChange={(e) => set('embedding_base_url', e.target.value)} placeholder="https://api.example.com/v1" />
+          <input className="input" value={form.embedding_base_url ?? ''} onChange={(e) => set('embedding_base_url', e.target.value)} placeholder="http://127.0.0.1:11434/v1" />
         </div>
         <div>
           <label className="label">向量接口 Key（留空 = 跟聊天 Key 相同）</label>

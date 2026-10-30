@@ -15,8 +15,7 @@
 
 关闭：在黑色窗口里按 `Ctrl + C`，或直接关掉窗口。
 
-> 模型接口需要自己配置（复制 `.env.example` 为 `.env.local` 后填写）：
-> 填入任何 OpenAI 兼容服务的地址与模型名即可（vLLM / Ollama / DeepSeek / 智谱 等）。
+> 模型接口在 `.env.local` 里配置（任何 OpenAI 兼容服务都行，例如本机 Ollama：`http://127.0.0.1:11434/v1`）。
 > 换模型随时可以在「设置」页里改，或在 `.env.local` 里改。
 >
 > **想用本机免费、不限量的向量模型？** 安装 [Ollama](https://ollama.com) 后双击 **`嵌入服务.cmd`**（自动拉起服务并下载 `qwen3-embedding:0.6b`，约 640MB），
@@ -331,14 +330,14 @@
 
 ## 七、环境变量
 
-`.env.local`（照着 `.env.example` 填一份，可随时改）：
+`.env.local`（示例，按你的服务填写；真实值只放在该文件里，别写进代码/文档）：
 
 ```ini
-LLM_BASE_URL=http://localhost:8000/v1     # OpenAI 兼容接口
-LLM_API_KEY=你的APIKEY
-LLM_MODEL=qwen3.8-27b                  # 聊天模型（角色扮演质量优先）
-LLM_ANALYSIS_MODEL=glm-4.5-air   # 后台分析模型（快，建议保持 flash 类）
-EMBEDDING_MODEL=qwen3-vl-embedding-8b  # 向量模型（留空则用本地哈希向量兜底）
+LLM_BASE_URL=http://127.0.0.1:11434/v1  # OpenAI 兼容接口（示例：本机 Ollama）
+LLM_API_KEY=                            # Ollama 不需要 Key；云端服务填你自己的
+LLM_MODEL=qwen38-humanlike              # 聊天模型
+LLM_ANALYSIS_MODEL=                     # 后台分析模型（建议快模型；留空 = 跟聊天模型相同）
+EMBEDDING_MODEL=qwen3-embedding:0.6b    # 向量模型（留空则用本地哈希向量兜底）
 ANALYSIS_THINKING=false                # 后台分析是否开启深度思考（更准但慢，默认关）
 # DB_PATH=data/girlfriend.db           # 数据库位置（可选）
 ```
